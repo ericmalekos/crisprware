@@ -258,9 +258,9 @@ if __name__ == "__main__":
 
 
     header = ["chr", "start", "stop", "id,sequence,pam,chromosome,position,sense", \
-                            "context", "strand", "feature"]
+                            "context", "strand", "tscripts"]
     finalTargets.columns = header
-    finalTargets = finalTargets.groupby(header[:6])['feature'].apply(lambda x: ','.join(set(x))).reset_index()
+    finalTargets = finalTargets.groupby(header[:6])['tscripts'].apply(lambda x: ','.join(set(x))).reset_index()
     finalTargets["id"] = finalTargets[header[3]].apply(lambda x: x.split(',')[0])
     finalTargets.sort_values('id', inplace=True)
 

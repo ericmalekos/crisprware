@@ -4,12 +4,14 @@
     This script slightly modifies "generate_kmers.py" script from the Guidescan repo
 
     EX Usage:
-        GenerateKmerBED --pam NGG,NAG  --kmer-length 20  ./chr21Index/chr21.fa
+        GenerateKmerBED --pam NGG  --kmer-length 20  ./chr21Index/chr21.fa
 
 '''
-
+import pandas as pd
+from io import StringIO
 from Bio import SeqIO
 import argparse
+from pathlib import Path
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -17,19 +19,28 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "fasta",
+        "-f", "--fasta",
         type=str,
-        help="FASTA file to use as a reference for kmer generation."
+        help="FASTA file to use as a reference for kmer generation.",
+        required=True
     )
 
     parser.add_argument(
-        "--pam",
+        "-k", "--keep_exact_matches",
+        help="Keep guides even if they have exact matches to multiple sites. \
+            This will speed up downstream analysis, but requires more RAM [default: False]",
+        default=False
+    )
+
+    parser.add_argument(
+        "-p", "--pam",
+        type=str,
         help="Protospacer adjacent motif to match.",
         default="NGG"
     )
 
     parser.add_argument(
-        "--kmer_length",
+        "-l", "--kmer_length",
         help="Length of kmers to generate.",
         type=int,
         default=20
@@ -39,14 +50,53 @@ def parse_arguments():
         "--min_chr_length",
         help="Minimum chromosome length to consider for kmer generation.",
         type=int,
-        default=0
+        default=1
     )
 
     parser.add_argument(
         "--prefix",
         help="Prefix to use for kmer identifiers.",
+        type=str,
         default=""
     )
+
+    parser.add_argument(
+        "--discard_poly_T",
+        help="Whether to discard polyT (>TTT) kmers. \
+            Recommend True for PolIII promoters [default: False]",
+        type=bool,
+        default=False
+    )
+
+    
+    parser.add_argument(
+        "--restriction_patterns",
+        help="Reject kmers with these restriction patterns. \
+            Also checks 5'flank+kmer+3'flank if provided. \
+            For multiple values separate by space. \
+            e.g. GCGGCCGC TCTAGA CACCTGC",
+        type=str,   
+        default="",
+        nargs='*'
+    )
+
+    parser.add_argument(
+        "--flank_5",
+        help="include the 5' context of the lentivirus vector. \
+            Used in conjunction with --restriction_patterns to \
+            remove incompatible kmers",
+        type=str,
+        default=""
+    )
+    parser.add_argument(
+        "--flank_3",
+        help="include the 3' context of the lentivirus vector. \
+            Used in conjunction with --restriction_patterns to \
+            remove incompatible kmers",
+        type=str,
+        default=""
+    )
+
 
     return parser.parse_args()
 
@@ -57,7 +107,7 @@ def revcom(dna):
     return "".join(list(map(lambda n: NUC_MAP[n], list(dna)))[::-1])
 
 def generate_pam_set(pam):
-    pam_stack = pam.split(",")
+    pam_stack = [pam]
 
     while any(["N" in pam for pam in pam_stack]):
         pam = pam_stack.pop(0)
@@ -82,9 +132,11 @@ def find_kmers(pam, k, chrm, forward=True):
 
         if forward:
             kmer = chrm[index - k:index]
+            context = chrm[index - k - 5:index + 5]
             position = index - k
         else:
             kmer = chrm[index + len(pam):index + k + len(pam)]
+            context = chrm[index - 2:index + k + len(pam) + 5]
             position = index
 
         index += 1
@@ -93,7 +145,7 @@ def find_kmers(pam, k, chrm, forward=True):
             continue
 
         # Return the 1-indexed position to caller
-        yield kmer.upper(), position+1
+        yield kmer.upper(), position+1, context.upper()
 
 def find_all_kmers(pam, k, chrm): #, end=True
     """
@@ -119,7 +171,7 @@ def find_all_kmers(pam, k, chrm): #, end=True
         NOTE: for sequences on the *negative* strand this will return the position of the leftmost 'G'
         of the pam sequence from e.g. GGN-[kmerseq]. For sequences on the positive strand, this will return
         the 5'-most nucleotide of kmerseq from e.g. [kmerseq]-NGG. 
-        - "pam" : The PAM sequence that the k-mer is adjacent to.
+        - "pam" : The PAM pattern (NGG) that the k-mer is adjacent to.
         - "sense": The strand of the k-mer. "+" or "-".
         - "length" : k
     """
@@ -128,20 +180,20 @@ def find_all_kmers(pam, k, chrm): #, end=True
     rev_pam_set = list(map(revcom, pam_set))
 
     for p in pam_set:
-        for kmer, pos in find_kmers(p, k, chrm):
+        for kmer, pos, context in find_kmers(p, k, chrm):
             if len(kmer) != k: continue
-            if not all(nuc in NUCS for nuc in kmer): continue
-            yield {"sequence" : kmer, "position" : pos, "pam" : p,
-                    "sense": "+", "length" : k}
+            if not all(nuc in NUCS for nuc in context): continue
+            yield {"sequence" : kmer, "position" : pos, "pam" : pam,
+                    "sense": "+", "length" : k, "context": context}
 
     for p in rev_pam_set:
-        for kmer, pos in find_kmers(p, k, chrm, forward=False):
+        for kmer, pos, context in find_kmers(p, k, chrm, forward=False):
             if len(kmer) != k: continue
-            if not all(nuc in NUCS for nuc in kmer): continue
+            if not all(nuc in NUCS for nuc in context): continue
             yield {"sequence" : revcom(kmer), "position" : pos,
-                   "pam" : revcom(p), "sense": "-", "length" : k}
+                   "pam" : pam, "sense": "-", "length" : k, "context": revcom(context)}
 
-def output_kmer(prefix, chrm_name, kmer):
+def output_bed_line(prefix, chrm_name, kmer):
     """
     Generate and print a BED format line for a given k-mer.
 
@@ -177,16 +229,76 @@ def output_kmer(prefix, chrm_name, kmer):
         cleavePos1 = kmer['position'] + 6
         cleavePos2 = kmer['position'] + 7
     
-    bedLine = [chrm_name, str(cleavePos1), str(cleavePos2), guideScanEntry, "0", kmer['sense']]
-    print("\t".join(bedLine))
+    bedLine = [chrm_name, str(cleavePos1), str(cleavePos2), guideScanEntry, kmer['context'], kmer['sense']]
+    return "\t".join(bedLine)
+
+def remove_exact_matches(kmerDF):
+    kmerCounts = kmerDF[1].value_counts()
+
+    # Get a boolean mask of kmers appearing only once
+    mask = kmerDF[1].isin(kmerCounts[kmerCounts == 1].index)
+
+    # Apply the mask to the DataFrame
+    return (kmerDF[mask])
+
+def remove_restricted(kmer, patterns, flank_5, flank_3):
+    context = flank_5 + kmer + flank_3
+    for pattern in patterns:
+        if (pattern in context) or (pattern in revcom(context)):
+            return True
+
+    return False
 
 if __name__ == "__main__":
     args = parse_arguments()
 
-    #print("id,sequence,pam,chromosome,position,sense")
-    for record in SeqIO.parse(args.fasta, "fasta"):
-        if len(record) < args.min_chr_length:
-            continue
 
-        for kmer in find_all_kmers(args.pam, args.kmer_length, record.seq):
-            output_kmer(args.prefix, record.name, kmer)
+    Path("./tmp/").mkdir(parents=True, exist_ok=True)
+
+    output = "./tmp/kmers.bed"
+
+    # If exact matches are kept, output everything.
+    if args.keep_exact_matches:
+        for record in SeqIO.parse(args.fasta, "fasta"):
+            if len(record) < args.min_chr_length:
+                continue
+
+            with open(output, 'w') as f:
+                for kmer in find_all_kmers(args.pam, args.kmer_length, record.seq):
+
+                    if args.discard_poly_T and "TTTT" in kmer["sequence"]:
+                        continue
+
+                    elif len(args.restriction_patterns) > 0 and \
+                        remove_restricted(kmer["sequence"], args.restriction_patterns, \
+                                          args.flank_5, args.flank_3):
+                        continue    
+
+                    else:
+                        f.write(output_bed_line(args.prefix, record.name, kmer) + "\n")
+
+    # If exact matches are removed at this stage, output only unique kmers are retained
+    # implementation is quick but memory intensive
+    else:
+        allKmers = StringIO()
+        for record in SeqIO.parse(args.fasta, "fasta"):
+            if len(record) < args.min_chr_length:
+                continue
+
+            for kmer in find_all_kmers(args.pam, args.kmer_length, record.seq):
+
+                if args.discard_poly_T and "TTTT" in kmer["sequence"]:
+                    continue
+
+                elif len(args.restriction_patterns) > 0 and \
+                    remove_restricted(kmer["sequence"], args.restriction_patterns, \
+                                        args.flank_5, args.flank_3):
+                    continue    
+
+                else:
+                    allKmers.write(output_bed_line(args.prefix, record.name, kmer) + "\n")
+        
+        allKmers.seek(0)
+        
+        reducedKmers = remove_exact_matches(pd.read_csv(allKmers, sep=',', header=None))
+        reducedKmers.to_csv(output,index=None, header=None)

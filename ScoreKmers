@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+
+'''
+    This script takes the output from FilterKmerBED and scores it
+    with Ruleset3 and Guidescan2. 
+'''
+
+import pandas as pd
+import subprocess
+import os
+from rs3.seq import predict_seq
+from scipy.stats import norm
+
+def guideScanScoring(guideCSV, guideIndex, threads = 2, mismatches = 4):
+    tempOutput = './tmp/guideScanOut.csv'
+    cmd = [
+        'guidescan',
+        'enumerate',
+        '--max-off-targets',
+        '-1',
+        '--threads',
+        str(threads),
+        '--mismatches',
+        str(mismatches),
+        '--format',
+        'csv',
+        '--mode',
+        'succinct',
+        '--kmers-file',
+        guideCSV,
+        '--output',
+        tempOutput,
+        guideIndex
+    ]
+
+    subprocess.run(cmd, check=True)
+
+    # read the csv file
+    gscanDF = pd.read_csv(tempOutput)
+
+    # drop duplicate rows and keep the first occurrence
+    gscanDF = gscanDF.drop_duplicates(subset='id', keep='first')
+
+    # write the result to a new csv file
+    return gscanDF
+
+def cleavageScoring(kmers, minPercentile = 0.40, tracr = 'Hsu2013', threads = 2):
+#start_time = time.time()
+    kmerDF = pd.read_csv(kmers, delimiter='\t', \
+                         header=0 )
+    # guideScores = predict_seq(sgRNAlist, sequence_tracr='Hsu2013', n_jobs=12)
+
+    sgRNAlist = kmerDF['context'].tolist() # 1709 seconds chr21, 12 cores 
+    # test
+    #kmerDF = kmerDF.head(10005)
+
+    # process the list in chunks to reduce memory footprint
+    chunk_size = 100000
+
+    sgRNAScores = []
+
+    # Iterate over big_list in chunks of size chunk_size
+    for i in range(0, len(sgRNAlist), chunk_size):
+        sublist = sgRNAlist[i:i + chunk_size]
+        processed_sublist = predict_seq(sublist, sequence_tracr=tracr, n_jobs=threads)
+        sgRNAScores.extend(processed_sublist)
+
+    kmerDF['rs3_z_score'] = sgRNAScores
+    kmerDF['rs3_percentile'] = norm.cdf(kmerDF['rs3_z_score'])
+    kmerDF['rs3_score_norm'] = (kmerDF['rs3_z_score'] - kmerDF['rs3_z_score'].min()) / (kmerDF['rs3_z_score'].max() - kmerDF['rs3_z_score'].min())
+    #kmerDF = kmerDF[kmerDF['rs3_percentile'] > minPercentile]
+
+    kmerDF['id'] = kmerDF['id,sequence,pam,chromosome,position,sense'].str.split(',').str[0]
+
+    return kmerDF
+
+def combineScores(kmerDF, gscanDF, rs3Weight=0.67, gscanWeight=0.33):
+
+    kmerDF = kmerDF.merge(gscanDF[['id', 'specificity']], on='id')
+
+    kmerDF['combined_score'] = rs3Weight * kmerDF['rs3_score_norm'] + gscanWeight * kmerDF['specificity'] 
+
+    kmerDF.sort_values(by='combined_score', inplace=True, ascending=False)
+
+    reducedKmerDF = kmerDF.assign(tscripts=kmerDF['tscripts'].str.split(',')).explode('tscripts')
+
+    # Step 2: Sort by "combined_score" within each transcript
+    reducedKmerDF.sort_values(['tscripts', 'combined_score'], ascending=[True, False], inplace=True)
+
+    # Step 3: Keep only the top 10 entries per transcript
+    reducedKmerDF = reducedKmerDF.groupby('tscripts').head(kmersPerTscript)
+
+    cols = reducedKmerDF.columns.tolist()  # get a list of all columns
+    cols.remove('tscripts')  # remove 'tscripts' from this list
+
+    finalKmerDF = reducedKmerDF.groupby(cols, as_index=False)['tscripts'].apply(','.join).reset_index()
+
+
+if __name__ == "__main__":
+    kmerDF = cleavageScoring(kmers = './tmp/loc_filtered_guides.tsv')
+
+    gscanTMPFile = './tmp/scored_guides_for_guidescan.csv'  
+
+    kmerDF[['id,sequence,pam,chromosome,position,sense']].to_csv(gscanTMPFile, sep='\t', index=False)
+    gscanDF = guideScanScoring(guideCSV = gscanTMPFile, guideIndex = '../chr21Index/chr21.fa.index', threads = 2, mismatches = 4)
+
+    finalKmerDF = combineScores(kmerDF, gscanDF, rs3Weight=0.67, gscanWeight=0.33)
+    
+
+    kmersPerTscript = 10
+    minSpecificity = 0.5
+    minRS3 = 0.5
