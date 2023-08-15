@@ -6,7 +6,8 @@ from pybedtools import BedTool
 from collections import defaultdict
 
 def create_db(input_file, db_file, is_gtf):
-    gffutils.create_db(input_file, db_file, disable_infer_genes=True, disable_infer_transcripts=True, merge_strategy='merge', force=True, keep_order=True, sort_attribute_values=True)
+    gffutils.create_db(input_file, db_file, disable_infer_genes=True, disable_infer_transcripts=True, \
+                       merge_strategy='merge', force=True, keep_order=True, sort_attribute_values=True)
 
 def get_constitutive_exons(db):
     const_exons = defaultdict(list)

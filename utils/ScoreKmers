@@ -105,8 +105,4 @@ if __name__ == "__main__":
     gscanDF = guideScanScoring(guideCSV = gscanTMPFile, guideIndex = '../chr21Index/chr21.fa.index', threads = 2, mismatches = 4)
 
     finalKmerDF = combineScores(kmerDF, gscanDF, rs3Weight=0.67, gscanWeight=0.33)
-    
 
-    kmersPerTscript = 10
-    minSpecificity = 0.5
-    minRS3 = 0.5

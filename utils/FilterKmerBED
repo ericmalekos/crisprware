@@ -19,7 +19,7 @@ def valid_range(percentile):
     """
     value = int(percentile)
     if value < 1 or value > 100:
-            raise argparse.ArgumentTypeError(f"{value} is an invalid value, it should be in range (0, 50)")
+            raise argparse.ArgumentTypeError(f"{value} is an invalid value, it should be in range (0, 100)")
     return value
 
 def parse_arguments():
@@ -44,9 +44,9 @@ def parse_arguments():
 
     parser.add_argument(
         "-f", "--feature",
-        help="Feature from third column of GTF/GFF to target. Ignored when --target is a BED file. [default: exon]",
+        help="Feature from third column of GTF/GFF to target. Ignored when --target is a BED file. [default: CDS]",
         type=str,
-        default="exon"
+        default="CDS"
     )
     
     parser.add_argument(
@@ -55,11 +55,17 @@ def parse_arguments():
         type=str
     )
 
+    # parser.add_argument(
+    #     "-i", "--filterIn",
+    #     help="BED/GTF/GFF of genomic regions to filter out.",
+    #     type=str
+    # )
+    
     parser.add_argument(
         "-p", "--percentile_range",
         help="Allowable range of kmers for each transcript and feature set, e.g. \n \
             '50' returns kmers in the 5'-most half of the relevant \n \
-            --feature for a transcript. Default settings returns kmers \n \
+            features for a transcript. Default settings returns kmers \n \
             anywhere in the exons for each transcript [default: 100]",
         type=valid_range,
         default="100"

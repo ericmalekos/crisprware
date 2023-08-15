@@ -4,7 +4,7 @@
     This script slightly modifies "generate_kmers.py" script from the Guidescan repo
 
     EX Usage:
-        GenerateKmerBED --pam NGG  --kmer-length 20  ./chr21Index/chr21.fa
+        GenerateKmer --pam NGG  --kmer-length 20  ./chr21Index/chr21.fa --discard_poly_T
 
 '''
 import pandas as pd
@@ -64,8 +64,8 @@ def parse_arguments():
         "--discard_poly_T",
         help="Whether to discard polyT (>TTT) kmers. \
             Recommend True for PolIII promoters [default: False]",
-        type=bool,
-        default=False
+        default=False,
+        action="store_true"
     )
 
     
