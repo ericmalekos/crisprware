@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+
+'''
+    This modifies "generate_kmers.py" script from the Guidescan repo
+
+    EX Usage:
+        ./crispomics/utils/GenerateKmersMultiprocess --pam NGG  --kmer_length 20  -f ./chr21Index/chr21.fa --discard_poly_T --threads 8
+
+        ./crispomics/utils/GenerateKmersMultiprocess --kmer_length 20  -f ./chr21Index/chr21.fa --discard_poly_T --threads 8 --locations_to_keep ./AnnotationFiles/NCAM2.gtf -o "NCAM_"
+
+
+'''
+from Bio import SeqIO
+import argparse
+from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor
+from pybedtools import BedTool
+from itertools import product
+import pandas as pd
+#import pandas as pd
+#from io import StringIO
+# from concurrent.futures import ThreadPoolExecutor
+# import multiprocessing
+
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Generates a set of kmers matching user specifications. \
+            Default settings are for active SpCas9 [--pam=NGG --active_site_offset_5=-4 --active_site_offset_3=-3 --kmer_length=20]"
+    )
+
+    parser.add_argument(
+        "-f", "--fasta",
+        type=str,
+        help="FASTA file to use as a reference for kmer generation.",
+        required=True
+    )
+
+    parser.add_argument(
+        "-p", "--pam",
+        type=str,
+        help="Protospacer adjacent motif to match.\
+             All IUPAC ambiguity codes are accepted as well as standard ATCG. [default: NGG]",
+        default="NGG"
+    )
+
+    parser.add_argument(
+        "-w", "--context_window",
+        nargs=2, 
+        type=int, 
+        help="Pass two, space-separated, integers to specifiy the nucleotide window around the kmer \
+            as '<upstream>' '<downstream>'. This can be used for downstream scoring, \
+            For Ruleset3 use -w 5 5 to obtain an appropriate score context. [default: 5 5]",
+        default=[5,5]
+    )
+
+    parser.add_argument(
+        "--gc_range",
+        nargs=2, 
+        type=int, 
+        help="Pass two, space-separated, integers to specifiy the percentile \
+         range of GC content e.g. '--gc_range 30 70'. [default: 0 100]",
+        default=[0,100]
+    )
+
+
+    parser.add_argument(
+        "-5", "--active_site_offset_5",
+        type=int,
+        help="Where cut occurs relative to PAM. \
+             To avoid error, use '=' sign when passing a negative number, \
+                 e.g. --active_site_offset_5=-1 [default: -4]",
+        default="-4"
+    )
+
+    parser.add_argument(
+        "-3", "--active_site_offset_3",
+        type=int,
+        help="Where cut occurs relative to PAM. [default: -3] \
+         To avoid error, use '=' sign when passing a negative number, \
+                 e.g. --active_site_offset_3=-3 [default: -4]",
+        default="-3"
+    )
+
+    parser.add_argument(
+        "-l", "--kmer_length",
+        help="Length of kmers to generate.",
+        type=int,
+        default=20
+    )
+
+    parser.add_argument(
+        "--min_chr_length",
+        help="Minimum chromosome length to consider for kmer generation.",
+        type=int,
+        default=1
+    )
+
+    parser.add_argument(
+        "--prefix",
+        help="Prefix to use for kmer identifiers.",
+        type=str,
+        default=""
+    )
+
+    parser.add_argument(
+        "--discard_poly_T",
+        help="Whether to discard polyT (>TTT) kmers. \
+            Recommend True for PolIII promoters [default: False]",
+        default=False,
+        action="store_true"
+    )
+
+    
+    parser.add_argument(
+        "--restriction_patterns",
+        help="Reject kmers with these restriction patterns. \
+            Also checks 5'flank+kmer+3'flank, and reverse comlement, if provided. \
+            For multiple values, separate by space. \
+            e.g. GCGGCCGC TCTAGA CACCTGC",
+        type=str,   
+        default="",
+        nargs='*'
+    )
+
+    parser.add_argument(
+        "--flank_5",
+        help="include the 5' context of the lentivirus vector. \
+            Used in conjunction with --restriction_patterns to \
+            remove incompatible kmers",
+        type=str,
+        default=""
+    )
+    parser.add_argument(
+        "--flank_3",
+        help="include the 3' context of the lentivirus vector. \
+            Used in conjunction with --restriction_patterns to \
+            remove incompatible kmers",
+        type=str,
+        default=""
+    )
+
+    parser.add_argument(
+        "-t", "--threads",
+        type=int,
+        help="Number of threads",
+        default=1,
+    )
+
+    parser.add_argument(
+        "--locations_to_keep",
+        help="List of BED/GTF files with coordinates in \
+            which the kmers desired. If the kmer cutsite does not intersect \
+            coordinates in these files they are discarded. Leave blank \
+            to keep all kmers. \
+            e.g. atac_peak.bed genes.gtf",
+        type=str,   
+        default="",
+        nargs='*'
+    )
+    
+    parser.add_argument(
+        "--join_operation",
+        type=str, 
+        choices=["merge", "intersect"], 
+        help="How to treat '--locations_to_keep' if multiple files are passed. \
+        Either 'merge' or 'intersect' can be used and work as described in Bedtools. \
+        If merged, a kmer will be kept if its cutsite intersects an entry in ANY of the files, if \
+        'intersect' the cutsite  must intersect an entry ALL files. [default: 'intersect']",
+        default="intersect"
+    )
+
+    parser.add_argument(
+        "--locations_to_discard",
+        help="List of BED/GTF files with coordinates where \
+            kmers should not target. If the kmer cutsite intersects \
+            coordinates in these files the kmer is discarded. Leave blank \
+            to keep all kmers. \
+            e.g. TSS.bed coding_genes.gtf",
+        type=str,   
+        default="",
+        nargs='*'
+    )
+
+    parser.add_argument(
+        "-o", "--output_prefix",
+        type=str,
+        help="Prefix for output files.",
+        default=""
+    )
+
+    parser.add_argument(
+        "--feature",
+        type=str,
+        help="For any GTF/GFF in '--locations_to_keep', only this \
+            feature will be used for determining appropriate kmers. \
+            The feature should match an entry in the third column of the GTF/GFF. \
+            [default: 'exon']",
+        default="exon"
+    )
+
+
+    return parser.parse_args()
+
+NUCS = list("ACTG")
+
+NUC_MAP = {"A": "T", "T": "A", "C": "G", "G": "C"}
+
+ambiguity_code_map = {
+        "R": "AG", "Y": "CT", "K": "GT", "M": "AC", 
+        "S": "GC", "W": "AT", "B": "CGT", "D": "AGT", 
+        "H": "ACT", "V": "ACG", "N": "ACGT"
+    }
+
+def map_ambiguous_sequence(sequence):
+    """
+    Map an ambiguous DNA sequence to all possible non-ambiguous sequences.
+
+    Parameters:
+    sequence (str): The ambiguous DNA sequence.
+
+    Returns:
+    list of str: A list of all possible non-ambiguous sequences.
+    """
+
+    # Generate a list of lists where each ambiguous nucleotide is replaced by a list of possible nucleotides
+    possible_nucleotides = [[nuc] if nuc not in ambiguity_code_map else list(ambiguity_code_map[nuc]) for nuc in sequence.upper()]
+
+    # Get all possible sequences by calculating the cartesian product of the lists of possible nucleotides
+    possible_sequences = [''.join(seq) for seq in product(*possible_nucleotides)]
+
+    return possible_sequences
+
+
+def revcom(dna):
+    return "".join(list(map(lambda n: NUC_MAP[n], list(dna)))[::-1])
+
+
+def find_kmers(args, pam, chrm, forward=True):
+    upstr, downstr = args.context_window[0], args.context_window[1]
+    index = 0
+    k = args.kmer_length
+    while True:
+        index = chrm.find(pam, index)
+
+        if index == -1:
+            break 
+
+        if forward:
+            kmer = chrm[index - k:index]
+            context = chrm[index - k - upstr:index + downstr]
+            position = index - k 
+        else:
+            kmer = chrm[index + len(pam):index + k + len(pam)]
+            context = chrm[index - (downstr-len(pam)):index + k + len(pam) + upstr]
+            position = index
+
+        index += 1
+
+        if position < 0:
+            continue
+
+        # Return the 1-indexed position to caller
+        yield kmer.upper(), position+1, context.upper()
+
+
+
+def remove_restricted(kmer, patterns, flank_5, flank_3):
+    context = flank_5 + kmer + flank_3
+    for pattern in patterns:
+        if (pattern in context) or (pattern in revcom(context)):
+            return True
+
+    return False
+
+def calculate_gc_content(sequence):
+    """Calculate the GC content of a nucleotide sequence."""
+    
+    gc_count = sequence.count('G') + sequence.count('C')
+    
+    total_count = len(sequence)
+    
+    # Calculate the GC content
+    gc_content = (gc_count / total_count) * 100
+    
+    return gc_content
+
+def include_kmer(args, kmer):
+    gc = calculate_gc_content(kmer["sequence"])
+
+    if gc < args.gc_range[0] or gc > args.gc_range[1]:
+        return False
+
+    elif args.discard_poly_T and "TTTT" in kmer["sequence"]:
+        return False
+
+    elif len(args.restriction_patterns) > 0 and \
+        remove_restricted(kmer["sequence"], args.restriction_patterns, \
+                            args.flank_5, args.flank_3):
+        return False    
+    
+    return True
+
+def output_bed_line(args, chrm_name, kmer):
+    """
+    Generate and print a BED format line for a given k-mer.
+
+    This function generates an identifier for the k-mer, prepares an entry string with necessary details, 
+    and calculates the cleavage site positions. The result is printed in a tab-separated BED format.
+
+    Parameters
+    ----------
+        See output from `find_all_kmers()`
+
+    Outputs
+    -------
+    Prints a line in BED format with the following fields:
+        - chromosome name
+        - cleavage site start position
+        - cleavage site end position
+        - guideScanEntry, a string with the k-mer identifier, sequence, PAM, chromosome name, position, 
+        and strand concatenated with commas. This is the original output of the generate_kmers.py script 
+        - score (fixed as "0" in this function)
+        - strand of the k-mer
+    """
+        
+    identifier = f"{args.prefix}{chrm_name}:{kmer['position']}:{kmer['sense']}"
+    guideScanEntry = ",".join([identifier, str(kmer['sequence']),
+           kmer['pam'], chrm_name,
+           str(kmer['position']), kmer['sense']])
+    
+    # Find the position of the Cleavage site 
+    if kmer['sense'] == "+":
+        cleavePos1 = kmer['position'] + kmer['length'] + args.active_site_offset_5 - 1
+        cleavePos2 = kmer['position'] + kmer['length'] + args.active_site_offset_3 - 1 
+    else:
+        cleavePos1 = kmer['position'] - args.active_site_offset_3 + len(args.pam) - 1
+        cleavePos2 = kmer['position'] - args.active_site_offset_5 + len(args.pam) - 1
+    
+    bedLine = [chrm_name, str(cleavePos1), str(cleavePos2), guideScanEntry, kmer['context'], kmer['sense']]
+    return "\t".join(bedLine)
+
+def process_pam(args, pam, chrm, pam_set, rev_pam_set):
+    results = []
+
+    context_length= args.kmer_length + args.context_window[0] + args.context_window[1]
+
+    #for pam in pam_set:  # <-- The change is here. Renaming p to pam
+    if pam in pam_set:
+        for kmer, pos, context in find_kmers(args, pam, chrm, forward=True):
+            if len(kmer) != args.kmer_length or len(context) != context_length: continue
+            if not all(nuc in NUCS for nuc in context): continue
+            if include_kmer(args, {"sequence" : kmer, "position" : pos, "pam" : pam,
+                    "sense": "+", "length" : args.kmer_length, "context": context}):
+                results.append(output_bed_line(args, record.name, 
+                                                {"sequence" : kmer, "position" : pos, "pam" : args.pam,
+                                                "sense": "+", "length" : args.kmer_length, "context": context}))
+    elif pam in rev_pam_set:
+        for kmer, pos, context in find_kmers(args, pam, chrm, forward=False):
+            if len(kmer) != args.kmer_length or len(context) != context_length: continue
+            if not all(nuc in NUCS for nuc in context): continue
+            kmer = revcom(kmer)
+            context = revcom(context)
+            if include_kmer(args, {"sequence" : kmer, "position" : pos, "pam" : pam,
+                    "sense": "-", "length" : args.kmer_length, "context": context}):
+                results.append(output_bed_line(args, record.name, 
+                                                {"sequence" : kmer, "position" : pos, "pam" : args.pam,
+                                                "sense": "-", "length" : args.kmer_length, "context": context}))
+    else:
+        raise ValueError(f"The PAM sequence '{pam}' is not found in the list of valid PAMs.")
+
+    return results
+
+def unique_chromosomes(input):
+    """
+    Return a set of unique chromosome IDs from a BED, GTF, or GFF file.
+    """
+
+    chroms = set()
+
+    if isinstance(input, BedTool):
+        chroms = {interval.chrom for interval in input}
+    else:
+        with open(input, 'r') as file:
+            for line in file:
+                # Skip comments, especially relevant for GTF and GFF
+                if line.startswith("#"):
+                    continue
+
+                fields = line.strip().split('\t')
+                chroms.add(fields[0].lower())
+
+    return chroms
+
+def merge_targets(files, gtf_feature="exon", operation="intersect"):
+    """
+    Intersect or merge an arbitrary number of GTF/GFF/BED files using pybedtools.
+
+    Parameters:
+    files (list): List of paths to GTF/GFF/BED files to merge
+
+    Returns:
+    BedTool: A BedTool object representing the merge of all files
+    """
+
+    if not files:
+        return None
+
+    extensions = ['.gtf', '.gff', '.gff2', '.gff3' ]
+
+    # Function to preprocess GTF/GFF files
+    def preprocess_file(file, gtf_feature):
+        extension = Path(file).suffix.lower()
+        if extension in extensions:
+            df = pd.read_csv(file, sep='\t', header=None, comment='#')
+            df = df[df[2] == gtf_feature]
+            return BedTool.from_dataframe(df)
+        else:
+            return BedTool(file)
+
+    # Initialize the result with the first preprocessed BED file
+    result = preprocess_file(files[0], gtf_feature)
+
+    # Iteratively intersect the result with each subsequent preprocessed BED file
+    if operation == "intersect":
+        for file in files[1:]:
+            result = result.intersect(preprocess_file(file, gtf_feature))
+    elif operation == "merge":
+        for file in files[1:]:
+            result = result.merge(preprocess_file(file, gtf_feature))
+    else:
+        raise ValueError(f"Pass either 'merge' or 'intersect' to operation=")
+
+    return result
+
+def write_results(final_targets, kmer_output_path, gscan_output_path=""):
+    # with open(kmer_output_path, 'a') as k, open(gscan_output_path, 'a') as g:
+    #     for line in final_targets:
+    #         k.write(line)
+    #         g.write(line.split("\t")[3] + "\n")
+    with open(kmer_output_path, 'a') as k:
+        for line in final_targets:
+            k.write(line)
+
+if __name__ == "__main__":
+    args = parse_arguments()
+
+    if args.active_site_offset_5 >= args.active_site_offset_3:
+        raise ValueError("--active_site_offset_5 should be less than --active_site_offset_3")
+    if args.gc_range[0] >= args.gc_range[1]:
+        raise ValueError("first --gc_range argument should be greater than second")
+
+    Path("./kmers/").mkdir(parents=True, exist_ok=True)
+    
+    kmer_output_path = "./kmers/" + args.output_prefix + "kmers.bed"
+    with open(kmer_output_path, 'w') as f:
+        f.write('#chr\tstart\tstop\tid,sequence,pam,chromosome,position,sense\tcontext\tstrand\n')
+
+    # gscan_output_path = "./kmers/"  + args.output_prefix + "gscan.csv"
+    # with open(gscan_output_path, 'w') as f:
+    #     f.write('id,sequence,pam,chromosome,position,sense\n')
+
+
+    #keep_or_discard = ""
+    chroms = set()
+    if not args.locations_to_keep:
+        print("\nWARNING: '--locations_to_keep' flag not set.\n \
+              All kmers across all fasta entries will be returned (except --locations_to_discard).\n \
+              This can lead to a very large intermediate file being saved to disk.\n")
+    
+    targets_to_keep = merge_targets(args.locations_to_keep, gtf_feature=args.feature , operation = args.join_operation)
+    targets_to_discard = merge_targets(args.locations_to_discard, gtf_feature=args.feature , operation = "merge")
+    #print(targets_to_discard)
+
+    if targets_to_keep and targets_to_discard:
+        targets_to_keep = targets_to_keep.subtract(targets_to_discard)
+        targets_to_discard = None
+
+    if targets_to_keep:
+        chroms = unique_chromosomes(targets_to_keep)
+
+    # List to collect all results
+
+    pam_set = map_ambiguous_sequence(args.pam)
+    rev_pam_set = list(map(revcom, pam_set))
+    
+    print(args.locations_to_keep)
+
+    with ProcessPoolExecutor(max_workers=args.threads) as executor:
+        for record in SeqIO.parse(args.fasta, "fasta"):
+            chr_results = []
+
+            #skip short chromosomes
+            if len(record) < args.min_chr_length:
+                continue
+            
+            #skip chromosomes not 
+            if chroms and record.id.lower() not in chroms:
+                continue
+
+            chrm = str(record.seq).upper()
+    
+
+            # Submitting each PAM for processing as separate task
+            futures = []
+            for pam in (pam_set + rev_pam_set):
+                futures.append(executor.submit(process_pam, args, pam, chrm, pam_set, rev_pam_set))
+
+            # Waiting for all futures to complete and collecting the results
+            for future in futures:
+                chr_results.extend(future.result())
+
+            bed_chr_results = BedTool("\n".join(chr_results), from_string=True)
+
+            bed_chr_results.saveas("test.bed")
+
+            #print(bed_chr_results)
+
+            if targets_to_keep:
+                final_targets = bed_chr_results.intersect(BedTool(targets_to_keep), u=True)
+            elif targets_to_discard:
+                final_targets = bed_chr_results.subtract(BedTool(targets_to_discard), A=True)
+            else:
+                final_targets = bed_chr_results
+
+            final_targets_str = [str(line) for line in final_targets]
+            write_results(final_targets_str, kmer_output_path)

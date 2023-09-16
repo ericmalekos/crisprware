@@ -3,16 +3,96 @@
 '''
     This script takes the output from FilterKmerBED and scores it
     with Ruleset3 and Guidescan2. 
+
+    ./crispomics/utils/ScoreKmers -k kmers/NCAM_kmers.bed -i chr21Index/ --tracr Chen2013 --threads 8
 '''
 
 import pandas as pd
 import subprocess
-import os
+import argparse
 from rs3.seq import predict_seq
 from scipy.stats import norm
+from pathlib import Path
+# import os
+# import time
 
-def guideScanScoring(guideCSV, guideIndex, threads = 2, mismatches = 4):
-    tempOutput = './tmp/guideScanOut.csv'
+def restricted_float(x):
+    x = float(x)
+    if x < 0.0 or x > 1.0:
+        raise argparse.ArgumentTypeError(f"{x} not in range [0.0, 1.0]")
+    return x
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Scores Kmers from GenerateKmers."
+    )
+
+    parser.add_argument(
+        "-k", "--kmer_bed",
+        type=str,
+        help="kmers.bed ouput of GenerateKmers.",
+        required=True
+    )
+
+    parser.add_argument(
+        "-i", "--guidescan2_index",
+        type=str,
+        help="Guidescan2 index against genome.",
+        required=True
+    )
+
+    parser.add_argument(
+        "--tracr", 
+        type=str,
+        default='Chen2013',
+        required=True, 
+        choices=['Hsu2013', 'Chen2013'], 
+        help="TracrRNA version for cleavage scoring. \
+            Either 'Hsu2013' or 'Chen2013', see https://github.com/gpp-rnd/rs3 \
+            for details."
+    )
+
+    parser.add_argument(
+        "--threads", 
+        type=int, 
+        default=2, 
+        help="Number of threads"
+    )
+    
+    parser.add_argument(
+        "--mismatches", 
+        type=int, 
+        default=4, 
+        help="Number of mismatches for Guidescan2 scoring"
+    )
+
+    parser.add_argument(
+        "-d", "--drop_duplicates", 
+        help="Drop exact duplicate kmers before scoring to save time [default: True]",
+        default=True,
+        action="store_false"
+    )
+
+    parser.add_argument(
+        "--min_rs3", 
+        type=restricted_float, 
+        default=0.1, 
+        help="Minimum cleavage score after scaling \
+            scores to [0,1]. Kmers with scores below this percentile \
+            will be dropped. [Default: 0.1]"
+    )
+
+    parser.add_argument(
+        "--chunk_size", 
+        type=int, 
+        default=100000, 
+        help="Number of kmers to hold in memory for cleavage scoring. Reduce if memory constrained. \
+        Increasing might increase speed of cleavage scoring step."
+    )
+
+    return parser.parse_args()
+
+def guideScanScoring(guideCSV, output, guideIndex, threads = 2, mismatches = 4):
     cmd = [
         'guidescan',
         'enumerate',
@@ -29,33 +109,31 @@ def guideScanScoring(guideCSV, guideIndex, threads = 2, mismatches = 4):
         '--kmers-file',
         guideCSV,
         '--output',
-        tempOutput,
+        output,
         guideIndex
     ]
 
     subprocess.run(cmd, check=True)
 
     # read the csv file
-    gscanDF = pd.read_csv(tempOutput)
+    gscanDF = pd.read_csv(output)
 
     # drop duplicate rows and keep the first occurrence
     gscanDF = gscanDF.drop_duplicates(subset='id', keep='first')
 
-    # write the result to a new csv file
+    gscanDF['specificity'] = gscanDF['specificity'].round(2)
+
     return gscanDF
 
-def cleavageScoring(kmers, minPercentile = 0.40, tracr = 'Hsu2013', threads = 2):
-#start_time = time.time()
-    kmerDF = pd.read_csv(kmers, delimiter='\t', \
-                         header=0 )
+def cleavageScoring(kmerDF, tracr = 'Chen2013', threads = 2, chunk_size = 2500000, minPercentile = 0):
+
+    print(f"\n\tBeginning RS3 cleavage scoring\n\tIf memory constrained reduce '--chunk_size'\n")
+
     # guideScores = predict_seq(sgRNAlist, sequence_tracr='Hsu2013', n_jobs=12)
 
     sgRNAlist = kmerDF['context'].tolist() # 1709 seconds chr21, 12 cores 
-    # test
-    #kmerDF = kmerDF.head(10005)
 
     # process the list in chunks to reduce memory footprint
-    chunk_size = 100000
 
     sgRNAScores = []
 
@@ -66,43 +144,64 @@ def cleavageScoring(kmers, minPercentile = 0.40, tracr = 'Hsu2013', threads = 2)
         sgRNAScores.extend(processed_sublist)
 
     kmerDF['rs3_z_score'] = sgRNAScores
-    kmerDF['rs3_percentile'] = norm.cdf(kmerDF['rs3_z_score'])
-    kmerDF['rs3_score_norm'] = (kmerDF['rs3_z_score'] - kmerDF['rs3_z_score'].min()) / (kmerDF['rs3_z_score'].max() - kmerDF['rs3_z_score'].min())
-    #kmerDF = kmerDF[kmerDF['rs3_percentile'] > minPercentile]
+    kmerDF['rs3_z_score'] = kmerDF['rs3_z_score'].round(3)
+    kmerDF['rs3_cdf'] = norm.cdf(kmerDF['rs3_z_score'])
+    kmerDF['rs3_cdf'] = kmerDF['rs3_cdf'].round(3)
 
-    kmerDF['id'] = kmerDF['id,sequence,pam,chromosome,position,sense'].str.split(',').str[0]
+    # The value of scaling in this way is questionable when only a subset of kmers are being used
+    kmerDF['rs3_score_norm'] = (kmerDF['rs3_z_score'] - kmerDF['rs3_z_score'].min()) / (kmerDF['rs3_z_score'].max() - kmerDF['rs3_z_score'].min())
+    kmerDF['rs3_score_norm'] = kmerDF['rs3_score_norm'].round(3)
+    kmerDF = kmerDF[kmerDF['rs3_cdf'] > minPercentile]
+
+    kmerDF = kmerDF.copy()  
+    kmerDF.loc[:, 'id'] = kmerDF['id,sequence,pam,chromosome,position,sense'].str.split(',').str[0]
+
 
     return kmerDF
 
-def combineScores(kmerDF, gscanDF, rs3Weight=0.67, gscanWeight=0.33):
-
-    kmerDF = kmerDF.merge(gscanDF[['id', 'specificity']], on='id')
-
-    kmerDF['combined_score'] = rs3Weight * kmerDF['rs3_score_norm'] + gscanWeight * kmerDF['specificity'] 
-
-    kmerDF.sort_values(by='combined_score', inplace=True, ascending=False)
-
-    reducedKmerDF = kmerDF.assign(tscripts=kmerDF['tscripts'].str.split(',')).explode('tscripts')
-
-    # Step 2: Sort by "combined_score" within each transcript
-    reducedKmerDF.sort_values(['tscripts', 'combined_score'], ascending=[True, False], inplace=True)
-
-    # Step 3: Keep only the top 10 entries per transcript
-    reducedKmerDF = reducedKmerDF.groupby('tscripts').head(kmersPerTscript)
-
-    cols = reducedKmerDF.columns.tolist()  # get a list of all columns
-    cols.remove('tscripts')  # remove 'tscripts' from this list
-
-    finalKmerDF = reducedKmerDF.groupby(cols, as_index=False)['tscripts'].apply(','.join).reset_index()
-
 
 if __name__ == "__main__":
-    kmerDF = cleavageScoring(kmers = './tmp/loc_filtered_guides.tsv')
+    
+    args = parse_arguments()
 
-    gscanTMPFile = './tmp/scored_guides_for_guidescan.csv'  
+    Path("./kmers/scoredkmers/tmp/").mkdir(parents=True, exist_ok=True)
+    output_path = "./kmers/scoredkmers/"
+    tmp_path = "./kmers/scoredkmers/tmp/"
 
-    kmerDF[['id,sequence,pam,chromosome,position,sense']].to_csv(gscanTMPFile, sep='\t', index=False)
-    gscanDF = guideScanScoring(guideCSV = gscanTMPFile, guideIndex = '../chr21Index/chr21.fa.index', threads = 2, mismatches = 4)
+    kmerDF = pd.read_csv(args.kmer_bed, delimiter='\t', header=0 )
 
-    finalKmerDF = combineScores(kmerDF, gscanDF, rs3Weight=0.67, gscanWeight=0.33)
+    if args.drop_duplicates:
+        print(f'\n\tBefore dropping duplicates:\t{len(kmerDF)}')
+        kmerDF['kmer'] = kmerDF.iloc[:, 3].str.split(',').str[1]
 
+        # Step 3 & 4: Find unique and duplicate k-mers, then filter the DataFrame to keep only the unique ones
+        unique_mask = ~kmerDF['kmer'].duplicated(keep=False)
+        kmerDF = kmerDF[unique_mask]
+
+        print(f'\tAfter dropping duplicates:\t{len(kmerDF)}\n')
+
+    kmerDF = cleavageScoring(kmerDF = kmerDF, tracr = args.tracr, chunk_size=args.chunk_size, threads = args.threads, minPercentile = args.min_rs3)
+    
+    print(f'\n\tAfter dropping RS3 CDF-transformed cleavage scores below {args.min_rs3}:\t{len(kmerDF)}\n')
+
+    #gscanTMPFile = './kmers/scored_guides_for_guidescan.csv'
+
+    gscanInput = tmp_path + "gscanInput.csv"
+
+    kmerDF[['id,sequence,pam,chromosome,position,sense']].to_csv(gscanInput, sep='\t', index=False)
+    
+    gscanOut = tmp_path + "gscanOut.csv"
+
+    gscanDF = guideScanScoring(guideCSV = gscanInput, output = gscanOut, guideIndex = args.guidescan2_index, threads = args.threads, mismatches = args.mismatches)
+
+    kmerDF = kmerDF.merge(gscanDF[['id', 'specificity']], on='id', )
+    
+    kmerDF[['sequence', 'pam']] = kmerDF['id,sequence,pam,chromosome,position,sense'].str.split(',', expand=True).iloc[:, 1:3]
+
+    kmerDF = kmerDF.drop(['id,sequence,pam,chromosome,position,sense', 'id'], axis = 1)
+    
+    kmerDF = kmerDF[['#chr', 'start', 'stop', 'sequence', 'pam', 'strand', 'context',
+                    'rs3_z_score', 'rs3_cdf','rs3_score_norm', 'specificity']]
+
+
+    kmerDF.to_csv(output_path + "AllScoredGuides.tsv", sep="\t", index=False)

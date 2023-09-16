@@ -4,7 +4,7 @@
     This script slightly modifies "generate_kmers.py" script from the Guidescan repo
 
     EX Usage:
-        GenerateKmer --pam NGG  --kmer-length 20  ./chr21Index/chr21.fa --discard_poly_T
+        GenerateKmers --pam NGG  --kmer-length 20  ./chr21Index/chr21.fa --discard_poly_T
 
 '''
 import pandas as pd
@@ -249,6 +249,17 @@ def remove_restricted(kmer, patterns, flank_5, flank_3):
 
     return False
 
+def include_kmer(argsIn, kmer):
+    if args.discard_poly_T and "TTTT" in kmer["sequence"]:
+        return False
+
+    elif len(args.restriction_patterns) > 0 and \
+        remove_restricted(kmer["sequence"], args.restriction_patterns, \
+                            args.flank_5, args.flank_3):
+        return False    
+    
+    return True
+
 if __name__ == "__main__":
     args = parse_arguments()
 
@@ -266,39 +277,21 @@ if __name__ == "__main__":
             with open(output, 'w') as f:
                 for kmer in find_all_kmers(args.pam, args.kmer_length, record.seq):
 
-                    if args.discard_poly_T and "TTTT" in kmer["sequence"]:
-                        continue
-
-                    elif len(args.restriction_patterns) > 0 and \
-                        remove_restricted(kmer["sequence"], args.restriction_patterns, \
-                                          args.flank_5, args.flank_3):
-                        continue    
-
-                    else:
+                    if include_kmer(argsIn = args, kmer = kmer):
                         f.write(output_bed_line(args.prefix, record.name, kmer) + "\n")
 
-    # If exact matches are removed at this stage, output only unique kmers are retained
-    # implementation is quick but memory intensive
-    else:
-        allKmers = StringIO()
-        for record in SeqIO.parse(args.fasta, "fasta"):
-            if len(record) < args.min_chr_length:
-                continue
+    # # implementation is quick but memory intensive
+    # else:
+    #     allKmers = StringIO()
+    #     for record in SeqIO.parse(args.fasta, "fasta"):
+    #         if len(record) < args.min_chr_length:
+    #             continue
 
-            for kmer in find_all_kmers(args.pam, args.kmer_length, record.seq):
-
-                if args.discard_poly_T and "TTTT" in kmer["sequence"]:
-                    continue
-
-                elif len(args.restriction_patterns) > 0 and \
-                    remove_restricted(kmer["sequence"], args.restriction_patterns, \
-                                        args.flank_5, args.flank_3):
-                    continue    
-
-                else:
-                    allKmers.write(output_bed_line(args.prefix, record.name, kmer) + "\n")
+    #         for kmer in find_all_kmers(args.pam, args.kmer_length, record.seq):
+    #             if include_kmer(argsIn = args, kmer = kmer):
+    #                 allKmers.write(output_bed_line(args.prefix, record.name, kmer) + "\n")
         
-        allKmers.seek(0)
+    #     allKmers.seek(0)
         
-        reducedKmers = remove_exact_matches(pd.read_csv(allKmers, sep=',', header=None))
-        reducedKmers.to_csv(output,index=None, header=None)
+    #     reducedKmers = remove_exact_matches(pd.read_csv(allKmers, sep=',', header=None))
+    #     reducedKmers.to_csv(output,index=None, header=None)
