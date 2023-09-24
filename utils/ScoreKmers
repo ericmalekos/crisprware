@@ -35,10 +35,11 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "-i", "--guidescan2_index",
+        "-i", "--guidescan2_indices",
         type=str,
-        help="Guidescan2 index against genome.",
-        required=True
+        help="One or more, space-separate Guidescan2 indices.",
+        required=True,
+        nargs='*'
     )
 
     parser.add_argument(
@@ -86,13 +87,20 @@ def parse_arguments():
         "--chunk_size", 
         type=int, 
         default=100000, 
-        help="Number of kmers to hold in memory for cleavage scoring. Reduce if memory constrained. \
-        Increasing might increase speed of cleavage scoring step."
+        help="Number of kmers to hold in memory for cleavage scoring and off-target filtering. \
+        Reduce if memory constrained. Increasing can improve runtime."
     )
 
+    parser.add_argument(
+        "-o", "--output_prefix",
+        help="Prefix to use for files.",
+        type=str,
+        default=""
+    )
     return parser.parse_args()
 
 def guideScanScoring(guideCSV, output, guideIndex, threads = 2, mismatches = 4):
+    
     cmd = [
         'guidescan',
         'enumerate',
@@ -122,6 +130,12 @@ def guideScanScoring(guideCSV, output, guideIndex, threads = 2, mismatches = 4):
     gscanDF = gscanDF.drop_duplicates(subset='id', keep='first')
 
     gscanDF['specificity'] = gscanDF['specificity'].round(2)
+
+    db_name = Path(guideIndex).parts[-1]
+
+    gscanDF.rename(columns={'specificity': 'specificity_' + db_name}, inplace=True)
+
+    gscanDF = gscanDF.drop(['sequence', 'match_chrm',  'match_position', 'match_strand',  'match_distance'], axis = 1)
 
     return gscanDF
 
@@ -164,9 +178,15 @@ if __name__ == "__main__":
     
     args = parse_arguments()
 
-    Path("./kmers/scoredkmers/tmp/").mkdir(parents=True, exist_ok=True)
-    output_path = "./kmers/scoredkmers/"
-    tmp_path = "./kmers/scoredkmers/tmp/"
+    # kmer_output_path = "./kmers/" + args.output_prefix + "kmers.bed"
+    # p = Path(kmer_output_path)
+    # Path("./" + "/".join(p.parts[:-1])).mkdir(parents=True, exist_ok=True)
+
+    output_path = "./kmers/scoredkmers/" + args.output_prefix
+    tmp_path = "./kmers/scoredkmers/tmp/"  + args.output_prefix
+    o, t = Path(output_path), Path(tmp_path)
+    Path("./" + "/".join(o.parts[:-1])).mkdir(parents=True, exist_ok=True)
+    Path("./" + "/".join(t.parts[:-1])).mkdir(parents=True, exist_ok=True)
 
     kmerDF = pd.read_csv(args.kmer_bed, delimiter='\t', header=0 )
 
@@ -184,24 +204,35 @@ if __name__ == "__main__":
     
     print(f'\n\tAfter dropping RS3 CDF-transformed cleavage scores below {args.min_rs3}:\t{len(kmerDF)}\n')
 
-    #gscanTMPFile = './kmers/scored_guides_for_guidescan.csv'
+    num_chunks = len(kmerDF) // args.chunk_size + (1 if len(kmerDF) % args.chunk_size else 0)
+    guidescan_dfs = []
 
-    gscanInput = tmp_path + "gscanInput.csv"
+    for gscanIndex in args.guidescan2_indices:
+        print(f"\n\tBeginning Guidescan2 specificity scoring against " + gscanIndex + "\n\tIf memory constrained reduce '--chunk_size'\n")
+        guidescan_chunk_dfs = []
+        for i, (_, chunk) in enumerate(kmerDF.groupby(kmerDF.index // args.chunk_size)):
+            input = tmp_path + f'gscanInput.{i + 1}.csv'
+            output = input.replace("Input", "Output")
+            chunk[['id,sequence,pam,chromosome,position,sense']].to_csv(input, sep='\t', index=False)
+            #guidescan_files.append(tuple(input, output))
+            guidescan_chunk_dfs.append(guideScanScoring(guideCSV = input, output = output, 
+                                                            guideIndex = gscanIndex, 
+                                                            threads = args.threads, 
+                                                            mismatches = args.mismatches))
+        guidescan_dfs.append(pd.concat(guidescan_chunk_dfs, ignore_index=True))
 
-    kmerDF[['id,sequence,pam,chromosome,position,sense']].to_csv(gscanInput, sep='\t', index=False)
-    
-    gscanOut = tmp_path + "gscanOut.csv"
 
-    gscanDF = guideScanScoring(guideCSV = gscanInput, output = gscanOut, guideIndex = args.guidescan2_index, threads = args.threads, mismatches = args.mismatches)
-
-    kmerDF = kmerDF.merge(gscanDF[['id', 'specificity']], on='id', )
+    for df in guidescan_dfs:
+        kmerDF = kmerDF.merge(df, on='id', how='inner')
     
     kmerDF[['sequence', 'pam']] = kmerDF['id,sequence,pam,chromosome,position,sense'].str.split(',', expand=True).iloc[:, 1:3]
 
     kmerDF = kmerDF.drop(['id,sequence,pam,chromosome,position,sense', 'id'], axis = 1)
     
-    kmerDF = kmerDF[['#chr', 'start', 'stop', 'sequence', 'pam', 'strand', 'context',
-                    'rs3_z_score', 'rs3_cdf','rs3_score_norm', 'specificity']]
+    desired_cols = ['#chr', 'start', 'stop', 'sequence', 'pam', 'strand', 'context',
+                   'rs3_z_score', 'rs3_cdf','rs3_score_norm']
+    specificity_cols = [col for col in kmerDF.columns if "specificity" in col]
 
+    kmerDF = kmerDF[desired_cols + specificity_cols]
 
     kmerDF.to_csv(output_path + "AllScoredGuides.tsv", sep="\t", index=False)

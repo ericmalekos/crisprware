@@ -771,7 +771,7 @@ if __name__ == "__main__":
     output_bed = gtf_to_tss_bed(GTF_path, upstream=args.tss_window[0], downstream=args.tss_window[1])
 
 
-    print('\tSaving TSS:\t' + TSS_bed)
+    print('\n\tSaving TSS:\t' + TSS_bed)
     with open(TSS_bed, 'w') as f:
         for entry in output_bed:
             f.write(entry + '\n')
