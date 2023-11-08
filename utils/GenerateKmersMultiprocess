@@ -61,8 +61,8 @@ def parse_arguments():
         nargs=2, 
         type=int, 
         help="Pass two, space-separated, integers to specifiy the percentile \
-         range of GC content e.g. '--gc_range 30 70'. [default: 0 100]",
-        default=[0,100]
+         range of GC content e.g. '--gc_range 30 70'. [default: 25 75]",
+        default=[25,75]
     )
 
 
@@ -437,10 +437,22 @@ def merge_targets(files, gtf_feature="exon", operation="intersect"):
 
     return result
 
-def write_results(final_targets, kmer_output_path):
+def reverse_cut_site_offset(bedline, args):
+    bedlist = bedline.split("\t")
+    if bedlist[-1].strip() == "+":
+
+        bedlist[1] = str(int(bedlist[1]) - args.kmer_length - args.active_site_offset_5)
+        bedlist[2] = str(int(bedlist[2]) - args.active_site_offset_3) 
+    else:
+        bedlist[1] = str(int(bedlist[1]) + args.active_site_offset_5 + 1)
+        bedlist[2] = str(int(bedlist[2]) + args.kmer_length + args.active_site_offset_3 - 1) 
+    
+    return "\t".join(bedlist)
+
+def write_results(final_targets, kmer_output_path, args):
     with open(kmer_output_path, 'a') as k:
         for line in final_targets:
-            k.write(line)
+            k.write(reverse_cut_site_offset(line, args))
 
 def get_chromosome_boundaries(bed_obj):
     """x
@@ -531,14 +543,14 @@ if __name__ == "__main__":
         for record in SeqIO.parse(args.fasta, "fasta"):
             chr_results = []
 
+            #skip chromosomes not 
+            if keep_chroms and record.id not in keep_chroms:
+                continue
+
             print("\tProcessing " + record.id)
             #skip short chromosomes
             if len(record.seq) < args.min_chr_length:
                 print("\tSkipping record, too short:\t" + record.id)
-                continue
-            
-            #skip chromosomes not 
-            if keep_chroms and record.id not in keep_chroms:
                 continue
 
             start, end = keep_chroms[record.id]
@@ -574,4 +586,4 @@ if __name__ == "__main__":
                 final_targets = bed_chr_results
 
             final_targets_str = [str(line) for line in final_targets]
-            write_results(final_targets_str, kmer_output_path)
+            write_results(final_targets_str, kmer_output_path, args)

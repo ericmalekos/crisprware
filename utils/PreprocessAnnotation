@@ -93,7 +93,7 @@ def parse_arguments():
     parser.add_argument(
         "-m", "--model", 
         type=str, 
-        choices=["metagene", "consensus", "none"], 
+        choices=["metagene", "consensus", "none", "both"], 
         help="Whether to collapse gene isoforms using the 'metagene' or 'consensus' model.",
         default="none",
     )   
@@ -102,7 +102,7 @@ def parse_arguments():
         "-w ", "--tss_window", 
         nargs=2, 
         type=int, 
-        default=[500, 500],  # Setting the default value to a list of two integers
+        default=None,  # Setting the default value to a list of two integers
         help="Pass two, space-separated, integers to specifiy the bp window around the TSS \
             as '<upstream>' '<downstream>'. e.g. --tss_window 250 150"
     )
@@ -377,41 +377,30 @@ def create_constitutive_model(input_file):
 
     for gene_id, data in genes.items():
         cds_transcripts = get_transcripts_with_cds(data['CDS'])
-
         all_transcripts = set(data['exons'].keys())
-        overlap_check_transcripts = cds_transcripts if cds_transcripts else all_transcripts
+        
+        if not cds_transcripts:  # If no transcripts have CDS, continue to next gene
+            continue
 
         # Process exons
         for transcript, exons in data['exons'].items():
             for exon in exons:
-                consensus = overlapping_regions_for_transcripts(exon, overlap_check_transcripts, data['exons'])
+                consensus = overlapping_regions_for_transcripts(exon, all_transcripts, data['exons'])
                 if consensus:
                     consensus_exons[gene_id] = consensus_exons.get(gene_id, set())
                     consensus_exons[gene_id].add(consensus)
 
-        
-        # Avoid outputting redundant CDS entries
-        if cds_transcripts:
-            for transcript, cds_coords in data['CDS_coords'].items():
-                for cds in cds_coords:
-                    # Check if this CDS overlaps with a consensus exon
-                    cds_as_consensus = overlapping_regions_for_transcripts(cds, overlap_check_transcripts, data['exons'])
-                    if cds_as_consensus:
-                        consensus_CDS[gene_id] = consensus_CDS.get(gene_id, set())
-                        # Filter out redundant CDS: A CDS within another CDS
-                        consensus_CDS[gene_id] = {
-                            existing_cds for existing_cds in consensus_CDS[gene_id] 
-                            if not is_inside(existing_cds, cds_as_consensus)
-                        }
-                        if all(not is_inside(cds_as_consensus, existing_cds) for existing_cds in consensus_CDS[gene_id]):
-                            consensus_CDS[gene_id].add(cds_as_consensus)
+        # Process CDS
+        for transcript, cds_coords in data['CDS_coords'].items():
+            for cds in cds_coords:
+                cds_consensus = overlapping_regions_for_transcripts(cds, cds_transcripts, data['CDS_coords'])
+                if cds_consensus:
+                    consensus_CDS[gene_id] = consensus_CDS.get(gene_id, set())
+                    consensus_CDS[gene_id].add(cds_consensus)
 
     # Phase 3: save output
     output_str = generate_output_str(genes, consensus_exons, consensus_CDS)
-    
     genes_without_consensus = set(genes.keys()) - set(consensus_exons.keys())
-    
-    #genes_without_consensus_out = "genes_without_consensus_" + input_file.split("/")[-1].split(".")[0] + ".txt"
 
     return output_str, genes_without_consensus
         
@@ -672,6 +661,24 @@ def gtf_to_tss_bed(input_gtf, upstream=500, downstream=500):
 
     return tss_entries
 
+def save_tss_bed(args, GTF_path):
+
+    if args.model != "none":
+        print('\n\t\tWARNING: TSSs are found after "metagene" or "consensus" model creation')
+        print('\t\tThese TSSs should be carefully examined in a genome browser because alternate')
+        print('\t\tfirst exon usage can make these results extremely non-optimal')
+
+    output_bed = gtf_to_tss_bed(GTF_path, upstream=args.tss_window[0], downstream=args.tss_window[1])
+
+    TSS_bed = './annotations/TSS_' + '.'.join(GTF_file.split('.')[:-1]) + '.bed'
+
+
+    print('\n\tSaving TSS:\t' + TSS_bed + '\n')
+    with open(TSS_bed, 'w') as f:
+        for entry in output_bed:
+            f.write(entry + '\n')
+
+
 
 if __name__ == "__main__":
 
@@ -681,6 +688,8 @@ if __name__ == "__main__":
 
     GTF_path = args.gtf
     GTF_file = args.gtf.split('/')[-1]
+
+    print(GTF_path,GTF_file)
 
     print('\n')
 
@@ -740,20 +749,27 @@ if __name__ == "__main__":
                 f.write(line)
 
     if args.model != "none":
-        if args.model == "metagene":
-            output_str = create_metagene_model(GTF_path)
+        cur_GTF_file = GTF_file
+        cur_GTF_path = GTF_path
+        if args.model == "metagene" or args.model == "both":
+            output_str = create_metagene_model(cur_GTF_path)
 
-            GTF_file = 'meta_' + '.'.join(GTF_file.split('.')[:-1]) + '.gtf'
+            GTF_file = 'meta_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
             GTF_path = './annotations/' + GTF_file
             print('\n\tSaving metagene GTF to:\t\t' + GTF_path)
             with open(GTF_path, 'w') as f:
                 f.write(output_str)
+            
+            if args.tss_window:
+                save_tss_bed(args, GTF_path = GTF_path)
 
-        elif args.model == "consensus":
-            output_str, genes_without_consensus = create_constitutive_model(GTF_path)
+        if args.model == "consensus" or args.model == "both":
 
-            GTF_file = 'consensus_' + '.'.join(GTF_file.split('.')[:-1]) + '.gtf'
+            output_str, genes_without_consensus = create_constitutive_model(cur_GTF_path)
+
+            GTF_file = 'consensus_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
             GTF_path = './annotations/' + GTF_file
+
             print('\tSaving consensus GTF to: ' + GTF_path)
             with open(GTF_path, 'w') as f:
                 f.write(output_str)
@@ -766,15 +782,11 @@ if __name__ == "__main__":
             with open(genes_without_consensus_out, 'w') as f:
                 f.writelines(gene_id + "\n" for gene_id in genes_without_consensus)
 
+            if args.tss_window:
+                save_tss_bed(args, GTF_path = GTF_path)
 
-    TSS_bed = './annotations/TSS_' + '.'.join(GTF_file.split('.')[:-1]) + '.bed'
-    output_bed = gtf_to_tss_bed(GTF_path, upstream=args.tss_window[0], downstream=args.tss_window[1])
-
-
-    print('\n\tSaving TSS:\t' + TSS_bed)
-    with open(TSS_bed, 'w') as f:
-        for entry in output_bed:
-            f.write(entry + '\n')
+    elif args.model != "none" and args.tss_window:
+        save_tss_bed(args, GTF_path = GTF_path)
 
     print('\n')
 

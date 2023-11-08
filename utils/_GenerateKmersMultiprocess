@@ -17,6 +17,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pybedtools import BedTool
 from itertools import product
 import pandas as pd
+from os import path
 #import pandas as pd
 #from io import StringIO
 # from concurrent.futures import ThreadPoolExecutor
@@ -341,34 +342,32 @@ def output_bed_line(args, chrm_name, kmer):
     bedLine = [chrm_name, str(cleavePos1), str(cleavePos2), guideScanEntry, kmer['context'], kmer['sense']]
     return "\t".join(bedLine)
 
-def process_pam(args, pam, chrm, start, end, pam_set, rev_pam_set):
+def process_pam(args, pam, record, start, end, pam_set, rev_pam_set):
     results = []
 
     context_length= args.kmer_length + args.context_window[0] + args.context_window[1]
+    chrm_seq = str(record.seq).upper()
+    chrm_name = record.id
 
-    #for pam in pam_set:  # <-- The change is here. Renaming p to pam
+    #Process pams
     if pam in pam_set:
-        start += abs(args.active_site_offset_5)
-        end += abs(args.active_site_offset_3) + len(pam) - 2
-        for kmer, pos, context in find_kmers(args=args, pam=pam, chrm=chrm, start=start, end=end, forward=True):
+        for kmer, pos, context in find_kmers(args=args, pam=pam, chrm=chrm_seq, start=start, end=end, forward=True):
             if len(kmer) != args.kmer_length or len(context) != context_length: continue
             if not all(nuc in NUCS for nuc in context): continue
             if include_kmer(args, {"sequence" : kmer, "position" : pos, "pam" : pam,
                     "sense": "+", "length" : args.kmer_length, "context": context}):
-                results.append(output_bed_line(args, record.name, 
+                results.append(output_bed_line(args, chrm_name,
                                                 {"sequence" : kmer, "position" : pos, "pam" : args.pam,
                                                 "sense": "+", "length" : args.kmer_length, "context": context}))
     elif pam in rev_pam_set:
-        start -= abs(args.active_site_offset_3) + len(pam)
-        end -= (abs(args.active_site_offset_5) + len(pam))
-        for kmer, pos, context in find_kmers(args=args, pam=pam, chrm=chrm, start=start, end=end, forward=False):
+        for kmer, pos, context in find_kmers(args=args, pam=pam, chrm=chrm_seq, start=start, end=end, forward=False):
             if len(kmer) != args.kmer_length or len(context) != context_length: continue
             if not all(nuc in NUCS for nuc in context): continue
             kmer = revcom(kmer)
             context = revcom(context)
             if include_kmer(args, {"sequence" : kmer, "position" : pos, "pam" : pam,
                     "sense": "-", "length" : args.kmer_length, "context": context}):
-                results.append(output_bed_line(args, record.name, 
+                results.append(output_bed_line(args, chrm_name, 
                                                 {"sequence" : kmer, "position" : pos, "pam" : args.pam,
                                                 "sense": "-", "length" : args.kmer_length, "context": context}))
     else:
@@ -393,7 +392,7 @@ def unique_chromosomes(input):
                     continue
 
                 fields = line.strip().split('\t')
-                chroms.add(fields[0].lower())
+                chroms.add(fields[0])
 
     return chroms
 
@@ -407,8 +406,6 @@ def merge_targets(files, gtf_feature="exon", operation="intersect"):
     Returns:
     BedTool: A BedTool object representing the merge of all files
     """
-
-    print('\n\tMerging target files')
 
     if not files:
         return None
@@ -443,46 +440,53 @@ def merge_targets(files, gtf_feature="exon", operation="intersect"):
 def write_results(final_targets, kmer_output_path):
     with open(kmer_output_path, 'a') as k:
         for line in final_targets:
-            k.write(line + "\n")
+            k.write(line)
 
-def intervals_from_bed(bed_input):
+def get_chromosome_boundaries(bed_obj):
+    """x
+    Returns a dictionary with chromosomes as keys and a tuple (smallest_start, largest_end) as values.
+
+    Parameters:
+    - bed_obj (pybedtools.BedTool): A BedTool object containing intervals.
+
+    Returns:
+    - dict: Chromosomes as keys and boundaries as values.
     """
-    Parse a BedTool object and return a dict of intervals.
-    """
-    intervals = dict()
-
-    if not isinstance(bed_input, BedTool):
-        raise ValueError("Invalid input type. Expected a BedTool object.")
-
-    merged_intervals = bed_input.sort().merge()
-
-    for interval in merged_intervals:
-        chrom = interval.chrom
-        start = interval.start
-        end = interval.end
-        if chrom not in intervals:
-            intervals[chrom] = [(start, end)]
-        else:
-            intervals[chrom].append((start, end))
-
-    #print(intervals)
-    return intervals
-
-def fasta_to_bedtool(fasta_path):
-    """
-    Convert a FASTA file to a pybedtools BedTool object.
-    """
-    intervals = []
-    for record in SeqIO.parse(fasta_path, "fasta"):
-        # Extract the chromosome name (first part of the header)
-        chrom = record.id.lower()
-        
-        # Extract the length of the sequence
-        length_seq = len(record.seq)
-        # Append to the intervals list
-        intervals.append(chrom + '\t0\t' + str(length_seq))
     
-    return BedTool("\n".join(intervals), from_string=True)
+    # Sort the BedTool object
+    sorted_bed = bed_obj.sort()
+
+    # Dictionary to store results
+    boundaries = {}
+
+    # Variables to store current chromosome data
+    current_chrom = None
+    smallest_start = None
+    largest_end = None
+
+    # Iterate over intervals in the sorted BedTool object
+    for interval in sorted_bed:
+        if current_chrom is None:
+            # First chromosome being processed
+            current_chrom = interval.chrom
+            smallest_start = interval.start
+            largest_end = interval.end
+        elif current_chrom == interval.chrom:
+            # Update the largest end for the current chromosome
+            largest_end = max(largest_end, interval.end)
+        else:
+            # Save results for the completed chromosome
+            boundaries[current_chrom] = (smallest_start, largest_end)
+
+            # Start processing the next chromosome
+            current_chrom = interval.chrom
+            smallest_start = interval.start
+            largest_end = interval.end
+
+    # Save results for the last chromosome
+    boundaries[current_chrom] = (smallest_start, largest_end)
+
+    return boundaries
 
 if __name__ == "__main__":
     args = parse_arguments()
@@ -491,78 +495,83 @@ if __name__ == "__main__":
         raise ValueError("--active_site_offset_5 should be less than --active_site_offset_3")
     if args.gc_range[0] >= args.gc_range[1]:
         raise ValueError("first --gc_range argument should be greater than second")
-
-    Path("./kmers/").mkdir(parents=True, exist_ok=True)
     
     kmer_output_path = "./kmers/" + args.output_prefix + "kmers.bed"
+    p = Path(kmer_output_path)
+    Path("./" + "/".join(p.parts[:-1])).mkdir(parents=True, exist_ok=True)
+
     with open(kmer_output_path, 'w') as f:
         f.write('#chr\tstart\tstop\tid,sequence,pam,chromosome,position,sense\tcontext\tstrand\n')
 
-    targets_to_keep, targets_to_discard, targets_to_include_intervals = None, None, None
-
-    chroms = set()
+    keep_chroms = None
     if not args.locations_to_keep:
-        print("\nWARNING: '--locations_to_keep' flag not set.\n \
+        print("\n\tWARNING: '--locations_to_keep' flag not set.\n \
               All kmers across all fasta entries will be returned (except --locations_to_discard).\n \
               This can lead to a very large intermediate file being saved to disk.\n")
-    else:
-        # merge keep locations
-        targets_to_keep = merge_targets(args.locations_to_keep, gtf_feature=args.feature, operation = args.join_operation)
     
-    # merge discard locations
-    if args.locations_to_discard:
-        targets_to_discard = merge_targets(args.locations_to_discard, gtf_feature=args.feature, operation = "merge")
+    targets_to_keep = merge_targets(args.locations_to_keep, gtf_feature=args.feature , operation = args.join_operation)
+    targets_to_discard = merge_targets(args.locations_to_discard, gtf_feature=args.feature , operation = "merge")
 
-    # 
     if targets_to_keep and targets_to_discard:
         targets_to_keep = targets_to_keep.subtract(targets_to_discard)
         targets_to_discard = None
-        targets_to_include_intervals = intervals_from_bed(targets_to_keep)
-    elif not targets_to_keep and targets_to_discard:
-        targets_to_keep = fasta_to_bedtool(args.fasta).subtract(targets_to_discard)
-        targets_to_discard = None
-        targets_to_include_intervals = intervals_from_bed(targets_to_keep)
-    elif targets_to_keep and not targets_to_discard:
-        targets_to_include_intervals = intervals_from_bed(targets_to_keep)
+
+    # if targets_to_keep:
+    #     chroms = unique_chromosomes(targets_to_keep)
+
+    keep_chroms = get_chromosome_boundaries(targets_to_keep)
+    print("\n\tChromosomes for which to find targets:\t" + " ".join(keep_chroms.keys()))
 
     pam_set = map_ambiguous_sequence(args.pam)
     rev_pam_set = list(map(revcom, pam_set))
-
-    if targets_to_keep:
-        chroms = unique_chromosomes(targets_to_keep)
+    
+    #print(args.locations_to_keep)
 
     with ProcessPoolExecutor(max_workers=args.threads) as executor:
         for record in SeqIO.parse(args.fasta, "fasta"):
             chr_results = []
 
+            #skip chromosomes not 
+            if keep_chroms and record.id not in keep_chroms:
+                continue
+
+            print("\tProcessing " + record.id)
             #skip short chromosomes
             if len(record.seq) < args.min_chr_length:
-                continue
-            
-            #skip chromosomes not in targets_to_keep
-            if chroms and record.id.lower() not in chroms:
+                print("\tSkipping record, too short:\t" + record.id)
                 continue
 
-            chrm = str(record.seq).upper()
+            start, end = keep_chroms[record.id]
+            start -= 20
+            start = max(start, 0)
+            end += 20
+            end = min(end, len(record.seq))
 
-            # Extract intervals specific to this chromosome
-            #print(targets_to_include_intervals)
-            if targets_to_include_intervals:
-                chr_intervals = targets_to_include_intervals[record.id.lower()]
+            #chrm_seq = str(record.seq).upper()
+
+            # Submitting each PAM for processing as separate task
+            futures = []
+
+            for pam in (pam_set + rev_pam_set):
+                futures.append(executor.submit(process_pam, args=args, pam=pam, record=record, start=start, end=end, 
+                                                pam_set=pam_set, rev_pam_set=rev_pam_set))
+
+            # Waiting for all futures to complete and collecting the results
+            for future in futures:
+                chr_results.extend(future.result())
+
+            bed_chr_results = BedTool("\n".join(chr_results), from_string=True)
+
+            #bed_chr_results.saveas("test.bed")
+
+            #print(bed_chr_results)
+
+            if targets_to_keep:
+                final_targets = bed_chr_results.intersect(BedTool(targets_to_keep), u=True)
+            elif targets_to_discard:
+                final_targets = bed_chr_results.subtract(BedTool(targets_to_discard), A=True)
             else:
-            # If there are no intervals, scan whole chromosome
-                chr_intervals = [(0,len(record.seq))]
-            
-            for (start, end) in chr_intervals:
-                #start += -1 #args.active_site_offset_3
-                #end += 1 #abs(args.active_site_offset_3)
-                # Submitting each PAM for processing as separate task
-                futures = []
-                for pam in (pam_set + rev_pam_set):
-                    futures.append(executor.submit(process_pam, args=args, pam=pam, chrm=chrm, start=start, end=end, 
-                                                   pam_set=pam_set, rev_pam_set=rev_pam_set))
-                # Waiting for all futures to complete and collecting the results
-                for future in futures:
-                    chr_results.extend(future.result())
+                final_targets = bed_chr_results
 
-            write_results(chr_results, kmer_output_path)
+            final_targets_str = [str(line) for line in final_targets]
+            write_results(final_targets_str, kmer_output_path)

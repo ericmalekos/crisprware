@@ -25,7 +25,7 @@ def parse_arguments():
     parser.add_argument(
         "-k", "--scoredGuides",
         type=str,
-        help="AllScoredGuides.tsv ouput from ScoreKmers.",
+        help="AllScoredGuides.tsv output from ScoreKmers.",
         required=True
     )
 
@@ -51,16 +51,16 @@ def parse_arguments():
         help="Allowable range of guide for each transcript and feature set, e.g. \n \
             '0.5' returns kmers in the 5'-most half of the relevant \n \
             features for a transcript. Default settings returns guides \n \
-            anywhere in the exons for each transcript [default: a]",
+            anywhere in the exons for each transcript [default: 1]",
         type=restricted_float,
         default=1
     )
 
     parser.add_argument(
-        "-n", "--number_of_targets",
+        "-n", "--number_of_guides",
         type=int,
         help="Number of guides returned per target.",
-        default=6
+        default=-1
     )
 
     parser.add_argument(
@@ -75,24 +75,37 @@ def parse_arguments():
         default=0.5, 
         help="Weight for guidescan")
 
-    parser.add_argument(
-        "--kmers_per_tscript", 
-        type=int, 
-        default=10, 
-        help="Kmers per transcript")
+    # parser.add_argument(
+    #     "--kmers_per_tscript", 
+    #     type=int, 
+    #     default=10, 
+    #     help="Kmers per transcript")
+
+    # parser.add_argument(
+    #     "--min_specificity", 
+    #     type=restricted_float, 
+    #     default=0.5, 
+    #     help="Minimum guidescan specificity score from [0,1]")
+
+    # parser.add_argument(
+    #     "--min_rs3", 
+    #     type=float, 
+    #     default=0.5, 
+    #     help="Minimum cleavage score after scaling \
+    #         scores to [0,1]. Used with --rs3_column")
 
     parser.add_argument(
-        "--min_specificity", 
-        type=restricted_float, 
-        default=0.5, 
-        help="Minimum guidescan specificity score from [0,1]")
-
+        "--gscan_column", 
+        type=str, 
+        help="On target column to use. If none provided, will use the first column \
+            with 'specificity' in the column name.", 
+        default=None)
+    
     parser.add_argument(
-        "--min_rs3", 
-        type=float, 
-        default=0.5, 
-        help="Minimum cleavage score after scaling \
-            scores to [0,1]. Used with --rs3_column")
+        "--prefix", 
+        type=str, 
+        help="Prefix for output file", 
+        default="")
 
     parser.add_argument(
         "--rs3_column", 
@@ -269,13 +282,20 @@ def kmer_to_tscript(kmerIntersectGTF):
     df.drop(columns=range(11,21), inplace=True)
     return df
 
-def kmer_to_bed(kmerIntersectBED):
+def kmer_to_bed(kmerIntersectBED, header):
     
     df = pd.read_table(kmerIntersectBED.fn, sep="\t", header=None)
+
+    #drop the last column (number of overlapping bases)
+    df = df.drop(df.columns[-1], axis=1)
+
+    # reset headers
+    df.columns = header
+
+    columns_to_drop = [col for col in df.columns if 'target' in col and col != 'target_id']
     
-    # replace 7th column with chr:start_stop of BED entry
-    df[6] = df[6].astype(str) + ":" + df[7].astype(str) + "_" + df[8].astype(str)
-    df.drop(columns=range(7,16), inplace=True)
+    df = df.drop(columns=columns_to_drop)
+
     return df   
 
 min_distance = 1000  # Adjust based on your requirement
@@ -294,13 +314,34 @@ def maximize_spacing(group):
     
     return pd.DataFrame(selected_kmers)
 
+def scoreGuides(guidesOnTargetdf, rs3_column, gscan_column, rs3_weight = 0.5, gscan_weight = 0.5, guidesPerTarget = 4):
+
+    gscan_columns = [col for col in guidesOnTargetdf.columns if 'specificity' in col]
+    if gscan_column is None:
+        gscan_column = gscan_columns[0]
+
+    for count, column in enumerate(gscan_columns[1:]):
+        guidesOnTargetdf["specificity_difference_" + str(count+1)] = guidesOnTargetdf[gscan_column] - guidesOnTargetdf[column]
+
+    guidesOnTargetdf['combined_score'] = rs3_weight * guidesOnTargetdf[rs3_column] + gscan_weight * guidesOnTargetdf[gscan_column] 
+
+    # Step 2: Sort by "combined_score" within each transcript
+    guidesOnTargetdf.sort_values(['target_id', 'combined_score'], ascending=[True, False], inplace=True)
+
+    # Step 3: Keep only the top specified number of entries per transcript
+    if guidesPerTarget >= 1:
+        guidesOnTargetdf = guidesOnTargetdf.groupby('target_id').head(guidesPerTarget)
+
+
+    return guidesOnTargetdf
+
 if __name__ == "__main__":
     pd.set_option('display.max_columns', None)
     args = parse_arguments()
 
     # make "tmp" directory
-    Path("./kmers/tmp/").mkdir(parents=True, exist_ok=True)
-
+    Path("./kmers/scoredkmers/").mkdir(parents=True, exist_ok=True)
+    output = "./kmers/scoredkmers/" + args.prefix + "RankedKmers.tsv"
 
     # Load kmers.bed file
     kmerTargets = pyb.BedTool(args.scoredGuides)
@@ -310,8 +351,9 @@ if __name__ == "__main__":
     targetFileType = args.targets.split(".")[-1].lower()
 
     if targetFileType in ["gff", "gtf", "gff3", "gff2"]:
-        print(f'{args.targets} is {targetFileType.upper()} format')
-        trimmed = "./kmers/tmp/trimmedAnnotation." + targetFileType
+        print(f'\n\t{args.targets} is {targetFileType.upper()} format')
+        trimmed = "./kmers/tmp/trimmedAnnotation" + targetFileType
+        Path("./kmers/tmp/").mkdir(parents=True, exist_ok=True)
         with open(trimmed, 'w') as f:
             f.writelines(process_gtf(input_file = args.targets, feature = args.feature, percentiles = [0,args.percentile_range * 100]))
         targets = pyb.BedTool(trimmed)
@@ -319,12 +361,34 @@ if __name__ == "__main__":
         finalKmers = kmer_to_tscript(pyb.BedTool(kmerTargets).intersect(targets, wo=True))
         
     elif targetFileType in ["bed"]:
-        print(f'{args.targets} is BED format')
+        print(f'\n\t{args.targets} is BED format')
         targets = pyb.BedTool(args.targets)
-        
-        finalKmers = kmer_to_bed(pyb.BedTool(kmerTargets).intersect(targets, wo=True))
 
+        bed_df = pd.read_csv(args.targets, sep='\t', header=None)
+
+        # Step 2: Count the number of columns
+        num_columns = len(bed_df.columns)
+
+        target_header = ["target_chrom", "target_start", "target_stop", "target_id", 
+                         "target_score", "target_strand", "target_big_start", "target_big_stop"]
+
+        # Step 3: Drop additional columns if there are more than 8
+        if num_columns > 8:
+            bed_df = bed_df.iloc[:, :8]
+        elif num_columns < 8:
+            target_header = target_header[:num_columns]
+
+        # Step 4: Convert the DataFrame back into a BedTool object
+        bed = pyb.BedTool.from_dataframe(bed_df)
         
+        guide_header = []
+
+        with open(args.scoredGuides, 'r') as file:
+            first_line = file.readline()
+            guide_header = first_line.strip().split('\t')
+
+        finalKmers = kmer_to_bed(pyb.BedTool(kmerTargets).intersect(targets, wo=True), header = guide_header + target_header)
+
     else:
         print(f'{args.targets} file extension unrecognized, for expected behavior pass GFF/GTF/BED file.\n \
         Defaulting to BED behavior')
@@ -333,12 +397,15 @@ if __name__ == "__main__":
         finalKmers = kmer_to_bed(pyb.BedTool(kmerTargets).intersect(targets, wo=True))
 
 
-
-    header = ["#chr", "start", "stop", "sequence","pam", "strand", \
-                            "context", "rs3_z_score", "rs3_cdf", "rs3_score_norm",
-                            "specificity", "transcript_id", "gene_id"]
-    finalKmers.columns = header
-    print(finalKmers.head())
+    finalKmers = scoreGuides(guidesOnTargetdf = finalKmers, rs3_column = args.rs3_column, gscan_column = args.gscan_column, 
+                             rs3_weight = args.rs3_weight, gscan_weight = args.rs3_weight, guidesPerTarget = args.number_of_guides)
+    # header = ["#chr", "start", "stop", "sequence","pam", "strand", \
+    #                         "context", "rs3_z_score", "rs3_cdf", "rs3_score_norm",
+    #                         "specificity", "transcript_id", "gene_id"]
+    # finalKmers.columns = header
+    
+    finalKmers.to_csv(output, sep='\t', index=False)
+    
     # finalKmers["id"] = finalKmers[header[3]].apply(lambda x: x.split(',')[0])
     # finalKmers.sort_values('id', inplace=True)
 

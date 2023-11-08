@@ -57,14 +57,14 @@ def parse_arguments():
         "--threads", 
         type=int, 
         default=2, 
-        help="Number of threads"
+        help="Number of threads [default: 2]"
     )
     
     parser.add_argument(
         "--mismatches", 
         type=int, 
-        default=4, 
-        help="Number of mismatches for Guidescan2 scoring"
+        default=3, 
+        help="Number of mismatches for Guidescan2 off-target scoring [default: 3]"
     )
 
     parser.add_argument(
@@ -80,7 +80,7 @@ def parse_arguments():
         default=0.1, 
         help="Minimum cleavage score after scaling \
             scores to [0,1]. Kmers with scores below this percentile \
-            will be dropped. [Default: 0.1]"
+            will be dropped [default: 0.1]"
     )
 
     parser.add_argument(
@@ -88,18 +88,18 @@ def parse_arguments():
         type=int, 
         default=100000, 
         help="Number of kmers to hold in memory for cleavage scoring and off-target filtering. \
-        Reduce if memory constrained. Increasing can improve runtime."
+        Reduce if memory constrained. Increasing can improve runtime [default: 100000]"
     )
 
     parser.add_argument(
         "-o", "--output_prefix",
         help="Prefix to use for files.",
         type=str,
-        default=""
+        default="scoredOut_"
     )
     return parser.parse_args()
 
-def guideScanScoring(guideCSV, output, guideIndex, threads = 2, mismatches = 4):
+def guideScanScoring(guideCSV, output, guideIndex, threads = 2, mismatches = 3):
     
     cmd = [
         'guidescan',
@@ -124,12 +124,13 @@ def guideScanScoring(guideCSV, output, guideIndex, threads = 2, mismatches = 4):
     subprocess.run(cmd, check=True)
 
     # read the csv file
+    print("\n\tReading in " + output)
     gscanDF = pd.read_csv(output)
 
     # drop duplicate rows and keep the first occurrence
     gscanDF = gscanDF.drop_duplicates(subset='id', keep='first')
 
-    gscanDF['specificity'] = gscanDF['specificity'].round(2)
+    gscanDF['specificity'] = gscanDF['specificity'].round(3)
 
     db_name = Path(guideIndex).parts[-1]
 
@@ -174,9 +175,21 @@ def cleavageScoring(kmerDF, tracr = 'Chen2013', threads = 2, chunk_size = 250000
     return kmerDF
 
 
+def check_files_exist(index):
+    """Check the existence of the three required files for a given index."""
+    files = [f"{index}.reverse", f"{index}.forward", f"{index}.gs"]
+    for file in files:
+        if not Path(file).exists():
+            raise FileNotFoundError(f"\n\n\tRequired file {file} not found for index {index}. \
+                                    \n\tMake sure \n\t\t{index}.reverse \n\t\t{index}.forward \n\t\t{index}.gs \n\texist\n")
+
+
 if __name__ == "__main__":
     
     args = parse_arguments()
+
+    for index in args.guidescan2_indices:
+        check_files_exist(index)
 
     # kmer_output_path = "./kmers/" + args.output_prefix + "kmers.bed"
     # p = Path(kmer_output_path)
@@ -185,7 +198,7 @@ if __name__ == "__main__":
     output_path = "./kmers/scoredkmers/" + args.output_prefix
     tmp_path = "./kmers/scoredkmers/tmp/"  + args.output_prefix
     o, t = Path(output_path), Path(tmp_path)
-    Path("./" + "/".join(o.parts[:-1])).mkdir(parents=True, exist_ok=True)
+    #Path("./" + "/".join(o.parts[:-1])).mkdir(parents=True, exist_ok=True)
     Path("./" + "/".join(t.parts[:-1])).mkdir(parents=True, exist_ok=True)
 
     kmerDF = pd.read_csv(args.kmer_bed, delimiter='\t', header=0 )
@@ -211,9 +224,11 @@ if __name__ == "__main__":
         print(f"\n\tBeginning Guidescan2 specificity scoring against " + gscanIndex + "\n\tIf memory constrained reduce '--chunk_size'\n")
         guidescan_chunk_dfs = []
         for i, (_, chunk) in enumerate(kmerDF.groupby(kmerDF.index // args.chunk_size)):
+
             input = tmp_path + f'gscanInput.{i + 1}.csv'
             output = input.replace("Input", "Output")
-            chunk[['id,sequence,pam,chromosome,position,sense']].to_csv(input, sep='\t', index=False)
+            print(input)
+            chunk[['id,sequence,pam,chromosome,position,sense']].to_csv("./" + input, sep='\t', index=False)
             #guidescan_files.append(tuple(input, output))
             guidescan_chunk_dfs.append(guideScanScoring(guideCSV = input, output = output, 
                                                             guideIndex = gscanIndex, 
