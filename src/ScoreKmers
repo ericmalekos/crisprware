@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+
+'''
+    This script takes the output from FilterKmerBED and scores it
+    with Ruleset3 and Guidescan2. 
+
+    ./crispomics/utils/ScoreKmers -k kmers/NCAM_kmers.bed -i chr21Index/ --tracr Chen2013 --threads 8
+'''
+
+import pandas as pd
+import subprocess
+import argparse
+from rs3.seq import predict_seq
+from scipy.stats import norm
+from pathlib import Path
+# import os
+# import time
+
+def restricted_float(x):
+    x = float(x)
+    if x < 0.0 or x > 1.0:
+        raise argparse.ArgumentTypeError(f"{x} not in range [0.0, 1.0]")
+    return x
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Scores Kmers from GenerateKmers."
+    )
+
+    parser.add_argument(
+        "-k", "--kmer_bed",
+        type=str,
+        help="kmers.bed ouput of GenerateKmers.",
+        required=True
+    )
+
+    parser.add_argument(
+        "-i", "--guidescan2_indices",
+        type=str,
+        help="One or more, space-separate Guidescan2 indices.",
+        required=True,
+        nargs='*'
+    )
+
+    parser.add_argument(
+        "--tracr", 
+        type=str,
+        default='Chen2013',
+        required=True, 
+        choices=['Hsu2013', 'Chen2013'], 
+        help="TracrRNA version for cleavage scoring. \
+            Either 'Hsu2013' or 'Chen2013', see https://github.com/gpp-rnd/rs3 \
+            for details."
+    )
+
+    parser.add_argument(
+        "--threads", 
+        type=int, 
+        default=2, 
+        help="Number of threads [default: 2]"
+    )
+    
+    parser.add_argument(
+        "--mismatches", 
+        type=int, 
+        default=3, 
+        help="Number of mismatches for Guidescan2 off-target scoring [default: 3]"
+    )
+
+    parser.add_argument(
+        "-d", "--drop_duplicates", 
+        help="Drop exact duplicate kmers before scoring to save time [default: True]",
+        default=True,
+        action="store_false"
+    )
+
+    parser.add_argument(
+        "--min_rs3", 
+        type=restricted_float, 
+        default=0.1, 
+        help="Minimum cleavage score. RS3 cleavage scores are formatted \
+            as z-scores, so this represents a standard deviation cutoff. \
+            [default: -2]"
+    )
+
+    parser.add_argument(
+        "--chunk_size", 
+        type=int, 
+        default=100000, 
+        help="Number of kmers to hold in memory for cleavage scoring and off-target filtering. \
+        Reduce if memory constrained. Increasing may improve runtime [default: 100000]"
+    )
+
+    parser.add_argument(
+        "-o", "--output_prefix",
+        help="Prefix to use for files.",
+        type=str,
+        default="scoredOut_"
+    )
+    return parser.parse_args()
+
+def guideScanScoring(guideCSV, output, guideIndex, threads = 2, mismatches = 3):
+    
+    cmd = [
+        'guidescan',
+        'enumerate',
+        '--max-off-targets',
+        '-1',
+        '--threads',
+        str(threads),
+        '--mismatches',
+        str(mismatches),
+        '--format',
+        'csv',
+        '--mode',
+        'succinct',
+        '--kmers-file',
+        guideCSV,
+        '--output',
+        output,
+        guideIndex
+    ]
+
+    subprocess.run(cmd, check=True)
+
+    # read the csv file
+    print("\n\tReading in " + output)
+    gscanDF = pd.read_csv(output)
+
+    # drop duplicate rows and keep the first occurrence
+    gscanDF = gscanDF.drop_duplicates(subset='id', keep='first')
+
+    gscanDF['specificity'] = gscanDF['specificity'].round(3)
+
+    db_name = Path(guideIndex).parts[-1]
+
+    gscanDF.rename(columns={'specificity': 'specificity_' + db_name}, inplace=True)
+
+    gscanDF = gscanDF.drop(['sequence', 'match_chrm',  'match_position', 'match_strand',  'match_distance'], axis = 1)
+
+    return gscanDF
+
+def cleavageScoring(kmerDF, tracr = 'Chen2013', threads = 2, chunk_size = 2500000, minStdDev = None):
+
+    print(f"\n\tBeginning RS3 cleavage scoring\n\tIf memory constrained reduce '--chunk_size'\n")
+
+    # guideScores = predict_seq(sgRNAlist, sequence_tracr='Hsu2013', n_jobs=12)
+
+    sgRNAlist = kmerDF['context'].tolist() # 1709 seconds chr21, 12 cores 
+
+    # process the list in chunks to reduce memory footprint
+
+    sgRNAScores = []
+
+    # Iterate over big_list in chunks of size chunk_size
+    for i in range(0, len(sgRNAlist), chunk_size):
+        sublist = sgRNAlist[i:i + chunk_size]
+        processed_sublist = predict_seq(sublist, sequence_tracr=tracr, n_jobs=threads)
+        sgRNAScores.extend(processed_sublist)
+
+    kmerDF['rs3_z_score'] = sgRNAScores
+    kmerDF['rs3_z_score'] = kmerDF['rs3_z_score'].round(4)
+    kmerDF['rs3_cdf'] = norm.cdf(kmerDF['rs3_z_score'])
+    kmerDF['rs3_cdf'] = kmerDF['rs3_cdf'].round(4)
+
+    # The value of scaling in this way is questionable when only a subset of kmers are being used
+    #kmerDF['rs3_score_norm'] = (kmerDF['rs3_z_score'] - kmerDF['rs3_z_score'].min()) / (kmerDF['rs3_z_score'].max() - kmerDF['rs3_z_score'].min())
+    #kmerDF['rs3_score_norm'] = kmerDF['rs3_score_norm'].round(3)
+    if minStdDev:
+        kmerDF = kmerDF[kmerDF['rs3_z_score'] > minStdDev]
+
+    kmerDF = kmerDF.copy()  
+    kmerDF.loc[:, 'id'] = kmerDF['id,sequence,pam,chromosome,position,sense'].str.split(',').str[0]
+
+
+    return kmerDF
+
+
+def check_files_exist(index):
+    """Check the existence of the three required files for a given index."""
+    files = [f"{index}.reverse", f"{index}.forward", f"{index}.gs"]
+    for file in files:
+        if not Path(file).exists():
+            raise FileNotFoundError(f"\n\n\tRequired file {file} not found for index {index}. \
+                                    \n\tMake sure \n\t\t{index}.reverse \n\t\t{index}.forward \n\t\t{index}.gs \n\texist\n")
+
+
+if __name__ == "__main__":
+    
+    args = parse_arguments()
+
+    for index in args.guidescan2_indices:
+        check_files_exist(index)
+
+    # kmer_output_path = "./kmers/" + args.output_prefix + "kmers.bed"
+    # p = Path(kmer_output_path)
+    # Path("./" + "/".join(p.parts[:-1])).mkdir(parents=True, exist_ok=True)
+
+    output_path = "./kmers/scoredkmers/" + args.output_prefix
+    tmp_path = "./kmers/scoredkmers/tmp/"  + args.output_prefix
+    o, t = Path(output_path), Path(tmp_path)
+    #Path("./" + "/".join(o.parts[:-1])).mkdir(parents=True, exist_ok=True)
+    Path("./" + "/".join(t.parts[:-1])).mkdir(parents=True, exist_ok=True)
+
+    kmerDF = pd.read_csv(args.kmer_bed, delimiter='\t', header=0 )
+
+    if args.drop_duplicates:
+        print(f'\n\tBefore dropping duplicates:\t{len(kmerDF)}')
+        kmerDF['kmer'] = kmerDF.iloc[:, 3].str.split(',').str[1]
+
+        # Step 3 & 4: Find unique and duplicate k-mers, then filter the DataFrame to keep only the unique ones
+        unique_mask = ~kmerDF['kmer'].duplicated(keep=False)
+        kmerDF = kmerDF[unique_mask]
+
+        print(f'\tAfter dropping duplicates:\t{len(kmerDF)}\n')
+
+    kmerDF = cleavageScoring(kmerDF = kmerDF, tracr = args.tracr, chunk_size=args.chunk_size, threads = args.threads, minPercentile = args.min_rs3)
+    
+    print(f'\n\tAfter dropping RS3 cleavage scores below {args.min_rs3}:\t{len(kmerDF)}\n')
+
+    num_chunks = len(kmerDF) // args.chunk_size + (1 if len(kmerDF) % args.chunk_size else 0)
+    guidescan_dfs = []
+
+    for gscanIndex in args.guidescan2_indices:
+        print(f"\n\tBeginning Guidescan2 specificity scoring against " + gscanIndex + "\n\tIf memory constrained reduce '--chunk_size'\n")
+        guidescan_chunk_dfs = []
+        for i, (_, chunk) in enumerate(kmerDF.groupby(kmerDF.index // args.chunk_size)):
+
+            input = tmp_path + f'gscanInput.{i + 1}.csv'
+            output = input.replace("Input", "Output")
+            print(input)
+            chunk[['id,sequence,pam,chromosome,position,sense']].to_csv("./" + input, sep='\t', index=False)
+            #guidescan_files.append(tuple(input, output))
+            guidescan_chunk_dfs.append(guideScanScoring(guideCSV = input, output = output, 
+                                                            guideIndex = gscanIndex, 
+                                                            threads = args.threads, 
+                                                            mismatches = args.mismatches))
+        guidescan_dfs.append(pd.concat(guidescan_chunk_dfs, ignore_index=True))
+
+
+    for df in guidescan_dfs:
+        kmerDF = kmerDF.merge(df, on='id', how='inner')
+    
+    kmerDF[['sequence', 'pam']] = kmerDF['id,sequence,pam,chromosome,position,sense'].str.split(',', expand=True).iloc[:, 1:3]
+
+    kmerDF = kmerDF.drop(['id,sequence,pam,chromosome,position,sense', 'id'], axis = 1)
+    
+    desired_cols = ['#chr', 'start', 'stop', 'sequence', 'pam', 'strand', 'context',
+                   'rs3_z_score', 'rs3_cdf','rs3_score_norm']
+    specificity_cols = [col for col in kmerDF.columns if "specificity" in col]
+
+    kmerDF = kmerDF[desired_cols + specificity_cols]
+
+    kmerDF.to_csv(output_path + "AllScoredGuides.tsv", sep="\t", index=False)

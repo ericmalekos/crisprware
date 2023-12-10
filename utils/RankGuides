@@ -315,7 +315,7 @@ def maximize_spacing(group):
     return pd.DataFrame(selected_kmers)
 
 def scoreGuides(guidesOnTargetdf, rs3_column, gscan_column, rs3_weight = 0.5, gscan_weight = 0.5, guidesPerTarget = 4):
-
+    print(guidesOnTargetdf.head())
     gscan_columns = [col for col in guidesOnTargetdf.columns if 'specificity' in col]
     if gscan_column is None:
         gscan_column = gscan_columns[0]
@@ -415,4 +415,4 @@ if __name__ == "__main__":
     # TODO
     # score filter, print remaining guides, min median max per transcript
     # space filter print remaining guides
-    # 
+    # NEED TO REWRITE kmer_to_transcript SO THAT IS HAS COLNAMES AND DOES NOT USE NUMBERS BECAUSE THERE MAY BE MULTIPLE SPECIFICTY COLUMNS
