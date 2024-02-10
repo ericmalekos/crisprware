@@ -1,13 +1,13 @@
-name: your_project_env
+name: testproject
 channels:
   - bioconda
   - conda-forge
-  - defaults
+  - nodefaults
 dependencies:
-  - python=3.8
-  - numpy
-  - pandas
-  - your_bioconda_dependency
+  - python>=3.8
+  - biopython>=1.8
+  - guidescan>=2.2
+  - pybedtools>=0.9
   - pip
   - pip:
-    - some-pypi-package
+    - rs3>=0.0.15

@@ -1,0 +1,4 @@
+transcript_id	TPM_./tests/test_data/processed_rna_seq/kallisto/kallisto_abundance_1.tsv	TPM_./tests/test_data/processed_rna_seq/kallisto/kallisto_abundance_2.tsv	tscript_min	tscript_max	tscript_median	tscript_mean
+ENST00000456328.2	120.5	120.5	120.5	120.5	120.5	120.5
+ENST00000450305.2	305.2	305.2	305.2	305.2	305.2	305.2
+ENST00000488147.1	38.3	38.3	38.3	38.3	38.3	38.3

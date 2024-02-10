@@ -1,0 +1,6 @@
+transcript_id	TPM_./tests/test_data/processed_rna_seq/salmon/salmon_quant_1.sf	TPM_./tests/test_data/processed_rna_seq/salmon/salmon_quant_2.sf	tscript_min	tscript_max	tscript_median	tscript_mean
+XR_388274.3	0	0	0	0	0.0	0.0
+XR_004940284.1	0	0	0	0	0.0	0.0
+Gm42068	0	0	0	0	0.0	0.0
+NR_045304.1	0	0	0	0	0.0	0.0
+XR_004940278.1	0	0	0	0	0.0	0.0
