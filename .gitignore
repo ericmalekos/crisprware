@@ -1,7 +1,9 @@
-*.csv#
 OldStuff/
 commands.md
 ChIP_Methods/
-test/
-test/sgRNAs/Cast_TSS_kmers.bed
-test/sgRNAs/C57_TSS_kmers.bed
+crisprware.egg-info/
+annotations/
+.vscode
+.Rhistory
+.ipynb_checkpoints
+__pycache__/
