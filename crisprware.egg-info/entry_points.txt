@@ -1,6 +1,0 @@
-[console_scripts]
-generate_guides = src.generate_guides:main
-index_genome = src.index_genome:main
-preprocess_annotation = src.preprocess_annotation:main
-rank_guides = src.rank_guides:main
-score_guides = src.score_guides:main
