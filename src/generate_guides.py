@@ -412,16 +412,10 @@ def main():
 
     if args.active_site_offset_5 >= args.active_site_offset_3:
         raise ValueError("--active_site_offset_5 should be less than --active_site_offset_3")
-    # if args.gc_range[0] >= args.gc_range[1]:
-    #     raise ValueError("first --gc_range argument should be greater than second")
-    args.gc_range =  args.gc_range.sort()
+    args.gc_range = args.gc_range.sort()
 
-    if not args.output_prefix.endswith("_") : args.output_prefix += "_"
-    sgRNA_output_path = "./" + args.output_prefix + "sgRNAs/" + args.output_prefix + "sgRNA.bed"
+    sgRNA_output_path = "./" + args.output_prefix + "sgRNAs/" + args.output_prefix.split("/")[-1] + "sgRNA.bed"
     create_output_directory(base_dir=sgRNA_output_path,output_prefix="")
-
-    #p = Path(sgRNA_output_path)
-    #Path("./" + "/".join(p.parts[:-1])).mkdir(parents=True, exist_ok=True)
 
     with open(sgRNA_output_path, 'w') as f:
         f.write('#chr\tstart\tstop\tid,sequence,pam,chromosome,position,sense\tcontext\tstrand\n')

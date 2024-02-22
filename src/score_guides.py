@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 
 '''
-    This script takes the output from FiltersgRNABED and scores it
-    with Ruleset3 and Guidescan2. 
+    This script takes the output from generate_guides and adds
+    with  on-target Ruleset3 and off-target Guidescan2 scores. 
 
-    ./crispomics/utils/ScoreGuides -k sgRNAs/NCAM_sgRNAs.bed -i chr21Index/ --tracr Chen2013 --threads 8
+    score_guides --sgrna_bed tests/test_data/sgRNA_test.bed \
+        --guidescan2_indices tests/test_data/Hg38_chr21_gscan_index/chr21.fa.index\
+        --tracr Chen2013 --threads 2 --output_prefix tests/test_output/Hg38_chr21
+
 '''
 
 import pandas as pd
@@ -13,8 +16,9 @@ import argparse
 from rs3.seq import predict_seq
 from scipy.stats import norm
 from pathlib import Path
-# import os
-# import time
+from os import remove
+from utils.utility_functions import create_output_directory
+from utils.dna_sequence_functions import map_ambiguous_sequence
 
 def restricted_float(x):
     x = float(x)
@@ -46,8 +50,8 @@ def parse_arguments():
     parser.add_argument(
         "--tracr", 
         type=str,
-        default='Chen2013',
-        required=True, 
+        default=None,
+        required=False, 
         choices=['Hsu2013', 'Chen2013'], 
         help="TracrRNA version for cleavage scoring. \
             Either 'Hsu2013' or 'Chen2013', see https://github.com/gpp-rnd/rs3 \
@@ -62,10 +66,50 @@ def parse_arguments():
     )
     
     parser.add_argument(
+        "--threshold", 
+        type=int, 
+        default=-1, 
+        help="Threshold for Guidescan2 off-target hits. If off-targets are found this distance away \
+         the sgRNA will be discarded, i.e. set to 2 to discard any guides with a 0,1 or 2 mismatches \
+         from another guide sequence. --threshold=-1 to retain all guides [default: -1]"
+    )
+
+    parser.add_argument(
         "--mismatches", 
         type=int, 
         default=3, 
         help="Number of mismatches for Guidescan2 off-target scoring [default: 3]"
+    )
+
+    parser.add_argument(
+        "--rna_bulges", 
+        type=int, 
+        default=0, 
+        help="RNA bulges for Guidescan2 off-target scoring [default: 0]"
+    )
+
+    parser.add_argument(
+        "--dna_bulges", 
+        type=int, 
+        default=0, 
+        help="DNA bulges for Guidescan2 off-target scoring [default: 0]"
+    )
+
+    parser.add_argument(
+        "--mode", 
+        type=str,
+        default='succinct',
+        choices=['succinct', 'complete'], 
+        help="Whether Guidescan2 temporary output should be succinct or complete mode [default: 0]"
+    )
+
+    parser.add_argument(
+        "--alt_pams",
+        type=str,
+        help="One or more, space-separate alternative pams for off-target \
+            consideration. e.g. NAG",
+        required=False,
+        nargs='*'
     )
 
     parser.add_argument(
@@ -77,12 +121,19 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        "--skip_rs3", 
+        help="Set flag to skip rs3 scoring [default: False]",
+        default=False,
+        action="store_true"
+    )
+
+    parser.add_argument(
         "--min_rs3", 
         type=float, 
-        default=-2, 
+        default=None, 
         help="Minimum cleavage RS3 score. RS3 cleavage scores are formatted \
-            as z-scores, so this is similar to a standard deviation cutoff. \
-            [default: -2]"
+            as z-scores, so this is interpreted as a standard deviation cutoff. \
+            [default: None]"
     )
 
     parser.add_argument(
@@ -99,10 +150,40 @@ def parse_arguments():
         type=str,
         default="scoredOut_"
     )
+
+    parser.add_argument(
+        "-k", "--keep_tmp", 
+        help="Set flag to keep temporary Guidescan2 output [default: False]",
+        default=False,
+        action="store_true"
+    )
     return parser.parse_args()
 
-def guideScanScoring(guideCSV, output, guideIndex, threads = 2, mismatches = 3):
-    
+
+
+
+def gscan_scoring(guideCSV, output, guideIndex, \
+                    threads = 2, mismatches = 3, rna_bulges = 0, dna_bulges = 0, \
+                    threshold = 2, mode = "succinct", alt_pam = "", keep_gscan = False):
+    """
+    Executes GuideScan's enumerate command with specified parameters and processes the output.
+
+    Parameters:
+    - guideCSV (str): The path to the input CSV file containing guide RNA sequences.
+    - output (str): The path where the output CSV file will be saved.
+    - guideIndex (str): The index used for off-target scoring.
+    - threads (int, optional): The number of threads to use for the GuideScan command. Defaults to 2.
+    - mismatches (int, optional): The maximum number of mismatches allowed. Defaults to 3.
+    - rna_bulges (int, optional): The number of RNA bulges allowed. Defaults to 0.
+    - dna_bulges (int, optional): The number of DNA bulges allowed. Defaults to 0.
+    - threshold (int, optional): The threshold parameter for removing low mismatches. Defaults to 2.
+    - mode (str, optional): The mode of operation for the GuideScan command. Defaults to "succinct".
+    - alt_pam (str, optional): An alternative PAM sequence to be considered. Defaults to an empty string.
+
+    Returns:
+    - pandas.DataFrame: A DataFrame containing the processed output from the GuideScan command.
+    """
+
     cmd = [
         'guidescan',
         'enumerate',
@@ -114,8 +195,16 @@ def guideScanScoring(guideCSV, output, guideIndex, threads = 2, mismatches = 3):
         str(mismatches),
         '--format',
         'csv',
+        '--rna-bulges',
+        str(rna_bulges),
+        '--dna-bulges',
+        str(dna_bulges),
+        '--threshold',
+        str(threshold),
         '--mode',
-        'succinct',
+        mode,
+        '--alt-pam',
+        'None',
         '--kmers-file',
         guideCSV,
         '--output',
@@ -126,32 +215,51 @@ def guideScanScoring(guideCSV, output, guideIndex, threads = 2, mismatches = 3):
     subprocess.run(cmd, check=True)
 
     # read the csv file
-    print("\n\tReading in " + output)
     gscanDF = pd.read_csv(output)
 
-    # drop duplicate rows and keep the first occurrence
+    #gscanDF = process_gscan(gscanDF, guideIndex)
+    if gscanDF.empty:
+        print(f'\n\tGuidescan2 output is empty, consider lowering "--threshold"\n')
+
     gscanDF = gscanDF.drop_duplicates(subset='id', keep='first')
 
-    gscanDF['specificity'] = gscanDF['specificity'].round(3)
+    gscanDF['specificity'] = gscanDF['specificity'].round(4)
 
     db_name = Path(guideIndex).parts[-1]
 
     gscanDF.rename(columns={'specificity': 'specificity_' + db_name}, inplace=True)
 
-    gscanDF = gscanDF.drop(['sequence', 'match_chrm',  'match_position', 'match_strand',  'match_distance'], axis = 1)
+    gscanDF = gscanDF.drop(['sequence', 'match_chrm',  'match_position', 'match_strand', 'match_distance'], axis = 1)
+
+    if not keep_gscan:
+        remove(output)
+        remove(guideCSV)
 
     return gscanDF
 
-def cleavageScoring(sgRNADF, tracr = 'Chen2013', threads = 2, chunk_size = 2500000, minStdDev = None):
+
+def cleavage_scoring(sgRNADF, tracr, threads = 2, chunk_size = 200000, minStdDev = None):
+    """
+    Computes RS3 cleavage scores for sgRNAs using the specified tracrRNA sequence and filters based on minimum standard deviation.
+
+    Parameters:
+    - sgRNADF (pandas.DataFrame): DataFrame containing sgRNA sequences with a column named 'context' for sgRNA 30-nt contexts.
+    - tracr (str): The tracrRNA sequence identifier to be used in cleavage scoring.
+    - threads (int, optional): The number of parallel jobs to run for cleavage scoring. Defaults to 2.
+    - chunk_size (int, optional): The size of chunks to split the sgRNA list into for processing, to manage memory usage. Defaults to 2000000.
+    - minStdDev (float or None, optional): The minimum standard deviation threshold for filtering sgRNAs based on their RS3 z-score.
+      sgRNAs with a z-score below this threshold will be excluded. Defaults to None, which disables filtering.
+
+    Returns:
+    - pandas.DataFrame: The input DataFrame augmented with 'rs3_z_score' and 'rs3_cdf' columns, and optionally filtered
+      based on the 'rs3_z_score' threshold.
+    """
 
     print(f"\n\tBeginning RS3 cleavage scoring\n\tIf memory constrained reduce '--chunk_size'\n")
 
-    # guideScores = predict_seq(sgRNAlist, sequence_tracr='Hsu2013', n_jobs=12)
-
-    sgRNAlist = sgRNADF['context'].tolist() # 1709 seconds chr21, 12 cores 
+    sgRNAlist = sgRNADF['context'].tolist()
 
     # process the list in chunks to reduce memory footprint
-
     sgRNAScores = []
 
     # Iterate over big_list in chunks of size chunk_size
@@ -165,43 +273,65 @@ def cleavageScoring(sgRNADF, tracr = 'Chen2013', threads = 2, chunk_size = 25000
     sgRNADF['rs3_cdf'] = norm.cdf(sgRNADF['rs3_z_score'])
     sgRNADF['rs3_cdf'] = sgRNADF['rs3_cdf'].round(4)
 
-
     if minStdDev:
         sgRNADF = sgRNADF[sgRNADF['rs3_z_score'] > minStdDev]
 
     sgRNADF = sgRNADF.copy()  
-    sgRNADF.loc[:, 'id'] = sgRNADF['id,sequence,pam,chromosome,position,sense'].str.split(',').str[0]
-
 
     return sgRNADF
 
-
 def check_files_exist(index):
     """Check the existence of the three required files for a given index."""
+
     files = [f"{index}.reverse", f"{index}.forward", f"{index}.gs"]
     for file in files:
         if not Path(file).exists():
             raise FileNotFoundError(f"\n\n\tRequired file {file} not found for index {index}. \
                                     \n\tMake sure \n\t\t{index}.reverse \n\t\t{index}.forward \n\t\t{index}.gs \n\texist\n")
 
+def get_alt_pams(pams):
+    """
+    Generates a string of alternative PAM sequences by expanding each ambiguous PAM sequence in the input list.
+
+    Parameters:
+    - pams (list of str): A list of PAM sequences. These sequences can include ambiguous nucleotide symbols
+      that represent multiple possible nucleotides at a particular position.
+
+    Returns:
+    - str: A string containing all unique alternative PAM sequences derived from the input list, space-separated.
+    """
+
+    pamlist = []
+    for apam in pams:
+        pamlist += map_ambiguous_sequence(apam)
+    pamstr = " ".join(set(pamlist))
+    return pamstr
 
 def main():
     
     args = parse_arguments()
 
+    #print("ALT PAMS" + args.alt_pams)
     for index in args.guidescan2_indices:
         check_files_exist(index)
 
-    # p = Path(sgRNA_output_path)
-    # Path("./" + "/".join(p.parts[:-1])).mkdir(parents=True, exist_ok=True)
+    if not args.skip_rs3 and not args.tracr:
+        raise ValueError("\n\tThe '--tracr' argument is required for RS3 scoring but was not provided.\n")
+    
+    pams = ""
+    if args.alt_pams: 
+        pams=get_alt_pams(args.alt_pams)
+        print(f'\n\tConsidering {pams} for off-target scoring \n')
+    else:
+        args.alt_pams = None
 
-    output_path = "./sgRNAs/scoredSgRNAs/" + args.output_prefix
-    tmp_path = "./sgRNAs/scoredSgRNAs/tmp/"  + args.output_prefix
-    o, t = Path(output_path), Path(tmp_path)
-    #Path("./" + "/".join(o.parts[:-1])).mkdir(parents=True, exist_ok=True)
-    Path("./" + "/".join(t.parts[:-1])).mkdir(parents=True, exist_ok=True)
+    sgRNA_output_path = "./" + args.output_prefix + "ScoredSgRNAs/" + args.output_prefix.split("/")[-1] + "ScoredSgRNA.tsv"
+    tmp_path = create_output_directory(base_dir="./" + args.output_prefix + "ScoredSgRNAs/",output_prefix="tmp/")
+    
 
-    sgRNADF = pd.read_csv(args.sgrna_bed, delimiter='\t', header=0 )
+    sgRNADF = pd.read_csv(args.sgrna_bed, delimiter='\t', header=0)
+    final_columns = sgRNADF.columns.tolist()
+    final_columns.remove('id,sequence,pam,chromosome,position,sense')
 
     if args.drop_duplicates:
         print(f'\n\tBefore dropping duplicates:\t{len(sgRNADF)}')
@@ -210,14 +340,18 @@ def main():
         # Step 3 & 4: Find unique and duplicate k-mers, then filter the DataFrame to keep only the unique ones
         unique_mask = ~sgRNADF['sgRNA'].duplicated(keep=False)
         sgRNADF = sgRNADF[unique_mask]
-
         print(f'\tAfter dropping duplicates:\t{len(sgRNADF)}\n')
 
-    sgRNADF = cleavageScoring(sgRNADF = sgRNADF, tracr = args.tracr, chunk_size=args.chunk_size, threads = args.threads, minStdDev = args.min_rs3)
-    
-    print(f'\n\tAfter dropping RS3 cleavage scores below {args.min_rs3}:\t{len(sgRNADF)}\n')
+    if not args.skip_rs3:
+        final_columns += ['rs3_z_score', 'rs3_cdf']
+        sgRNADF = cleavage_scoring(sgRNADF = sgRNADF,
+                                   tracr = args.tracr,
+                                   chunk_size=args.chunk_size,
+                                   threads = args.threads,
+                                   minStdDev = args.min_rs3)
+        print(f'\n\tAfter dropping RS3 cleavage scores below {args.min_rs3}:\t{len(sgRNADF)}\n')
 
-    num_chunks = len(sgRNADF) // args.chunk_size + (1 if len(sgRNADF) % args.chunk_size else 0)
+    sgRNADF.loc[:, 'id'] = sgRNADF['id,sequence,pam,chromosome,position,sense'].str.split(',').str[0]    
     guidescan_dfs = []
 
     for gscanIndex in args.guidescan2_indices:
@@ -228,37 +362,34 @@ def main():
 
             input = tmp_path + f'gscanInput.{i + 1}.csv'
             output = input.replace("Input", "Output")
-            print(input)
+            print(f"\n\tSaved Guidescan input file to {input}\n")
             chunk[['id,sequence,pam,chromosome,position,sense']].to_csv("./" + input, sep='\t', index=False)
-            #guidescan_files.append(tuple(input, output))
-            guidescan_chunk_dfs.append(guideScanScoring(guideCSV = input, output = output, 
-                                                            guideIndex = gscanIndex, 
-                                                            threads = args.threads, 
-                                                            mismatches = args.mismatches))
-        
-        # rebuild the initial df by concatenating the chunks
+            guidescan_chunk_dfs.append(gscan_scoring(guideCSV=input, output=output, 
+                                                            guideIndex=gscanIndex, 
+                                                            threads=args.threads, 
+                                                            mismatches=args.mismatches,
+                                                            rna_bulges=args.rna_bulges,
+                                                            dna_bulges=args.dna_bulges,
+                                                            mode=args.mode,
+                                                            threshold=args.threshold,
+                                                            alt_pam=pams,
+                                                            keep_gscan=args.keep_tmp))
+
         guidescan_dfs.append(pd.concat(guidescan_chunk_dfs, ignore_index=True))
 
-
     for df in guidescan_dfs:
-        sgRNADF = sgRNADF.merge(df, on='id', how='inner')
-    
+        sgRNADF = sgRNADF.merge(df, on='id', how='outer')
+
     sgRNADF[['sequence', 'pam']] = sgRNADF['id,sequence,pam,chromosome,position,sense'].str.split(',', expand=True).iloc[:, 1:3]
 
     sgRNADF = sgRNADF.drop(['id,sequence,pam,chromosome,position,sense', 'id'], axis = 1)
-    
-    desired_cols = ['#chr', 'start', 'stop', 'sequence', 'pam', 'strand', 'context',
-                   'rs3_z_score', 'rs3_cdf','rs3_score_norm']
+
     specificity_cols = [col for col in sgRNADF.columns if "specificity" in col]
 
-    sgRNADF = sgRNADF[desired_cols + specificity_cols]
+    sgRNADF = sgRNADF[final_columns + specificity_cols]
 
-    sgRNADF.to_csv(output_path + "AllScoredGuides.tsv", sep="\t", index=False)
-
-
-    ### TODO
-    # Add a flag that declines rs3 scoring
-    #   in that case need to rethink the "desired columns" variable
+    sgRNADF.to_csv(sgRNA_output_path, sep="\t", index=False)
+    print(f"\n\tSaved ouput file to {sgRNA_output_path}\n")
 
 if __name__ == "__main__":
     main()
