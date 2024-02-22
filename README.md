@@ -1,5 +1,5 @@
 # crispomics
-git clone https://github.com/yourusername/your_project_name.git crisprware
+git clone https://github.com/ericmalekos/crispomics crisprware
 
 cd crisprware
 

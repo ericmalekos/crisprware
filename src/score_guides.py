@@ -68,10 +68,10 @@ def parse_arguments():
     parser.add_argument(
         "--threshold", 
         type=int, 
-        default=-1, 
+        default=2, 
         help="Threshold for Guidescan2 off-target hits. If off-targets are found this distance away \
-         the sgRNA will be discarded, i.e. set to 2 to discard any guides with a 0,1 or 2 mismatches \
-         from another guide sequence. --threshold=-1 to retain all guides [default: -1]"
+         the sgRNA will be discarded, i.e. set to 2 to discard any guides with a 0, 1 or 2 mismatches \
+         from another guide sequence. --threshold=-1 to retain all guides [default: 2]"
     )
 
     parser.add_argument(
@@ -379,16 +379,21 @@ def main():
 
     for df in guidescan_dfs:
         sgRNADF = sgRNADF.merge(df, on='id', how='outer')
+                
+        #sgRNADF = sgRNADF.merge(df, on='id', how='inner')
+
+    # If any rows have NaN for all specificity columns, drop those rows
+    specificity_cols = [col for col in sgRNADF.columns if "specificity" in col]
+    rows_to_drop = sgRNADF[specificity_cols].isna().all(axis=1)
+    sgRNADF = sgRNADF.loc[~rows_to_drop]
 
     sgRNADF[['sequence', 'pam']] = sgRNADF['id,sequence,pam,chromosome,position,sense'].str.split(',', expand=True).iloc[:, 1:3]
 
     sgRNADF = sgRNADF.drop(['id,sequence,pam,chromosome,position,sense', 'id'], axis = 1)
 
-    specificity_cols = [col for col in sgRNADF.columns if "specificity" in col]
-
     sgRNADF = sgRNADF[final_columns + specificity_cols]
 
-    sgRNADF.to_csv(sgRNA_output_path, sep="\t", index=False)
+    sgRNADF.to_csv(sgRNA_output_path, na_rep='-1', sep="\t", index=False)
     print(f"\n\tSaved ouput file to {sgRNA_output_path}\n")
 
 if __name__ == "__main__":
