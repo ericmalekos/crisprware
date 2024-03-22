@@ -2,9 +2,11 @@ OldStuff/
 commands.md
 ChIP_Methods/
 crisprware.egg-info/
+RNA_Methods/
 annotations/
 .vscode/
 .Rhistory
 .ipynb_checkpoints/
 __pycache__/
 gscan_test/
+Ribotish/

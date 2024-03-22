@@ -63,7 +63,7 @@ def merge_targets(files, gtf_feature="exon", operation="intersect", window = [0,
     if not files:
         return None
 
-    # Initialize the result with the first preprocessed BED file
+    # Initialize the result with the first preprocessed file
     result = preprocess_file(files[0], gtf_feature)
 
     # Iteratively intersect the result with each subsequent preprocessed BED file
@@ -185,6 +185,9 @@ def include_sgRNA(args, sgRNA):
         return False
 
     if args.discard_poly_T and "TTTT" in sgRNA["sequence"]:
+        return False
+    
+    if args.discard_poly_G and "GGGGG" in sgRNA["sequence"]:
         return False
 
     if len(args.restriction_patterns) > 0 and \

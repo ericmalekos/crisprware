@@ -8,6 +8,7 @@
 '''
 import argparse
 import subprocess
+from os import remove
 from utils.utility_functions import create_output_directory
 from utils.gtf_bed_processing_functions import merge_targets
 from utils.dna_sequence_functions import subset_fasta_with_bed
@@ -92,6 +93,9 @@ def main():
 
     args = parse_arguments()
 
+    if args.fasta.endswith(".gz"):
+        raise ValueError(f'\n\n\tERROR: {args.fasta} needs to be unzipped.\n')
+
     if not args.output_prefix.endswith("_") : args.output_prefix += "_"
     index_dir = args.output_prefix + "Index"
     index_output_path = create_output_directory(output_prefix=args.output_prefix+"index",
@@ -123,6 +127,15 @@ def main():
         print("\tBuilding Index from " + fasta_output_path)
         print("\tSaving Index to " + index_output_path)
         guideScanIndex(fasta_output_path, index_output_path.strip("_"))
+
+    try:
+        print(f"\n\tRemoving intermediate file: {args.fasta}.forward.dna")
+        remove(args.fasta + ".forward.dna")
+        print(f"\tRemoving intermediate file: {args.fasta}.reverse.dna\n")
+        remove(args.fasta + ".reverse.dna")
+    except:
+        print(f"... Failed to remove 'reverse.dna' and 'forward.dna'")
+
 
 if __name__ == "__main__":
     main()

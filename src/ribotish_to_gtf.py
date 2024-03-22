@@ -6,8 +6,7 @@
 import argparse
 from utils.utility_functions import create_output_directory
 from utils.gtf_bed_processing_functions import create_metagene_model,\
-    create_constitutive_model,filter_gtf_by_transcript_ids, parse_gtf_for_cds_extremes,\
-    extract_transcript_gene_relationship, gtf_to_tss_tes_bed
+    create_constitutive_model,filter_gtf_by_transcript_ids,extract_transcript_gene_relationship
 from utils.quantified_rna_functions import add_gene_ids_and_subset,\
     filter_dataframe,process_files
 
@@ -39,7 +38,7 @@ def parse_arguments():
         "-f", "--type", 
         type=str, 
         choices=["salmon", "kallisto", "flair", "mandalorian", "infer"], 
-        help="Specify TPM input type. 'infer' guesses the input type based on the header line. [default: \"infer\"].",
+        help="Specify TPM input type. 'infer' guesses the input type based on the header line",
         default="infer",
     )
 
@@ -47,7 +46,7 @@ def parse_arguments():
         "--mean", 
         type=float, 
         help="For a given isoform, the mean tpm/count across samples \
-        must be at least this to be considered, else discard isoform. [default: 0.0]",
+        must be at least this to be considered, else discard isoform.",
         default=0.0,
     )
 
@@ -55,7 +54,7 @@ def parse_arguments():
         "--median", 
         type=float, 
         help="For a given isoform, the median tpm/count across samples \
-        must be at least this to be considered, else discard isoform. [default: 0.0]",
+        must be at least this to be considered, else discard isoform.",
         default=0.0,
     )
 
@@ -63,7 +62,7 @@ def parse_arguments():
         "--min", 
         type=float, 
         help="For a given isoform, each sample must have at least \
-        this tpm/count to be considered, else discard isoform. [default: 0.0]",
+        this tpm/count to be considered, else discard isoform.",
         default=0.0,
     )
 
@@ -71,7 +70,7 @@ def parse_arguments():
         "--max", 
         type=float, 
         help="For a given isoform, at least one sample must have at least \
-        this tpm/count to be considered, else discard isoform. [default: 0.0]",
+        this tpm/count to be considered, else discard isoform.",
         default=0.0,
     )
 
@@ -79,7 +78,7 @@ def parse_arguments():
         "-n", "--top_n", 
         type=int, 
         help="For a given gene, rank all isoforms by median_tpm, keep the \
-        top_n ranked isoforms and discard the rest. '-1' to keep all isoforms. [default: -1]",
+        top_n ranked isoforms and discard the rest. '-1' to keep all isoforms.",
         default=-1,
     )
 
@@ -87,44 +86,26 @@ def parse_arguments():
         "-c", "--top_n_column", 
         type=str, 
         choices=["median", "mean", "min", "max"], 
-        help="The metric by which to rank and filter top isoforms. \
-            Used with '-n' to select expressed transcripts. [default: median]",
+        help="The metric by which to rank and filter isoforms. \
+            Used with '-n' to select the most higlhy expressed transcripts. [Default:median]",
         default="median",
     )
 
     parser.add_argument(
         "-m", "--model", 
-        choices=["metagene", "consensus", "longest", "shortest"], 
-        help="Whether to output 'metagene', 'consensus', 'longest', 'shortest' model. \
-        'longest' and 'shortest' select, for a given gene, the transcript with the longest \
-        or shortest CDS, for now noncoding genes are ignored. Output is always after tpm \
-        filtering has been applied. Multiple entries are allowed e.g. --model metagene \
-        consensus longest [default: None]",
-        type=str,   
-        default=[],
-        nargs='*'
+        type=str, 
+        choices=["metagene", "consensus", "none", "both"], 
+        help="Whether to collapse gene isoforms using the 'metagene' or 'consensus' model.",
+        default="none",
     )   
 
     parser.add_argument(
         "-w ", "--tss_window", 
         nargs=2, 
         type=int, 
-        default=None,
+        default=None,  # Setting the default value to a list of two integers
         help="Pass two, space-separated, integers to specifiy the bp window around the TSS \
-            as '<upstream>' '<downstream>'. Strand-orientation is inferred, i.e. '<upstream>' \
-            will be in the 5\' direction of the TSS and <downstream> in the 3\' \
-            direction. e.g. --tss_window 250 150. [default: None]"
-    )
-
-    parser.add_argument(
-        "-e ", "--tes_window", 
-        nargs=2, 
-        type=int, 
-        default=None,
-        help="Pass two, space-separated, integers to specifiy the bp window around the \
-            transcription end site, TES, as '<upstream>' '<downstream>'. Strand-orientation \
-            is inferred, i.e. '<upstream>' will be in the 5\' direction of the TES and \
-            <downstream> in the 3\' direction. e.g. --tss_window 0 150. [default: None]"
+            as '<upstream>' '<downstream>'. e.g. --tss_window 250 150"
     )
 
     parser.add_argument(
@@ -152,7 +133,7 @@ def parse_arguments():
 
     return args
 
-def save_tss_tes_bed(args, GTF_path, GTF_file):
+def save_tss_bed(args, GTF_path, GTF_file):
     """
     Generates and saves a BED file with Transcription Start Sites (TSS) from a GTF file.
 
@@ -166,26 +147,15 @@ def save_tss_tes_bed(args, GTF_path, GTF_file):
     - The function assumes the existence of the './annotations/' directory.
     - The generated BED file contains TSS positions for each transcript in the GTF file.
     """
-    
-    tss_bed, tes_bed = gtf_to_tss_tes_bed(GTF_path, tss_upstream=args.tss_window[0],
-                                        tss_downstream=args.tss_window[1],
-                                        tes_upstream=args.tes_window[0],
-                                        tes_downstream=args.tes_window[1])
-    
-    tss_bed_out = './annotations/TSS_' + '.'.join(GTF_file.split('.')[:-1]) + '.bed'
-    tes_bed_out = './annotations/TES_' + '.'.join(GTF_file.split('.')[:-1]) + '.bed'
-    
-    if args.tss_window:
-        print('\n\tSaving TSS:\t' + tss_bed_out + '\n')
-        with open(tss_bed_out, 'w') as f:
-            for entry in tss_bed:
-                f.write(entry + '\n')
 
-    if args.tes_window:
-        print('\n\tSaving TES:\t' + tes_bed_out + '\n')
-        with open(tes_bed_out, 'w') as f:
-            for entry in tes_bed:
-                f.write(entry + '\n')
+    output_bed = gtf_to_tss_bed(GTF_path, upstream=args.tss_window[0], downstream=args.tss_window[1])
+
+    TSS_bed = './annotations/TSS_' + '.'.join(GTF_file.split('.')[:-1]) + '.bed'
+
+    print('\n\tSaving TSS:\t' + TSS_bed + '\n')
+    with open(TSS_bed, 'w') as f:
+        for entry in output_bed:
+            f.write(entry + '\n')
 
 def main():
 
@@ -245,39 +215,13 @@ def main():
                 f.write(line)
 
         # Save TSS file for filtered GTF
-        if args.tss_window or args.tes_window:
-            gtf_to_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
+        if args.tss_window:
+            save_tss_bed(args, GTF_path = GTF_path)
 
-    if args.model:
+    if args.model != "none":
         cur_GTF_file = GTF_file
         cur_GTF_path = GTF_path
-
-        if "shortest" or "longest" in args.model:
-            longest_df, shortest_df = parse_gtf_for_cds_extremes(cur_GTF_path)
-
-            if "longest" in args.model:
-                GTF_file = 'longestCDS_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
-                GTF_path = './annotations/' + GTF_file
-                print('\n\tSaving longest CDS GTF to:\t\t' + GTF_path)
-                
-                #longest_df.drop(['gene_id', 'transcript_id', 'cds_length'], axis=1).to_csv(GTF_path, sep='\t', index=False, header = False, quoting=3)
-                longest_df.to_csv(GTF_path, sep='\t', index=False, header = False, quoting=3)
-                
-                if args.tss_window or args.tes_window:
-                    save_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
-
-            if "shortest" in args.model:
-                GTF_file = 'shortestCDS_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
-                GTF_path = './annotations/' + GTF_file
-                print('\n\tSaving shortest CDS GTF to:\t\t' + GTF_path)
-                
-                #shortest_df.drop(['gene_id', 'transcript_id', 'cds_length'], axis=1).to_csv(GTF_path, sep='\t', index=False, header=False, quoting=3)
-                shortest_df.to_csv(GTF_path, sep='\t', index=False, header = False, quoting=3)
-                if args.tss_window or args.tes_window:
-                    save_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
-                
-            
-        if "metagene" in args.model:
+        if args.model == "metagene" or args.model == "both":
             output_str = create_metagene_model(cur_GTF_path)
 
             GTF_file = 'meta_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
@@ -286,10 +230,10 @@ def main():
             with open(GTF_path, 'w') as f:
                 f.write(output_str)
             
-            if args.tss_window or args.tes_window:
-                save_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
+            if args.tss_window:
+                save_tss_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
 
-        if "consensus" in args.model:
+        if args.model == "consensus" or args.model == "both":
 
             output_str, genes_without_consensus = create_constitutive_model(cur_GTF_path)
 
@@ -308,12 +252,12 @@ def main():
             with open(genes_without_consensus_out, 'w') as f:
                 f.writelines(gene_id + "\n" for gene_id in genes_without_consensus)
 
-            if args.tss_window or args.tes_window:
-                save_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
+            if args.tss_window:
+                save_tss_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
 
 
-    elif args.model != "none" and ( args.tss_window or args.tes_window):
-        save_tss_tes_bed(args, GTF_path = GTF_path)
+    elif args.model != "none" and args.tss_window:
+        save_tss_bed(args, GTF_path = GTF_path)
 
     print('\n')
 

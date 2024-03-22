@@ -8,6 +8,7 @@ dependencies:
   - biopython>=1.8
   - guidescan>=2.2
   - pybedtools>=0.9
+  - matplotlib
   - pip
   - pip:
     - lightgbm==3.3.5

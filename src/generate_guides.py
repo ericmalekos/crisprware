@@ -4,15 +4,14 @@
     This modifies "generate_kmers.py" script from the Guidescan repo
 
     EX Usage:
-        ./crispomics/utils/GenerateGuidesMultiprocess --pam NGG  --sgRNA_length 20  -f ./chr21Index/chr21.fa --discard_poly_T --threads 8
+        generate_guides --pam NGG  --sgRNA_length 20  -f ./chr21Index/chr21.fa --discard_poly_T --threads 8
 
-        ./crispomics/utils/GenerateGuidesMultiprocess --sgRNA_length 20  -f ./chr21Index/chr21.fa --discard_poly_T --threads 8 --locations_to_keep ./AnnotationFiles/NCAM2.gtf -o "NCAM_"
+        generate_guides --sgRNA_length 20  -f ./chr21Index/chr21.fa --discard_poly_T --threads 8 --locations_to_keep ./AnnotationFiles/NCAM2.gtf -o "NCAM_"
 
 
 '''
 from Bio import SeqIO
 import argparse
-from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from pybedtools import BedTool
 from utils.dna_sequence_functions import NTS, map_ambiguous_sequence, \
@@ -32,6 +31,7 @@ def parse_arguments():
         required=True
     )
 
+
     parser.add_argument(
         "-p", "--pam",
         type=str,
@@ -39,6 +39,14 @@ def parse_arguments():
              All IUPAC ambiguity codes are accepted as well as standard ATCG. [default: NGG]",
         default="NGG"
     )
+
+    parser.add_argument(
+        "-l", "--sgRNA_length",
+        help="Length of sgRNA to generate. [default: 20]",
+        type=int,
+        default=20
+    )
+
 
     parser.add_argument(
         "-w", "--context_window",
@@ -49,16 +57,6 @@ def parse_arguments():
             For Ruleset3 use -w 4 6 to obtain an appropriate score context. [default: 4 6]",
         default=[4,6]
     )
-
-    parser.add_argument(
-        "--gc_range",
-        nargs=2, 
-        type=int, 
-        help="Pass two, space-separated, integers to specifiy the percentile \
-         range of GC content e.g. '--gc_range 30 70'. [default: 20 80]",
-        default=[20,80]
-    )
-
 
     parser.add_argument(
         "-5", "--active_site_offset_5",
@@ -79,17 +77,48 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "-l", "--sgRNA_length",
-        help="Length of sgRNA to generate. [default: 20]",
-        type=int,
-        default=20
+        "-k", "--locations_to_keep",
+        help="List of BED/GTF files with coordinates in \
+            which the sgRNA desired. If the sgRNA cutsite does not intersect \
+            coordinates in these files they are discarded. Leave blank \
+            to keep all sgRNA. \
+            e.g. atac_peak.bed genes.gtf",
+        type=str,   
+        default="",
+        nargs='*'
     )
 
     parser.add_argument(
-        "--min_chr_length",
-        help="Minimum chromosome length to consider for sgRNA generation. [default: 0]",
-        type=int,
-        default=0
+        "--feature",
+        type=str,
+        help="For any GTF/GFF in '--locations_to_keep', only this \
+            feature will be used for determining appropriate sgRNA. \
+            The feature should match an entry in the third column of the GTF/GFF. \
+            [default: 'exon']",
+        default="exon"
+    )
+    
+    parser.add_argument(
+        "--join_operation",
+        type=str, 
+        choices=["merge", "intersect"], 
+        help="How to treat '--locations_to_keep' if multiple files are passed. \
+        Either 'merge' or 'intersect' can be used and work as described in Bedtools. \
+        If 'merge',  sgRNA will be kept if its cutsite intersects an entry in ANY of the files, if \
+        'intersect' the cutsite  must intersect an entry in EACH file. [default: 'intersect']",
+        default="intersect"
+    )
+
+    parser.add_argument(
+        "--locations_to_discard",
+        help="List of BED/GTF files with coordinates where \
+            sgRNA should not target. If the sgRNA cutsite intersects \
+            coordinates in these files the sgRNA is discarded. Leave blank \
+            to keep all sgRNA. \
+            e.g. TSS.bed coding_genes.gtf",
+        type=str,   
+        default="",
+        nargs='*'
     )
 
     parser.add_argument(
@@ -100,6 +129,15 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        "--gc_range",
+        nargs=2, 
+        type=int, 
+        help="Pass two, space-separated, integers to specifiy the percentile \
+         range of GC content e.g. '--gc_range 25 75'. [default: 0 100]",
+        default=[0,100]
+    )
+
+    parser.add_argument(
         "--discard_poly_T",
         help="Whether to discard polyT (>TTT) sgRNA. \
             Recommend True for PolIII promoters [default: False]",
@@ -107,6 +145,12 @@ def parse_arguments():
         action="store_true"
     )
 
+    parser.add_argument(
+        "--discard_poly_G",
+        help="Whether to discard polyT (>GGGG) sgRNA. [default: False]",
+        default=False,
+        action="store_true"
+    )
     
     parser.add_argument(
         "--restriction_patterns",
@@ -137,52 +181,10 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "-t", "--threads",
+        "" "--min_chr_length",
+        help="Minimum chromosome length to consider for sgRNA generation. [default: 20]",
         type=int,
-        help="Number of threads. [default: 4]",
-        default=4,
-    )
-
-    parser.add_argument(
-        "--locations_to_keep",
-        help="List of BED/GTF files with coordinates in \
-            which the sgRNA desired. If the sgRNA cutsite does not intersect \
-            coordinates in these files they are discarded. Leave blank \
-            to keep all sgRNA. \
-            e.g. atac_peak.bed genes.gtf",
-        type=str,   
-        default="",
-        nargs='*'
-    )
-    
-    parser.add_argument(
-        "--join_operation",
-        type=str, 
-        choices=["merge", "intersect"], 
-        help="How to treat '--locations_to_keep' if multiple files are passed. \
-        Either 'merge' or 'intersect' can be used and work as described in Bedtools. \
-        If 'merge',  sgRNA will be kept if its cutsite intersects an entry in ANY of the files, if \
-        'intersect' the cutsite  must intersect an entry in EACH file. [default: 'intersect']",
-        default="intersect"
-    )
-
-    parser.add_argument(
-        "--locations_to_discard",
-        help="List of BED/GTF files with coordinates where \
-            sgRNA should not target. If the sgRNA cutsite intersects \
-            coordinates in these files the sgRNA is discarded. Leave blank \
-            to keep all sgRNA. \
-            e.g. TSS.bed coding_genes.gtf",
-        type=str,   
-        default="",
-        nargs='*'
-    )
-
-    parser.add_argument(
-        "-o", "--output_prefix",
-        type=str,
-        help="Prefix for output files.",
-        default=""
+        default=20
     )
 
     parser.add_argument(
@@ -193,24 +195,29 @@ def parse_arguments():
         action="store_true"
     )
 
-    parser.add_argument(
-        "--feature",
-        type=str,
-        help="For any GTF/GFF in '--locations_to_keep', only this \
-            feature will be used for determining appropriate sgRNA. \
-            The feature should match an entry in the third column of the GTF/GFF. \
-            [default: 'exon']",
-        default="exon"
-    )
 
     parser.add_argument(
         "--coords_as_active_site",
         help="Whether to output bed coordinates at the active site \
         rather than the coordinates of the entire protospacer. For purposes \
         of keeping or discarding sgRNAs, overlap with the active site \
-        coordinates will be used regardless [default: False]",
-        default=False,
-        action="store_true"
+        coordinates will be used regardless [default: True]",
+        default=True,
+        action="store_false"
+    )
+    
+    parser.add_argument(
+        "-o", "--output_prefix",
+        type=str,
+        help="Prefix for output files.",
+        default=""
+    )
+
+    parser.add_argument(
+        "-t", "--threads",
+        type=int,
+        help="Number of threads. [default: 4]",
+        default=4,
     )
 
 
@@ -390,8 +397,8 @@ def reverse_cut_site_offset(bedline, args):
         bedlist[1] = str(int(bedlist[1]) - args.sgRNA_length - args.active_site_offset_5)
         bedlist[2] = str(int(bedlist[2]) - args.active_site_offset_3) 
     else:
-        bedlist[1] = str(int(bedlist[1]) + args.active_site_offset_5 + 1)
-        bedlist[2] = str(int(bedlist[2]) + args.sgRNA_length + args.active_site_offset_3 - 1) 
+        bedlist[1] = str(int(bedlist[1]) + args.active_site_offset_5)
+        bedlist[2] = str(int(bedlist[2]) + args.sgRNA_length + args.active_site_offset_3) 
     
     return "\t".join(bedlist)
 
@@ -407,12 +414,32 @@ def write_results(final_targets, sgRNA_output_path, args):
                 k.write(line)
 
 
+def check_files(locations_to_keep, locations_to_discard):
+    if not locations_to_keep:
+        locations_to_keep = []
+    if not locations_to_discard:
+        locations_to_discard = []
+    gtf_extensions = ["gtf", "gff", "gff2", "gff3"]
+    other_exensions = ["bed"]
+    found_gtf = False
+    for file in locations_to_keep + locations_to_discard:
+        ext = file.split(".")[-1].lower()
+        if ext not in gtf_extensions + other_exensions:
+            raise ValueError(f"\n\t{file} of unknown type. Please pass GTF/GFF/BED.")
+        
+        if ext in gtf_extensions:
+            found_gtf = True
+        
+    return found_gtf
+
+
+
 def main():
     args = parse_arguments()
 
     if args.active_site_offset_5 >= args.active_site_offset_3:
         raise ValueError("--active_site_offset_5 should be less than --active_site_offset_3")
-    args.gc_range = args.gc_range.sort()
+    args.gc_range = sorted(args.gc_range)
 
     sgRNA_output_path = "./" + args.output_prefix + "sgRNAs/" + args.output_prefix.split("/")[-1] + "sgRNA.bed"
     create_output_directory(base_dir=sgRNA_output_path,output_prefix="")
@@ -426,6 +453,12 @@ def main():
               All sgRNA across all fasta entries will be returned (except --locations_to_discard).\n \
               This can lead to a very large intermediate file being saved to disk.\n")
     
+
+    gtf = check_files(args.locations_to_keep, args.locations_to_discard)
+    if args.feature and not gtf:
+        print(f"\n\tNo GTF file, --feature {args.feature} will be ignored.\n")  
+
+
     targets_to_keep = merge_targets(args.locations_to_keep, gtf_feature=args.feature , operation = args.join_operation)
     targets_to_discard = merge_targets(args.locations_to_discard, gtf_feature=args.feature , operation = "merge")
 

@@ -1,27 +1,6 @@
 import pandas as pd
 from pybedtools import BedTool
-
-
-def adjust_interval_coordinates(interval, subtract_amount, add_amount, chrom_length=float('inf')):
-    """
-    Adjusts the start and end coordinates of an interval.
-
-    Parameters:
-    - interval (Bedtool interval)
-    - subtract_amount (int): The amount to subtract from the interval's start coordinate.
-    - add_amount (int): The amount to add to the interval's end coordinate.
-    - chrom_length (int): length of chromosome to keep interval in bounds
-
-    Returns:
-    - Bedtool interval: The adjusted interval. Note that the original interval object is modified 
-      and returned.
-    """
-    if subtract_amount < 0 or add_amount < 0:
-        raise ValueError("subtract_amount and add_amount must be non-negative")
-    
-    interval.start = max(0, interval.start - subtract_amount)
-    interval.end = min(interval.end + add_amount, chrom_length)
-    return interval
+import re
 
 
 def preprocess_file(file, gtf_feature="exon"):
@@ -50,43 +29,6 @@ def preprocess_file(file, gtf_feature="exon"):
     else:
         return BedTool(file).sort()
 
-def merge_targets(files, gtf_feature="exon", operation="intersect", window = [0,0]):
-    """
-    Intersect or merge an arbitrary number of GTF/GFF/BED files using pybedtools.
-
-    Parameters:
-    - files (list): List of paths to GTF/GFF/BED files to merge.
-    - gtf_feature (str): The feature type to filter on in GTF/GFF files.
-    - operation (str): The operation to perform ('intersect' or 'merge').
-    - window (list): values to expand the interval by
-
-    Returns:
-    - BedTool: A BedTool object representing the merge of all files.
-    """
-
-    if not files:
-        return None
-    
-    # Initialize the result with the first preprocessed BED file
-    result = preprocess_file(files[0], gtf_feature)
-
-    # Iteratively intersect the result with each subsequent preprocessed BED file
-    for file in files[1:]:
-        if operation == "intersect":
-            result = result.intersect(preprocess_file(file=file, gtf_feature=gtf_feature))
-        elif operation == "merge":
-            result = result.cat(preprocess_file(file=file, gtf_feature=gtf_feature), postmerge=True)
-        else:
-            raise ValueError("Invalid operation. operation should be either 'merge' or 'intersect'.")
-
-    if window[0] != 0 or window[1] != 0:
-        result = result.each(adjust_interval_coordinates, 
-                    subtract_amount=window[0], add_amount=window[1])
-        
-    result = result.merge()
-    result = result.sort()
-
-    return result
 
 def filter_gtf_by_transcript_ids(input_file, transcript_ids):
     """
@@ -114,57 +56,6 @@ def filter_gtf_by_transcript_ids(input_file, transcript_ids):
                 filtered_lines.append(line)
 
     return filtered_lines
-
-def gtf_to_tss_bed(input_gtf, upstream=500, downstream=500):
-    """
-    Converts GTF file to a BED file with TSS positions for each transcript.
-
-    Parameters:
-    - input_gtf: Path to the input GTF file.
-    - upstream: The number of bases upstream of the TSS to include in the BED entry.
-    - downstream: The number of bases downstream of the TSS to include in the BED entry.
-
-    Returns:
-    - A list strings, each string is a line of a bed file
-    """
-
-    tss_entries = []
-
-    with open(input_gtf, 'r') as gtf:
-        for line in gtf:
-            if not line.startswith("#"):  # skip header lines
-                fields, attributes = parse_line(line)
-
-                if fields[2] == 'transcript':
-                    chrom = fields[0]
-                    start = int(fields[3]) # 0-based start for BED format
-                    end = int(fields[4])  # 1-based end for BED format
-                    strand = fields[6]
-                    
-                    # Ensure the transcript_id attribute is present before proceeding
-                    if 'transcript_id' not in attributes:
-                        continue
-                    
-                    tss_start, window_start,window_end = -1,-1,-1
-                    # Determine TSS and create a window around it based on strand orientation
-                    if strand == '+':
-                        window_start = max(0, start - upstream - 1)
-                        window_end = start + downstream
-                        tss_start = start - 1
-                    else:
-                        window_start = max(0, end - downstream - 1)
-                        window_end = end + upstream
-                        tss_start = end - 1
-
-                    # Create BED entry
-                    bed_entry = [chrom, str(window_start), str(window_end), attributes['transcript_id'], '0', strand,
-                                 str(tss_start), str(tss_start+1)]
-                    tss_entries.append('\t'.join(bed_entry))
-    
-    if not tss_entries:
-        print('\tTSS could not be inferred.\n\tCheck that ' + input_gtf + ' has \'transcript\' attributes in the third column.')
-
-    return tss_entries
 
 
 
@@ -277,130 +168,290 @@ def extract_transcript_gene_relationship(input_file):
                 relationship[transcript_id] = gene_id
     return relationship
 
-def write_utr(exon, start, end, cds_start, cds_end, strand, attributes):
+def extract_ids(attributes):
+    
+    #print(attributes)
+    
+    transcript_match = re.search(r'transcript_id[= ]"?([^";]*)"?', attributes)
+
+    gene_match = re.search(r'gene_id[= ]"?([^";]*)"?', attributes)
+
+    #print(transcript_match.group(1))
+    
+    transcript_id = transcript_match.group(1) if transcript_match else None
+    gene_id = gene_match.group(1) if gene_match else None
+    
+    #print(transcript_id, gene_id)
+    return transcript_id, gene_id
+
+def truncate_gtf(input_file, feature = "exon", percentile = 100):
     """
-    Generates UTR (Untranslated Region) entries for a given exon based on the CDS (Coding Sequence) coordinates.
+    Processes a GTF/GFF file to extract and truncate specified features based on percentiles.
 
     Parameters:
-    - exon (list): A list of fields representing an exon. Typically includes chromosome, source, feature type, 
-      start, end, score, strand, frame, and attributes.
-    - start (int): The start position of the exon.
-    - end (int): The end position of the exon.
-    - cds_start (int): The start position of the CDS.
-    - cds_end (int): The end position of the CDS.
-    - strand (str): The strand of the exon ('+' or '-').
-    - attributes (str): A string of attributes for the exon.
+    input_file (str): Path to the input GTF/GFF file.
+    feature (str): The feature of interest. Default is 'exon'.
+    percentiles (list): A list specifying the lower and upper percentile thresholds to truncate the features. Default is (0,50).
 
     Returns:
-    - str: A string representation of the UTR regions derived from the exon. Each UTR entry is in the same format as 
-      the input exon fields, separated by tabs, and each entry is on a new line. The function can return entries for 
-      5'UTR, 3'UTR, both, or none, depending on the exon and CDS positions.
+    DataFrame: A pandas DataFrame containing the selected and truncated features. 
 
-    The function creates UTR entries by adjusting the start and end positions of the exon based on the overlap 
-    with the CDS region. For the positive strand, it considers the region before the CDS start as 5'UTR and the region 
-    after the CDS end as 3'UTR. For the negative strand, it considers the region after the CDS end as 5'UTR and the region 
-    before the CDS start as 3'UTR.
+    Raises:
+    ValueError: If the specified feature is not found in the GTF/GFF file.
+
+    The function reads the GTF/GFF file and selects the rows of the specified feature. 
+    It then calculates the length of each feature and the cumulative length for each transcript.
+    The entries where 'cumulative_percentile' exceeds 'max_percentile' are identified and 
+    the 'end' or 'start' position of these entries are adjusted accordingly. 
+    Finally, the function returns a DataFrame containing the selected and truncated features.
+
+    Example:
+    >>> df = process_gtf('test.gtf', 'CDS', [0, 50])
     """
-    utr_str = ""
-    if strand == '+':
-        if start < cds_start:
-            utr5_fields = exon.copy()
-            utr5_fields[2] = '5UTR'
-            utr5_fields[4] = str(min(end, cds_start - 1))
-            utr5_fields[8] = attributes
-            utr_str += "\t".join(utr5_fields) + "\n"
+    print(f'\tProcessing: \t{input_file} \n\tFeature: \t{feature} \n\tPercentile range: \t{[0,percentile]}')
+    
+    df = pd.read_csv(input_file, sep='\t', header=None, comment='#')
+    df.columns = ["chrom", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]
+
+    # Select the rows for the specified feature
+    df = df[df["feature"] == feature]
+    
+    if df.empty:
+        raise ValueError("ERROR: --feature '"  + feature + "' not found in GTF/GFF column 3")
+
+
+    df_positive = df[df["strand"] == "+"].sort_values("start")
+    df_negative = df[df["strand"] == "-"].sort_values("start", ascending=False)
+
+    # Combine the sorted dataframes
+    df = pd.concat([df_positive, df_negative])
+    
+    df[["transcript_id", "gene_id"]] = df["attributes"].apply(extract_ids).apply(pd.Series)
+   
+    unique_transcript_ids = set(df["transcript_id"])
+    unique_gene_ids = set(df["gene_id"])
+
+    #if there's no trimming, short circuit
+    if percentile == 100:
+        return df, unique_transcript_ids, unique_gene_ids
+    
+    print(f'\n\tNumber of {feature} entries before processing:{df.shape[0]}')
+    # TODO check this
+    # print(f'\n\tNumber of unique transcripts before processing:{sorted(df["transcript_id"].drop_duplicates())}')
+
         
-        if end > cds_end:
-            utr3_fields = exon.copy()
-            utr3_fields[2] = '3UTR'
-            utr3_fields[3] = str(max(start, cds_end + 1))
-            utr3_fields[8] = attributes
-            utr_str += "\t".join(utr3_fields) + "\n"
-    else:
-        if end > cds_end:
-            utr5_fields = exon.copy()
-            utr5_fields[2] = '5UTR'
-            utr5_fields[3] = str(max(start, cds_end + 1))
-            utr5_fields[8] = attributes
-            utr_str += "\t".join(utr5_fields) + "\n"
-        
-        if start < cds_start:
-            utr3_fields = exon.copy()
-            utr3_fields[2] = '3UTR'
-            utr3_fields[4] = str(min(end, cds_start - 1))
-            utr3_fields[8] = attributes
-            utr_str += "\t".join(utr3_fields) + "\n"
+    # Calculate the length of each feature
+    df["length"] = abs(df["end"] - df["start"]) + 1
 
-    return utr_str
+    # Group by the "transcript_id" and calculate the cumulative length and total length
+    df["cumulative_length"] = df.groupby("transcript_id")["length"].cumsum()
+    df["total_length"] = df.groupby("transcript_id")["length"].transform(sum)
 
-def generate_output_str(genes, consensus_exons, consensus_CDS, label = "consensus" ):
-    """
-    Generates a string representation of consensus gene models in GTF format.
-    Called by create_constitutive_model and create_metagene_model
+    # Calculate the percentile of the cumulative length
+    df["cumulative_percentile"] = df["cumulative_length"] / df["total_length"] * 100
 
-    Parameters:
-    - genes (dict): A dictionary containing gene information, including chromosome, strand, and potentially other metadata.
-                    The keys are gene IDs, and values are dictionaries with details such as chromosome and strand.
-    - consensus_exons (dict): A dictionary with gene IDs as keys and sets of exon start-end tuples as values, 
-                              representing consensus exon regions for each gene.
-    - consensus_CDS (dict): A dictionary similar to consensus_exons but for coding sequences. If a gene has consensus CDS,
-                            it will be used to define CDS regions and calculate UTRs.
-    - label (str, optional): A label to annotate the consensus gene models. Default is "consensus".
+    # Identify the entries where 'cumulative_percentile' exceeds 'max_percentile'
+    overlaps = df[df["cumulative_percentile"] > percentile].groupby('transcript_id').first().reset_index()
 
-    Returns:
-    - str: A string containing the formatted GTF lines for the consensus gene models. This includes one line for each 
-           transcript, exon, and CDS, with UTRs included if consensus CDS data is available.
-    """
-
-    output_str = ''
-
-    for gene_id, exons in consensus_exons.items():
-        # Define CDS bounds based on consensus_CDS
-        cds_list = sorted(list(consensus_CDS.get(gene_id, [])))
-        if cds_list:
-            cds_start, _ = cds_list[0]
-            _, cds_end = cds_list[-1]
+    # Adjust the 'end' or 'start' position of overlapping entries
+    for i, row in overlaps.iterrows():
+        excess_percentile = row['cumulative_percentile'] - percentile
+        excess_length = int(row['total_length'] * excess_percentile / 100)
+        if row['strand'] == '+':
+            df.loc[(df['transcript_id'] == row['transcript_id']) & (df['end'] == row['end']), 'end'] -= excess_length
         else:
-            cds_start, cds_end = None, None
+            df.loc[(df['transcript_id'] == row['transcript_id']) & (df['start'] == row['start']), 'start'] += excess_length
+        #print(df.to_string())
+        df.loc[(df['transcript_id'] == row['transcript_id']), 'length'] = abs(df['end'] - df['start']) + 1
+    # Recalculate the cumulative length and the cumulative percentile
+    df["cumulative_length"] = df.groupby("transcript_id")["length"].cumsum()
 
-        if exons:
-            exons = sorted(list(exons), key=lambda x: x[0])
-            transcript_start = exons[0][0]
-            transcript_end = exons[-1][1]
-            transcript_line = [
-                genes[gene_id]['chromosome'], label, 'transcript', str(transcript_start), str(transcript_end), '.', 
-                genes[gene_id]['strand'], '.', f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
-            ]
-            output_str += "\t".join(transcript_line) + "\n"
+    df["cumulative_percentile"] = (df["cumulative_length"] / df["total_length"] * 100).astype(int)
+    
+    
+    df = df[df["cumulative_percentile"] <= percentile]
+    
+    print(f'\n\tNumber of {feature} entries after processing:\t{df.shape[0]}')
+    # TODO check this
+    #print(f'\n\tNumber of unique transcripts after processing:{sorted(df["transcript_id"].drop_duplicates())}')
+    
+    # Drop the extra columns
+    df = df.drop(columns=["length", "cumulative_length", "total_length", "cumulative_percentile", "transcript_id", "gene_id"])
+    
+    df = df.sort_values(["chrom", "start"])
+    
+    # Save the selected rows to a new file
+    
+    return df, unique_transcript_ids, unique_gene_ids
 
-        for exon_tuple in exons:
-            start, end = exon_tuple
-            exon_line = [
-                genes[gene_id]['chromosome'], label, 'exon', str(start), str(end), '.', 
-                genes[gene_id]['strand'], '.', f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
-            ]
-            output_str += "\t".join(exon_line) + "\n"
-            if cds_start and cds_end:  # Only write UTRs if there is a consensus CDS
-                attributes = f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
-                output_str += write_utr(exon_line, start, end, cds_start, cds_end, genes[gene_id]['strand'], attributes)
-
-        for cds_tuple in consensus_CDS.get(gene_id, []):
-            start, end = cds_tuple
-            cds_line = [
-                genes[gene_id]['chromosome'], label, 'CDS', str(start), str(end), '.', 
-                genes[gene_id]['strand'], '.', f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
-            ]
-            output_str += "\t".join(cds_line) + "\n"
-
-    return output_str.strip()
-
-
-
-def is_inside(region1, region2):
+def parse_gtf_for_cds_extremes(gtf_file):
     """
-    Check if region1 is inside region2.
+    Parses a GTF file and identifies the transcripts with the longest and shortest CDS per gene.
+    Returns DataFrames for both longest and shortest CDS transcripts without creating incorrect entries.
     """
-    return region2[0] <= region1[0] and region2[1] >= region1[1]
+    # Load GTF file
+    cols = ['seqname', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes']
+    df = pd.read_csv(gtf_file, sep='\t', comment='#', names=cols, usecols=range(9))
+
+    df[["transcript_id", "gene_id"]] = df["attributes"].apply(extract_ids).apply(pd.Series)
+
+    # Filter for CDS entries
+    df_cds = df[df['feature'] == 'CDS'].copy()
+
+    # Extract gene_id and transcript_id
+    # df_cds['gene_id'] = df_cds['attributes'].str.extract('gene_id "([^"]+)"')
+    # df_cds['transcript_id'] = df_cds['attributes'].str.extract('transcript_id "([^"]+)"')
+
+
+
+    # Calculate CDS length and sum it per transcript
+    df_cds['cds_length'] = df_cds['end'] - df_cds['start'] + 1
+    cds_length_per_transcript = df_cds.groupby(['gene_id', 'transcript_id'])['cds_length'].sum().reset_index()
+
+    # Identify longest and shortest CDS transcripts for each gene
+    longest_cds_idx = cds_length_per_transcript.groupby('gene_id')['cds_length'].idxmax()
+    shortest_cds_idx = cds_length_per_transcript.groupby('gene_id')['cds_length'].idxmin()
+
+    longest_transcripts = cds_length_per_transcript.loc[longest_cds_idx, 'transcript_id']
+    shortest_transcripts = cds_length_per_transcript.loc[shortest_cds_idx, 'transcript_id']
+
+    #print(longest_transcripts.to_list())
+    # Filter original CDS entries for longest and shortest transcripts
+    df_longest_cds = df[df['transcript_id'].isin(longest_transcripts)]
+    df_shortest_cds = df[df['transcript_id'].isin(shortest_transcripts)]
+
+    return df_longest_cds.iloc[:, :9], df_shortest_cds.iloc[:, :9]
+
+
+def gtf_to_tss_tes_bed(input_gtf, tss_upstream=0, tss_downstream=0, tes_upstream=0, tes_downstream=0):
+    """
+    Converts GTF file to a BED file with TSS positions for each transcript.
+
+    Parameters:
+    - input_gtf: Path to the input GTF file.
+    - upstream: The number of bases upstream of the TSS to include in the BED entry.
+    - downstream: The number of bases downstream of the TSS to include in the BED entry.
+
+    Returns:
+    - A list strings, each string is a line of a bed file
+    """
+
+    tss_entries = []
+    tes_entries = []
+
+    with open(input_gtf, 'r') as gtf:
+        for line in gtf:
+            if not line.startswith("#"):  # skip header lines
+                fields, attributes = parse_line(line)
+
+                if fields[2] == 'transcript':
+                    chrom = fields[0]
+                    start = int(fields[3]) # 0-based start for BED format
+                    end = int(fields[4])  # 1-based end for BED format
+                    strand = fields[6]
+                                                            
+                    tss_start,tss_end,tes_start,tes_end = 0,0,0,0
+                    # Determine TSS and create a window around it based on strand orientation
+                    if strand == '+':
+                        tss_start = max(0, start - tss_upstream - 1)
+                        tss_end = start + tss_downstream
+                        tes_start = end - tes_upstream
+                        tes_end = end + tes_downstream
+                    else:
+                        tss_start = max(0, end - tss_downstream - 1)
+                        tss_end = end + tss_upstream
+                        tes_start = start - tes_downstream
+                        tes_end = start + tes_upstream - 1
+
+                    # Create BED entry
+                    tss_entry = [chrom, str(tss_start), str(tss_end), 'TSS_' + attributes['transcript_id'], '0', strand]
+                    tes_entry = [chrom, str(tes_start), str(tes_end), 'TES_' + attributes['transcript_id'], '0', strand]
+                    
+                    tss_entries.append('\t'.join(tss_entry))
+                    tes_entries.append('\t'.join(tes_entry))
+    
+    if not tss_entries:
+        print('\tTSS could not be inferred.\n\tCheck that ' + input_gtf + ' has \'transcript\' attributes in the third column.')
+    if not tes_entries:
+        print('\tTES could not be inferred.\n\tCheck that ' + input_gtf + ' has \'transcript\' attributes in the third column.')
+
+    return tss_entries, tes_entries
+
+
+
+def adjust_interval_coordinates(interval, subtract_amount, add_amount, chrom_length=float('inf')):
+    """
+    Adjusts the start and end coordinates of an interval.
+
+    Parameters:
+    - interval (Bedtool interval)
+    - subtract_amount (int): The amount to subtract from the interval's start coordinate.
+    - add_amount (int): The amount to add to the interval's end coordinate.
+    - chrom_length (int): length of chromosome to keep interval in bounds
+
+    Returns:
+    - Bedtool interval: The adjusted interval. Note that the original interval object is modified 
+      and returned.
+    """
+    if subtract_amount < 0 or add_amount < 0:
+        raise ValueError("subtract_amount and add_amount must be non-negative")
+    
+    interval.start = max(0, interval.start - subtract_amount)
+    interval.end = min(interval.end + add_amount, chrom_length)
+    return interval
+
+def merge_targets(files, gtf_feature="exon", operation="intersect", window = [0,0]):
+    """
+    Intersect or merge an arbitrary number of GTF/GFF/BED files using pybedtools.
+
+    Parameters:
+    - files (list): List of paths to GTF/GFF/BED files to merge.
+    - gtf_feature (str): The feature type to filter on in GTF/GFF files.
+    - operation (str): The operation to perform ('intersect' or 'merge').
+    - window (list): values to expand the interval by
+
+    Returns:
+    - BedTool: A BedTool object representing the merge of all files.
+    """
+
+    if not files:
+        return None
+    
+    # Initialize the result with the first preprocessed BED file
+    result = preprocess_file(files[0], gtf_feature)
+
+    # Iteratively intersect the result with each subsequent preprocessed BED file
+    for file in files[1:]:
+        if operation == "intersect":
+            result = result.intersect(preprocess_file(file=file, gtf_feature=gtf_feature))
+        elif operation == "merge":
+            result = result.cat(preprocess_file(file=file, gtf_feature=gtf_feature), postmerge=True)
+        else:
+            raise ValueError("Invalid operation. operation should be either 'merge' or 'intersect'.")
+
+    if window[0] != 0 or window[1] != 0:
+        result = result.each(adjust_interval_coordinates, 
+                    subtract_amount=window[0], add_amount=window[1])
+        
+    result = result.merge()
+    result = result.sort()
+
+    return result
+
+
+
+def get_tscript_geneid_gtf(input_file):
+    df = pd.read_csv(input_file, sep='\t', header=None, comment='#')
+    df.columns = ["chrom", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]
+    df[["transcript_id", "gene_id"]] = df["attributes"].apply(extract_ids).apply(pd.Series)
+
+    return set(df["transcript_id"]), set(df["gene_id"])
+
+
+
+
+
+
 
 
 
@@ -611,3 +662,128 @@ def get_max_start_min_end(regions):
     
     return (max_start, min_end)
 
+
+def write_utr(exon, start, end, cds_start, cds_end, strand, attributes):
+    """
+    Generates UTR (Untranslated Region) entries for a given exon based on the CDS (Coding Sequence) coordinates.
+
+    Parameters:
+    - exon (list): A list of fields representing an exon. Typically includes chromosome, source, feature type, 
+      start, end, score, strand, frame, and attributes.
+    - start (int): The start position of the exon.
+    - end (int): The end position of the exon.
+    - cds_start (int): The start position of the CDS.
+    - cds_end (int): The end position of the CDS.
+    - strand (str): The strand of the exon ('+' or '-').
+    - attributes (str): A string of attributes for the exon.
+
+    Returns:
+    - str: A string representation of the UTR regions derived from the exon. Each UTR entry is in the same format as 
+      the input exon fields, separated by tabs, and each entry is on a new line. The function can return entries for 
+      5'UTR, 3'UTR, both, or none, depending on the exon and CDS positions.
+
+    The function creates UTR entries by adjusting the start and end positions of the exon based on the overlap 
+    with the CDS region. For the positive strand, it considers the region before the CDS start as 5'UTR and the region 
+    after the CDS end as 3'UTR. For the negative strand, it considers the region after the CDS end as 5'UTR and the region 
+    before the CDS start as 3'UTR.
+    """
+    utr_str = ""
+    if strand == '+':
+        if start < cds_start:
+            utr5_fields = exon.copy()
+            utr5_fields[2] = '5UTR'
+            utr5_fields[4] = str(min(end, cds_start - 1))
+            utr5_fields[8] = attributes
+            utr_str += "\t".join(utr5_fields) + "\n"
+        
+        if end > cds_end:
+            utr3_fields = exon.copy()
+            utr3_fields[2] = '3UTR'
+            utr3_fields[3] = str(max(start, cds_end + 1))
+            utr3_fields[8] = attributes
+            utr_str += "\t".join(utr3_fields) + "\n"
+    else:
+        if end > cds_end:
+            utr5_fields = exon.copy()
+            utr5_fields[2] = '5UTR'
+            utr5_fields[3] = str(max(start, cds_end + 1))
+            utr5_fields[8] = attributes
+            utr_str += "\t".join(utr5_fields) + "\n"
+        
+        if start < cds_start:
+            utr3_fields = exon.copy()
+            utr3_fields[2] = '3UTR'
+            utr3_fields[4] = str(min(end, cds_start - 1))
+            utr3_fields[8] = attributes
+            utr_str += "\t".join(utr3_fields) + "\n"
+
+    return utr_str
+
+def generate_output_str(genes, consensus_exons, consensus_CDS, label = "consensus" ):
+    """
+    Generates a string representation of consensus gene models in GTF format.
+    Called by create_constitutive_model and create_metagene_model
+
+    Parameters:
+    - genes (dict): A dictionary containing gene information, including chromosome, strand, and potentially other metadata.
+                    The keys are gene IDs, and values are dictionaries with details such as chromosome and strand.
+    - consensus_exons (dict): A dictionary with gene IDs as keys and sets of exon start-end tuples as values, 
+                              representing consensus exon regions for each gene.
+    - consensus_CDS (dict): A dictionary similar to consensus_exons but for coding sequences. If a gene has consensus CDS,
+                            it will be used to define CDS regions and calculate UTRs.
+    - label (str, optional): A label to annotate the consensus gene models. Default is "consensus".
+
+    Returns:
+    - str: A string containing the formatted GTF lines for the consensus gene models. This includes one line for each 
+           transcript, exon, and CDS, with UTRs included if consensus CDS data is available.
+    """
+
+    output_str = ''
+
+    for gene_id, exons in consensus_exons.items():
+        # Define CDS bounds based on consensus_CDS
+        cds_list = sorted(list(consensus_CDS.get(gene_id, [])))
+        if cds_list:
+            cds_start, _ = cds_list[0]
+            _, cds_end = cds_list[-1]
+        else:
+            cds_start, cds_end = None, None
+
+        if exons:
+            exons = sorted(list(exons), key=lambda x: x[0])
+            transcript_start = exons[0][0]
+            transcript_end = exons[-1][1]
+            transcript_line = [
+                genes[gene_id]['chromosome'], label, 'transcript', str(transcript_start), str(transcript_end), '.', 
+                genes[gene_id]['strand'], '.', f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
+            ]
+            output_str += "\t".join(transcript_line) + "\n"
+
+        for exon_tuple in exons:
+            start, end = exon_tuple
+            exon_line = [
+                genes[gene_id]['chromosome'], label, 'exon', str(start), str(end), '.', 
+                genes[gene_id]['strand'], '.', f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
+            ]
+            output_str += "\t".join(exon_line) + "\n"
+            if cds_start and cds_end:  # Only write UTRs if there is a consensus CDS
+                attributes = f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
+                output_str += write_utr(exon_line, start, end, cds_start, cds_end, genes[gene_id]['strand'], attributes)
+
+        for cds_tuple in consensus_CDS.get(gene_id, []):
+            start, end = cds_tuple
+            cds_line = [
+                genes[gene_id]['chromosome'], label, 'CDS', str(start), str(end), '.', 
+                genes[gene_id]['strand'], '.', f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
+            ]
+            output_str += "\t".join(cds_line) + "\n"
+
+    return output_str.strip()
+
+
+
+def is_inside(region1, region2):
+    """
+    Check if region1 is inside region2.
+    """
+    return region2[0] <= region1[0] and region2[1] >= region1[1]

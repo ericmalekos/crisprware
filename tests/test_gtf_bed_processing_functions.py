@@ -1,8 +1,8 @@
 import unittest
 from utils.gtf_bed_processing_functions import preprocess_file,merge_targets,\
     gtf_to_tss_bed,parse_line, extract_transcript_gene_relationship, parse_input,\
-        create_metagene_model,create_constitutive_model
-
+        create_metagene_model,create_constitutive_model, truncate_gtf, truncate_gtf_2
+import pandas as pd
 
 class TestGTFBEDFunctions(unittest.TestCase):
     
@@ -260,5 +260,28 @@ class TestCreateMetageneModel(unittest.TestCase):
         with open(output_file, 'r') as f: expected_output_str = f.read().strip()
         self.assertEqual(sorted(output_str.split("\n")), sorted(expected_output_str.split("\n")))
  
+
+# class TestTruncateGTF(unittest.TestCase):
+#     def setUp(self):
+#         # This method is called before each test
+#         self.input_file = 'tests/test_data/test.gtf'
+#         self.feature = 'CDS'
+#         self.percentiles = [0, 50]
+
+#     def test_equivalent_output(self):
+#         # Process the test GTF with both functions
+#         df1 = truncate_gtf(self.input_file, self.feature, self.percentiles)
+
+#         df2 = truncate_gtf_2(self.input_file, self.feature, self.percentiles)
+
+#         print("\t\ttruncate_gtf")
+#         print(df1)
+
+#         print("\t\ttruncate_gtf_2")
+#         print(df2)
+
+#         # Verify the DataFrames are equivalent
+#         pd.testing.assert_frame_equal(df1, df2, check_dtype=True, check_like=True)
+
 if __name__ == '__main__':
     unittest.main()
