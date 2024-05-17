@@ -245,6 +245,9 @@ def save_output(args,finalsgRNAs,out_path,initial_target_ids):
     if args.plot_histogram: create_histogram(finalsgRNAs, out_path[:-3] + "pdf", targetsWithoutsgRNAs)
 
 def main():
+
+    #TODO it should not require minimum values for ranking column
+
     pd.set_option('display.max_columns', None)
     args = parse_arguments()
 

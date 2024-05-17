@@ -1,14 +1,14 @@
 #!/usr/bin/env Rscript
 # 
 # Ex: 
-#   crisprscore.R <path_to_sgrna_bed_file> 3
+#   crisprscore.R <path_to_sgrna_bed_file> 3 <path_to_output_file> [--chunk-size 100000]
 #   crisprscore.R --help
 #
 
 args <- commandArgs(trailingOnly = TRUE)
 
 print_help <- function() {
-  cat("\n\tUsage: crisprscore.R <path_to_sgrna_bed_file> <method_number> <outputfile> ... <additional settings> \n")
+  cat("\n\tUsage: crisprscore.R <path_to_sgrna_bed_file> <method_number> <outputfile> [<additional settings> ... ] \n")
   cat("\tExample: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 2 Azimuth_scored_sgRNAs.bed\n")
   cat("\tMethods:\n")
   cat("\t1:  RuleSet1 - SpCas9 (Length: 30)\n")
@@ -24,6 +24,10 @@ print_help <- function() {
   cat("\t11: DeepSpCas9 - SpCas9 (Length: 30)\n")
   cat("\t12: RuleSet3 - SpCas9 (Length: 30)\n\n")
 
+  cat("\n\tAdditional optional argument for chunk size:\n")
+  cat("\t--chunk-size: Specify the size of chunks for processing the dataframe (optional)\n")
+  cat("\tExample with chunk size: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 2 Azimuth_scored_sgRNAs.bed --chunk-size 10000\n\n")
+  
   cat("\tAdditional settings for method 3 (DeepHF):\n")
   cat("\t--enzyme: Specify the enzyme (options: 'WT', 'ESP', 'HF')\n")
   cat("\t--promoter: Specify the promoter (options: 'U6', 'T7')\n")
@@ -31,7 +35,7 @@ print_help <- function() {
 
   cat("\tAdditional setting for method 5 (DeepCpf1):\n")
   cat("\t--no-convertPAM: Specify whether non-canonical PAMs are converted to TTTC [default: TRUE]\n")
-  cat("\tExample: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 5 DeepCpf1_scored_sgRNAs.bed no-convertPAM\n\n")
+  cat("\tExample: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 5 DeepCpf1_scored_sgRNAs.bed --no-convertPAM\n\n")
   
   cat("\tAdditional setting for method 12 (RuleSet3):\n")
   cat("\t--tracrRNA: Specify tracrRNA (options: 'Hsu2013', 'Chen2013')\n\n")
@@ -44,12 +48,19 @@ if (length(args) < 3 || args[1] == "--help") {
   cat("\n\t\tERROR: Missing arguments\n\n")
   print_help()
   quit(status = 0)
-}
+} 
 
 # Extract arguments
 sgrna_file <- args[1]
 method_number <- as.integer(args[2])
 output <- args[3]
+
+chunk_size <- Inf
+if ("--chunk-size" %in% args) {
+  chunk_size_index <- match("--chunk-size", args) + 1
+  chunk_size <- as.numeric(args[chunk_size_index])
+  args <- args[-(chunk_size_index-1:chunk_size_index)]  # Remove chunk size arguments from args
+}
 
 if (method_number == 3) {
   if (length(args) != 5) {
@@ -106,7 +117,11 @@ df <- read.table(sgrna_file,
                  header = TRUE,
                  comment.char = "")
 
-colnames(df) <- c("#chr", "start", "stop", "id.sequence.pam.chromosome.position.sense", "context", "strand")
+#colnames(df) <- c("#chr", "start", "stop", "id.sequence.pam.chromosome.position.sense", "context", "strand")
+
+if (chunk_size == Inf) {
+  chunk_size <- nrow(df)
+}
 
 check_context_length <- function(df, expected_length) {
   if (!is.na(expected_length)) {
@@ -158,38 +173,60 @@ if (!check_context_length(df, method_info$length)) {
 
 cat("Processing", sgrna_file, "with method number", method_number, "\n")
 
-#print(head(df,5))
 
-score_func <- method_info$func
+apply_scoring_to_chunk <- function(chunk_df) {
+  method_info <- method_map[[method_number]]
+  score_func <- method_info$func
+  selected_method_name <- method_names[method_number]
+  
 
-if (method_number == 3) {
-  df <- df %>%
-    mutate(!!paste0(selected_method_name, "_score") := score_func(context, enzyme = enzyme, promoter = promoter)$score)
-} else if (method_number == 5) {
-  df <- df %>%
-    mutate(!!paste0(selected_method_name, "_score") := score_func(context, convertPAM = convertPAM)$score)
-} else if (method_number == 12) {
-  df <- df %>%
-    mutate(!!paste0(selected_method_name, "_score") := score_func(context, tracrRNA = tracrRNA)$score)
-} else {
-  df <- df %>%
-    mutate(!!paste0(selected_method_name, "_score") := score_func(context)$score)
+  
+  if (!check_context_length(chunk_df, method_info$length)) {
+    stop("Context length does not match the expected length for the selected method")
+  }
+  
+  # Dynamically call the scoring function based on method_number
+  # Append the scores as a new column named after the selected method
+  score_column_name <- paste0(selected_method_name, "_score")
+  
+  # Assuming all scoring functions return a dataframe with a 'score' column
+  # scored_chunk_df <- chunk_df %>%
+  #   mutate(!!score_column_name := score_func(context)$score)
+  # 
+  if (method_number == 3) {
+    scored_chunk_df <- chunk_df %>%
+      mutate(!!paste0(selected_method_name, "_score") := score_func(context, enzyme = enzyme, promoter = promoter)$score)
+  } else if (method_number == 5) {
+    scored_chunk_df <- chunk_df %>%
+      mutate(!!paste0(selected_method_name, "_score") := score_func(context, convertPAM = convertPAM)$score)
+  } else if (method_number == 12) {
+    scored_chunk_df <- chunk_df %>%
+      mutate(!!paste0(selected_method_name, "_score") := score_func(context, tracrRNA = tracrRNA)$score)
+  } else {
+    scored_chunk_df <- chunk_df %>%
+      mutate(!!paste0(selected_method_name, "_score") := score_func(context)$score)
+  }
+  
+  return(scored_chunk_df)
 }
 
-#print(head(df,5))
+# Load the dataframe
+df <- read.table(sgrna_file, sep = "\t", header = TRUE, comment.char = "")
 
-output_path <- "./sgRNAs/scoredSgRNAs/"
+# Initialize an empty dataframe for the results
+results_df <- df[0, ]
 
-# Check if the directory exists, if not create it
-if (!dir.exists(output_path)) {
-  dir.create(output_path, recursive = TRUE)
+# Process the dataframe in chunks
+for (i in seq(1, nrow(df), by = chunk_size)) {
+  print(i)
+  chunk <- df[i:min(i + chunk_size - 1, nrow(df)), ]
+  scored_chunk <- apply_scoring_to_chunk(chunk)
+  results_df <- rbind(results_df, scored_chunk)
 }
 
-# Assuming 'df' is your data frame
-output_file <- paste0(output_path, output)
-
-# Save the data frame as a TSV file
-write.table(df, file = output_file, sep = "\t", row.names = FALSE, quote = FALSE)
+new_column_names <- c("#chr", "start", "stop", "id,sequence,pam,chromosome,position,sense", "context", "strand")
+names(results_df)[1:6] <- new_column_names
+write.table(results_df, file = output, sep = "\t", row.names = FALSE, quote = FALSE)
 
 
 # TESTING PACKAGE

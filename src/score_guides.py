@@ -359,10 +359,11 @@ def main():
     for gscanIndex in args.guidescan2_indices:
         print(f"\n\tBeginning Guidescan2 specificity scoring against " + gscanIndex + "\n\tIf memory constrained reduce '--chunk_size'\n")
         guidescan_chunk_dfs = []
+        suffix_index = gscanIndex.split("/")[-1]
         # chunk up the input and save it in a form compatible with guidescan processing
         for i, (_, chunk) in enumerate(sgRNADF.groupby(sgRNADF.index // args.chunk_size)):
 
-            input = tmp_path + f'gscanInput.{i + 1}.csv'
+            input = tmp_path + f'{suffix_index}Input.{i + 1}.csv'
             output = input.replace("Input", "Output")
             print(f"\n\tSaved Guidescan input file to {input}\n")
             chunk[['id,sequence,pam,chromosome,position,sense']].to_csv("./" + input, sep='\t', index=False)

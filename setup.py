@@ -42,6 +42,7 @@ setup(
         'rs3>=0.0.15',
         'biopython>=1.8',
         'lightgbm==3.3.5',
+        'pybigwig'
         'pandas',
         'numpy'
         # Add other dependencies as needed

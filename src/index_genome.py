@@ -96,16 +96,17 @@ def main():
     if args.fasta.endswith(".gz"):
         raise ValueError(f'\n\n\tERROR: {args.fasta} needs to be unzipped.\n')
 
-    if not args.output_prefix.endswith("_") : args.output_prefix += "_"
-    index_dir = args.output_prefix + "Index"
-    index_output_path = create_output_directory(output_prefix=args.output_prefix+"index",
-                                                base_dir=index_dir)
+    #if not args.output_prefix.endswith("_") : args.output_prefix += "_"
+    #index_dir = args.output_prefix + "Index"
+    if not args.output_prefix.endswith("index"): args.output_prefix+="index"
+    index_output_path = create_output_directory(output_prefix=args.output_prefix,
+                                                base_dir=args.output_prefix)
     if not args.locations_to_keep:
         guideScanIndex(args.fasta, index_output_path.strip("_"))
     else:
 
         bed_output_path = create_output_directory(output_prefix=args.output_prefix + "merged.bed",
-                                                  base_dir=index_dir+"/tmp")
+                                                  base_dir=args.output_prefix+"/tmp")
 
         locs_to_keep = merge_targets(args.locations_to_keep, gtf_feature=args.feature,
                                      operation="merge", window=args.context_window)
@@ -116,7 +117,7 @@ def main():
         
 
         fasta_output_path=create_output_directory(output_prefix=args.output_prefix + "subset.fasta",
-                                                  base_dir=index_dir)
+                                                  base_dir=args.output_prefix)
         
         print(f"\n\tSaving subset fasta to {fasta_output_path}")
 
@@ -135,7 +136,7 @@ def main():
         remove(args.fasta + ".reverse.dna")
     except:
         print(f"... Failed to remove 'reverse.dna' and 'forward.dna'")
-
+    
 
 if __name__ == "__main__":
     main()

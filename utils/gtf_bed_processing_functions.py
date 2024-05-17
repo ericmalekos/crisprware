@@ -353,19 +353,19 @@ def gtf_to_tss_tes_bed(input_gtf, tss_upstream=0, tss_downstream=0, tes_upstream
                     tss_start,tss_end,tes_start,tes_end = 0,0,0,0
                     # Determine TSS and create a window around it based on strand orientation
                     if strand == '+':
-                        tss_start = max(0, start - tss_upstream - 1)
+                        tss_start = start - tss_upstream - 1
                         tss_end = start + tss_downstream
                         tes_start = end - tes_upstream
                         tes_end = end + tes_downstream
                     else:
-                        tss_start = max(0, end - tss_downstream - 1)
+                        tss_start = end - tss_downstream - 1
                         tss_end = end + tss_upstream
                         tes_start = start - tes_downstream
                         tes_end = start + tes_upstream - 1
 
                     # Create BED entry
-                    tss_entry = [chrom, str(tss_start), str(tss_end), 'TSS_' + attributes['transcript_id'], '0', strand]
-                    tes_entry = [chrom, str(tes_start), str(tes_end), 'TES_' + attributes['transcript_id'], '0', strand]
+                    tss_entry = [chrom, str(max(0,tss_start)), str(max(0,tss_end)), 'TSS_' + attributes['transcript_id'], '0', strand]
+                    tes_entry = [chrom, str(max(0,tes_start)), str(max(0,tes_end)), 'TES_' + attributes['transcript_id'], '0', strand]
                     
                     tss_entries.append('\t'.join(tss_entry))
                     tes_entries.append('\t'.join(tes_entry))

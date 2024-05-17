@@ -1,7 +1,7 @@
 import unittest
 from utils.gtf_bed_processing_functions import preprocess_file,merge_targets,\
-    gtf_to_tss_bed,parse_line, extract_transcript_gene_relationship, parse_input,\
-        create_metagene_model,create_constitutive_model, truncate_gtf, truncate_gtf_2
+    gtf_to_tss_tes_bed,parse_line, extract_transcript_gene_relationship, parse_input,\
+        create_metagene_model,create_constitutive_model, truncate_gtf
 import pandas as pd
 
 class TestGTFBEDFunctions(unittest.TestCase):
@@ -55,20 +55,31 @@ class TestGTFBEDFunctions(unittest.TestCase):
 
     def test_gtf_to_tss_bed(self):
         input_gtf = "./tests/test_data/test.gtf"  # Replace with the path to your test GTF file
-        upstream = 50
-        downstream = 25
+        tss_upstream = 50
+        tss_downstream = 25
+        tes_upstream = 5
+        tes_downstream = 10
 
-        expected_result = [
-            'test_chr\t0\t45\ttranscript1\t0\t+\t19\t20',
-            'test_chr\t69\t145\ttranscript2\t0\t+\t119\t120',
-            'test_chr\t234\t310\ttranscript3\t0\t-\t259\t260',
-            'test_chr\t254\t330\ttranscript4\t0\t-\t279\t280',
+        expected_TSS = [
+            'test_chr\t0\t45\tTSS_transcript1\t0\t+',
+            'test_chr\t69\t145\tTSS_transcript2\t0\t+',
+            'test_chr\t234\t310\tTSS_transcript3\t0\t-',
+            'test_chr\t254\t330\tTSS_transcript4\t0\t-',
+        ]
+        expected_TES = [
+            'test_chr\t45\t60\tTES_transcript1\t0\t+',
+            'test_chr\t165\t180\tTES_transcript2\t0\t+',
+            'test_chr\t190\t204\tTES_transcript3\t0\t-',
+            'test_chr\t190\t204\tTES_transcript4\t0\t-'
         ]
 
-        result = gtf_to_tss_bed(input_gtf, upstream, downstream)
 
-        # Check if the result matches the expected_result
-        self.assertEqual(result, expected_result)
+        result_TSS, result_TES = gtf_to_tss_tes_bed(input_gtf, 
+                                                    tss_upstream=tss_upstream, tss_downstream=tss_downstream,
+                                                    tes_upstream=tes_upstream, tes_downstream=tes_downstream)
+
+        self.assertEqual(result_TSS, expected_TSS)
+        self.assertEqual(result_TES, expected_TES)
 
 class TestParseLineFunction(unittest.TestCase):
 

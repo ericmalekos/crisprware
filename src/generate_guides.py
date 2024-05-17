@@ -15,7 +15,7 @@ import argparse
 from concurrent.futures import ProcessPoolExecutor
 from pybedtools import BedTool
 from utils.dna_sequence_functions import NTS, map_ambiguous_sequence, \
-    revcom,merge_targets, include_sgRNA, get_chromosome_boundaries
+    revcom, merge_targets, include_sgRNA, get_chromosome_boundaries
 from utils.utility_functions import create_output_directory
 
 def parse_arguments():
@@ -30,7 +30,6 @@ def parse_arguments():
         help="FASTA file to use as a reference for sgRNA generation.",
         required=True
     )
-
 
     parser.add_argument(
         "-p", "--pam",
@@ -71,9 +70,9 @@ def parse_arguments():
         "-3", "--active_site_offset_3",
         type=int,
         help="Where cut occurs relative to PAM 5' end. [default: -2] \
-         To avoid error, use '=' sign when passing a negative number, \
-                 e.g. --active_site_offset_3=-3 [default: -2]",
-        default="-2"
+            To avoid error, use '=' sign when passing a negative number, \
+            e.g. --active_site_offset_3=-3 [default: -4]",
+        default="-4"
     )
 
     parser.add_argument(
@@ -220,7 +219,6 @@ def parse_arguments():
         default=4,
     )
 
-
     return parser.parse_args()
 
 def find_sgRNA(args, pam, chrm, start, end, forward=True):
@@ -245,7 +243,7 @@ def find_sgRNA(args, pam, chrm, start, end, forward=True):
     Yields:
     - tuple: A tuple containing:
         - sgRNA (str): The found sgRNA sequence in uppercase.
-        - position (int): The start position of the sgRNA sequence.
+        - position (int): The start position of the sequence, 1-based, and according to Guidescan2 expectations
         - context (str): The context sequence surrounding the sgRNA, in uppercase.
 
     """
@@ -262,20 +260,20 @@ def find_sgRNA(args, pam, chrm, start, end, forward=True):
             if forward:
                 sgRNA = chrm[index - k:index]
                 context = chrm[index - k - upstr:index + downstr]
-                position = index - k 
+                position = index - k + 1
             else:
                 sgRNA = chrm[index + len(pam):index + k + len(pam)]
                 context = chrm[index - (downstr-len(pam)):index + k + len(pam) + upstr]
-                position = index
+                position = index + 1
         else:
             if forward:
                 sgRNA = chrm[index + len(pam):index + len(pam) + k]
-                context = chrm[index - upstr:index+ len(pam) + k + downstr]
-                position = index + k 
+                context = chrm[index - upstr + len(pam):index + len(pam) + k + downstr]
+                position = index + 1
             else:
                 sgRNA = chrm[index - k:index]
-                context = chrm[index - k - downstr:index + len(pam) + upstr]
-                position = index
+                context = chrm[index - k - downstr:index + upstr]
+                position = index + 1
 
         index += 1
 
@@ -313,13 +311,21 @@ def output_bed_line(args, chrm_name, sgRNA):
            str(sgRNA['position']), sgRNA['sense']])
     
     # Find the position of the Cleavage site 
-    if sgRNA['sense'] == "+":
-        cleavePos1 = sgRNA['position'] + sgRNA['length'] + args.active_site_offset_5
-        cleavePos2 = sgRNA['position'] + sgRNA['length'] + args.active_site_offset_3
+    if not args.pam_5_prime:    
+        if sgRNA['sense'] == "+":
+            cleavePos1 = sgRNA['position'] + sgRNA["length"] + args.active_site_offset_5 - 1
+            cleavePos2 = sgRNA['position'] + sgRNA["length"] + args.active_site_offset_3 - 1
+        else:
+            cleavePos1 = sgRNA['position'] - args.active_site_offset_3 + len(args.pam) - 1
+            cleavePos2 = sgRNA['position'] - args.active_site_offset_5 + len(args.pam) - 1
     else:
-        cleavePos1 = sgRNA['position'] - args.active_site_offset_3 + len(args.pam)
-        cleavePos2 = sgRNA['position'] - args.active_site_offset_5 + len(args.pam)
-    
+        if sgRNA['sense'] == "+":
+            cleavePos1 = sgRNA['position'] + len(args.pam) + args.active_site_offset_5 - 1
+            cleavePos2 = sgRNA['position'] + len(args.pam) + args.active_site_offset_3 - 1
+        else:
+            cleavePos1 = sgRNA['position'] - args.active_site_offset_3 - 1
+            cleavePos2 = sgRNA['position'] - args.active_site_offset_5 - 1
+        
     bedLine = [chrm_name, str(cleavePos1), str(cleavePos2), guideScanEntry, sgRNA['context'], sgRNA['sense']]
     return "\t".join(bedLine)
 
@@ -352,11 +358,11 @@ def process_pam(args, pam, record, start, end, pam_set, rev_pam_set):
     
     results = []
 
-    if not args.pam_5_prime:
-        context_length = args.sgRNA_length + args.context_window[0] + args.context_window[1]
+    #if not args.pam_5_prime:
+    context_length = args.sgRNA_length + args.context_window[0] + args.context_window[1]
     # if the pam is 5' of the protospacer, the context length needs to be adjusted by length of the pam
-    else:
-        context_length = args.sgRNA_length + args.context_window[0] + args.context_window[1] + len(pam)
+    #else:
+    #    context_length = args.sgRNA_length + args.context_window[0] + args.context_window[1] + len(pam)
     chrm_seq = str(record.seq).upper()
     chrm_name = record.id
 
@@ -392,14 +398,33 @@ def reverse_cut_site_offset(bedline, args):
     gone into calculating the cut_site 
     """
     bedlist = bedline.split("\t")
-    if bedlist[-1].strip() == "+":
-
-        bedlist[1] = str(int(bedlist[1]) - args.sgRNA_length - args.active_site_offset_5)
-        bedlist[2] = str(int(bedlist[2]) - args.active_site_offset_3) 
-    else:
-        bedlist[1] = str(int(bedlist[1]) + args.active_site_offset_5)
-        bedlist[2] = str(int(bedlist[2]) + args.sgRNA_length + args.active_site_offset_3) 
+    position = int(bedline.split(",")[-2])
+    # print(bedlist)
+    # if bedlist[-1].strip() == "+":
+    #     bedlist[1] = str(int(bedlist[1]) - args.sgRNA_length - args.active_site_offset_5)
+    #     bedlist[2] = str(int(bedlist[2]) - args.active_site_offset_3) 
+    # else:
+    #     bedlist[1] = str(int(bedlist[1]) + args.active_site_offset_5)
+    #     bedlist[2] = str(int(bedlist[2]) + args.sgRNA_length + args.active_site_offset_3) 
     
+    if not args.pam_5_prime:    
+        if bedlist[-1].strip() == "+":
+            bedlist[1] = position - 1
+            bedlist[2] = position + args.sgRNA_length - 1
+        else:
+            bedlist[1] = position + len(args.pam) - 1
+            bedlist[2] = position + args.sgRNA_length + len(args.pam) - 1
+    else:
+        if bedlist[-1].strip() == "+":
+            bedlist[1] = position + len(args.pam) - 1
+            bedlist[2] = position + len(args.pam) + args.sgRNA_length - 1
+        else:
+            bedlist[1] = position - args.sgRNA_length - 1
+            bedlist[2] = position - 1
+
+    bedlist[1] = str(bedlist[1])
+    bedlist[2] = str(bedlist[2])
+
     return "\t".join(bedlist)
 
 def write_results(final_targets, sgRNA_output_path, args):
@@ -437,8 +462,8 @@ def check_files(locations_to_keep, locations_to_discard):
 def main():
     args = parse_arguments()
 
-    if args.active_site_offset_5 >= args.active_site_offset_3:
-        raise ValueError("--active_site_offset_5 should be less than --active_site_offset_3")
+    # if args.active_site_offset_5 >= args.active_site_offset_3:
+    #     raise ValueError("--active_site_offset_5 should be less than or equal to --active_site_offset_3")
     args.gc_range = sorted(args.gc_range)
 
     sgRNA_output_path = "./" + args.output_prefix + "sgRNAs/" + args.output_prefix.split("/")[-1] + "sgRNA.bed"
@@ -513,7 +538,6 @@ def main():
                 chr_results.extend(future.result())
 
             bed_chr_results = BedTool("\n".join(chr_results), from_string=True)
-
 
             if targets_to_keep:
                 final_targets = bed_chr_results.intersect(BedTool(targets_to_keep), u=True)

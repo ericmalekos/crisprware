@@ -9,6 +9,7 @@ dependencies:
   - guidescan>=2.2
   - pybedtools>=0.9
   - matplotlib
+  - pybigwig
   - pip
   - pip:
     - lightgbm==3.3.5

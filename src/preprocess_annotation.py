@@ -166,6 +166,15 @@ def save_tss_tes_bed(args, GTF_path, GTF_file):
     - The function assumes the existence of the './annotations/' directory.
     - The generated BED file contains TSS positions for each transcript in the GTF file.
     """
+
+    # hacky approach to allow TSS or TES not be output
+    output_TSS, output_TES = True, True
+    if not args.tss_window:
+        args.tss_window = [1, 1]
+        output_TSS = False
+    if not args.tes_window:
+        args.tes_window = [1, 1]
+        output_TES = False
     
     tss_bed, tes_bed = gtf_to_tss_tes_bed(GTF_path, tss_upstream=args.tss_window[0],
                                         tss_downstream=args.tss_window[1],
@@ -175,13 +184,13 @@ def save_tss_tes_bed(args, GTF_path, GTF_file):
     tss_bed_out = './annotations/TSS_' + '.'.join(GTF_file.split('.')[:-1]) + '.bed'
     tes_bed_out = './annotations/TES_' + '.'.join(GTF_file.split('.')[:-1]) + '.bed'
     
-    if args.tss_window:
+    if output_TSS:
         print('\n\tSaving TSS:\t' + tss_bed_out + '\n')
         with open(tss_bed_out, 'w') as f:
             for entry in tss_bed:
                 f.write(entry + '\n')
 
-    if args.tes_window:
+    if output_TES:
         print('\n\tSaving TES:\t' + tes_bed_out + '\n')
         with open(tes_bed_out, 'w') as f:
             for entry in tes_bed:
@@ -313,7 +322,7 @@ def main():
 
 
     elif args.model != "none" and ( args.tss_window or args.tes_window):
-        save_tss_tes_bed(args, GTF_path = GTF_path)
+        save_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
 
     print('\n')
 
