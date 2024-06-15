@@ -3,18 +3,28 @@ from pybedtools import BedTool
 
 from utils.gtf_bed_processing_functions import extract_ids
 
-def create_combined_weighted_column(df, column_names, weights=None):
+def create_combined_weighted_column(df, column_names, weights=None, normalize_columns = True):
     # Check if weights are provided, else set to 1 for each column
     if weights is None or not weights:
         weights = [1] * len(column_names)
-    
+
     # Ensure the lists of columns and weights match in length
     if len(column_names) != len(weights):
         raise ValueError("The length of column_names and weights must match.")
-    
+
+
+    # Apply Min-Max normalization to specified columns and add as new columns
+    new_col_names = []
+    if normalize_columns:
+        for col in column_names:
+            new_col_name = f'{col}_normalized'
+            new_col_names.append(new_col_name)
+            df[new_col_name] = ((df[col] - df[col].min()) / (df[col].max() - df[col].min())).round(4)
+
+
     # Calculate the weighted sum
-    df['combined_weighted'] = sum(df[col] * weight for col, weight in zip(column_names, weights)) / len(column_names)
-    
+    df['combined_weighted'] = (sum(df[col] * weight for col, weight in zip(new_col_names, weights)) / len(new_col_names)).round(4)
+
     return df
 
 def filter_df_by_column(df, column, min_value):
@@ -61,7 +71,7 @@ def select_guides(df, rank_column, min_spacing):
     # Assuming df is already grouped by 'target_id'
     return df.groupby('target_id', group_keys=False).apply(select_from_group)
 
-# might be a faster implementation for spacing guides.
+# faster implementation for spacing guides?
 # from intervaltree import Interval, IntervalTree
 # def select_guides(df, min_spacing):
 #     def select_from_group(group):
@@ -90,32 +100,33 @@ def validate_and_modify_bed(file_path):
     # Check for minimum column requirement
     if df.shape[1] < 3:
         raise ValueError("BED must have at least 3 columns.")
-    
+
     # Check if second and third columns are integers and validate their values
     if not (df.iloc[:, 1].dtype.kind in 'i' and df.iloc[:, 2].dtype.kind in 'i'):
         raise ValueError("Second and third columns must be integers.")
-    
+
     if any(df.iloc[:, 1] >= df.iloc[:, 2]):
         raise ValueError("Values in the second column must be less than those in the third column.")
-    
+
     # Drop additional columns if more than four
     if df.shape[1] > 3:
         df = df.iloc[:, :4]
-    
+
     header = ['#target_chr', 'target_start', 'target_end', 'target_id']
+    df.columns = header
 
     #if the fourth column entries are not unique
     if not df.iloc[:, 3].nunique() == len(df):\
         df['target_id'] = df.iloc[:, 0].astype(str) + "_" + df.iloc[:, 1].astype(str) + "_" + df.iloc[:, 2].astype(str)
     df.columns = header
-    
+
     target_ids = set(df["target_id"])
 
     return df, target_ids
-    
+
 
 def sgRNA_to_bed(sgRNAs, targets, header, target_header):
-    
+
     df = pd.read_table(BedTool(sgRNAs).intersect(targets, wo=True).fn, sep="\t", header=None)
 
     #print(df)
@@ -143,30 +154,26 @@ def sgRNA_to_bed(sgRNAs, targets, header, target_header):
 
 
 def sgRNA_to_tscript(sgRNAs, mode, targets, header):
-    
+
     df = pd.read_table(BedTool(sgRNAs).intersect(targets, wo=True).fn, sep="\t", header=None)
     df.columns = header + df.columns[len(header):].tolist()
 
 
-    # This is a hacky way to determine the 
+    # This is a hacky way to determine the
     int_columns = [col for col in df.columns if isinstance(col, int)]
 
     # add either the transcript and gene id or the gene_id as "target_id"
-    if mode == "transcript":
+    if mode == "tx":
         df[['target_id', 'gene_id']] = df.iloc[:, int_columns[8]].apply(extract_ids).apply(pd.Series)
     else:
         # assign an arbitrary number as it will be dropped later
         arb_int = 999
         df[[arb_int, 'target_id']] = df.iloc[:, int_columns[8]].apply(extract_ids).apply(pd.Series)
-    # Dropping integer-labeled columns
-    int_columns.append(arb_int)
-    df.to_csv('test1.tsv', sep='\t', index=False, quoting=3)
+        # Dropping integer-labeled columns
+        int_columns.append(arb_int)
+
     df = df.drop(int_columns, axis=1)
-    df.to_csv('test2.tsv', sep='\t', index=False, quoting=3)  
-
     target_ids = set(df["target_id"])
-
-
     return df, target_ids
 
 def analyze_target_ids(df, no_sgRNASet):
@@ -194,14 +201,23 @@ def analyze_target_ids(df, no_sgRNASet):
     # Count the occurrences of each target_id and calculate basic statistics
     counts = df['target_id'].value_counts()
 
+    zero_counts = pd.Series(0, index=no_sgRNASet)
+    all_counts = pd.concat([counts, zero_counts])
+    median_all = all_counts.median()
+
+
     median_count = counts.median()
     min_count = counts.min()
     max_count = counts.max()
 
-    print(f"\n\tMedian number of sgRNAs per target: {median_count}")
-    print(f"\tMinimum number of sgRNAs per target: {min_count}")
-    print(f"\tMaximum number of sgRNAs per target: {max_count}")
-    print(f"\tNumber of targets with 0 sgRNA guides: {len(no_sgRNASet)}\n")
+    print(f"\n#\tMedian number of sgRNAs per target: {median_all}")
+    print(f"#\tNumber of targets with 0 sgRNA guides: {len(no_sgRNASet)}\n#")
 
+
+    print(f"#\tCalculations exluding targets with 0 counts:")
+    print(f"#\n#\t\tMedian number of sgRNAs per target: {median_count}")
+    print(f"#\t\tMinimum number of sgRNAs per target: {min_count}")
+    print(f"#\t\tMaximum number of sgRNAs per target: {max_count}")
+    print("#\n#######################################################################\n")
     # Return the counts of sgRNAs per target ID for further analysis if needed
     return counts

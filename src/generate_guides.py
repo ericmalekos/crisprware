@@ -466,7 +466,7 @@ def main():
     #     raise ValueError("--active_site_offset_5 should be less than or equal to --active_site_offset_3")
     args.gc_range = sorted(args.gc_range)
 
-    sgRNA_output_path = "./" + args.output_prefix + "sgRNAs/" + args.output_prefix.split("/")[-1] + "sgRNA.bed"
+    sgRNA_output_path = "./" + args.output_prefix + "sgRNAs/" + args.output_prefix.split("/")[-1] + "sgRNAs.bed"
     create_output_directory(base_dir=sgRNA_output_path,output_prefix="")
 
     with open(sgRNA_output_path, 'w') as f:
@@ -481,7 +481,7 @@ def main():
 
     gtf = check_files(args.locations_to_keep, args.locations_to_discard)
     if args.feature and not gtf:
-        print(f"\n\tNo GTF file, --feature {args.feature} will be ignored.\n")  
+        print(f"\n\tNo GTF file, '--feature {args.feature}' will be ignored.\n")  
 
 
     targets_to_keep = merge_targets(args.locations_to_keep, gtf_feature=args.feature , operation = args.join_operation)

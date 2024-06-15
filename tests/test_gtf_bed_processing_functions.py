@@ -3,6 +3,7 @@ from utils.gtf_bed_processing_functions import preprocess_file,merge_targets,\
     gtf_to_tss_tes_bed,parse_line, extract_transcript_gene_relationship, parse_input,\
         create_metagene_model,create_constitutive_model, truncate_gtf
 import pandas as pd
+from io import StringIO
 
 class TestGTFBEDFunctions(unittest.TestCase):
     
@@ -270,29 +271,196 @@ class TestCreateMetageneModel(unittest.TestCase):
         output_str = create_metagene_model(input_file)
         with open(output_file, 'r') as f: expected_output_str = f.read().strip()
         self.assertEqual(sorted(output_str.split("\n")), sorted(expected_output_str.split("\n")))
- 
 
-# class TestTruncateGTF(unittest.TestCase):
-#     def setUp(self):
-#         # This method is called before each test
-#         self.input_file = 'tests/test_data/test.gtf'
-#         self.feature = 'CDS'
-#         self.percentiles = [0, 50]
+def create_expected_exons_dataframe(expected_exons, feature='exon'):
+    """
+    Convert a list of exon dictionaries to a dataframe with the correct headers.
+    
+    Args:
+        expected_exons (list of dict): List of exons with keys "chrom", "start", "end", "strand", and "transcript_id".
+        
+    Returns:
+        pd.DataFrame: DataFrame with the correct headers.
+    """
+    # Convert to dataframe
+    df = pd.DataFrame(expected_exons)
 
-#     def test_equivalent_output(self):
-#         # Process the test GTF with both functions
-#         df1 = truncate_gtf(self.input_file, self.feature, self.percentiles)
+    # Add missing columns with placeholder values
+    df['source'] = 'Test'  # Placeholder value
+    df['feature'] = feature  # Placeholder value
+    df['score'] = '.'  # Placeholder value
+    df['frame'] = '.'  # Placeholder value
+    df['attributes'] = df.apply(lambda row: f'gene_id "{row.gene_id}"; transcript_id "{row.transcript_id}";', axis=1)
 
-#         df2 = truncate_gtf_2(self.input_file, self.feature, self.percentiles)
+    # Rearrange columns to match the desired header
+    df = df[['chrom', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes']]
+    
+    return df
 
-#         print("\t\ttruncate_gtf")
-#         print(df1)
+class TestTruncateGTF(unittest.TestCase):
+    def setUp(self):
+        # Create a sample GTF file content
+        
+        self.gtf_content_1 = """\
+test_chr	Test	gene	20	50	.	+	.	gene_id "gene1";
+test_chr	Test	transcript	20	50	.	+	.	gene_id "gene1"; transcript_id "transcript1";
+test_chr	Test	exon	20	35	.	+	.	gene_id "gene1"; transcript_id "transcript1";
+test_chr	Test	exon	40	50	.	+	.	gene_id "gene1"; transcript_id "transcript1";
+test_chr	Test	CDS	25	30	.	+	0	gene_id "gene1"; transcript_id "transcript1";
+test_chr	Test	5UTR	20	24	.	+	.	gene_id "gene1"; transcript_id "transcript1";
+test_chr	Test	3UTR	31	35	.	+	.	gene_id "gene1"; transcript_id "transcript1";
+test_chr	Test	3UTR	40	50	.	+	.	gene_id "gene1"; transcript_id "transcript1";
+"""
+        self.gtf_content_2 = """\
+test_chr	Test	gene	120	170	.	+	.	gene_id "gene2";
+test_chr	Test	transcript	120	170	.	+	.	gene_id "gene2"; transcript_id "transcript2";
+test_chr	Test	exon	120	140	.	+	.	gene_id "gene2"; transcript_id "transcript2";
+test_chr	Test	exon	150	170	.	+	.	gene_id "gene2"; transcript_id "transcript2";
+test_chr	Test	CDS	130	140	.	+	.	gene_id "gene2"; transcript_id "transcript2";
+test_chr	Test	CDS	150	160	.	+	.	gene_id "gene2"; transcript_id "transcript2";
+test_chr	Test	5UTR	120	129	.	+	.	gene_id "gene2"; transcript_id "transcript2";
+test_chr	Test	3UTR	161	170	.	+	.	gene_id "gene2"; transcript_id "transcript2";
+"""
+        self.gtf_content_3 = """\
+test_chr	Test	gene	200	280	.	-	.	gene_id "gene3";
+test_chr	Test	transcript	200	260	.	-	.	gene_id "gene3"; transcript_id "transcript3";
+test_chr	Test	exon	200	230	.	-	.	gene_id "gene3"; transcript_id "transcript3";
+test_chr	Test	exon	240	260	.	-	.	gene_id "gene3"; transcript_id "transcript3";
+test_chr	Test	CDS	211	230	.	-	0	gene_id "gene3"; transcript_id "transcript3";
+test_chr	Test	CDS	240	251	.	-	0	gene_id "gene3"; transcript_id "transcript3";
+test_chr	Test	5UTR	252	260	.	-	.	gene_id "gene3"; transcript_id "transcript3";
+test_chr	Test	3UTR	200	210	.	-	.	gene_id "gene3"; transcript_id "transcript3";
+test_chr	Test	transcript	200	280	.	-	.	gene_id "gene3"; transcript_id "transcript4";
+test_chr	Test	exon	200	230	.	-	.	gene_id "gene3"; transcript_id "transcript4";
+test_chr	Test	exon	240	260	.	-	.	gene_id "gene3"; transcript_id "transcript4";
+test_chr	Test	CDS	211	230	.	-	0	gene_id "gene3"; transcript_id "transcript4";
+test_chr	Test	CDS	240	251	.	-	0	gene_id "gene3"; transcript_id "transcript4";
+test_chr	Test	5UTR	252	280	.	-	.	gene_id "gene3"; transcript_id "transcript4";
+test_chr	Test	3UTR	200	210	.	-	.	gene_id "gene3"; transcript_id "transcript4";        
+"""
 
-#         print("\t\ttruncate_gtf_2")
-#         print(df2)
+        self.gtf_content_4 = """\
+test_chr	Test	gene	200	330	.	-	.	gene_id "gene3";
+test_chr	Test	transcript	200	330	.	-	.	gene_id "gene3"; transcript_id "transcript3";
+test_chr	Test	exon	200	230	.	-	.	gene_id "gene3"; transcript_id "transcript3";
+test_chr	Test	exon	240	260	.	-	.	gene_id "gene3"; transcript_id "transcript3"; 
+test_chr	Test	exon	280	330	.	-	.	gene_id "gene3"; transcript_id "transcript3";    
+"""
+        self.gtf_df = pd.read_csv(StringIO(self.gtf_content_1), sep='\t', header=None, comment='#')
+        self.gtf_df.columns = ["chrom", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]
 
-#         # Verify the DataFrames are equivalent
-#         pd.testing.assert_frame_equal(df1, df2, check_dtype=True, check_like=True)
+   
+    def test_truncate_gtf_no_truncation(self):
+        df, unique_transcript_ids, unique_gene_ids = truncate_gtf(StringIO(self.gtf_content_1), feature="exon", percentiles=[0,100])
+        self.assertEqual(len(df), len(self.gtf_df[self.gtf_df["feature"] == "exon"]))
+
+        expected_exons = [
+            {"chrom": "test_chr", "start": 20, "end": 35, "strand": "+", "gene_id": "gene1", "transcript_id": "transcript1"},
+            {"chrom": "test_chr", "start": 40, "end": 50, "strand": "+", "gene_id": "gene1", "transcript_id": "transcript1"},
+        ]
+
+        expected_df = create_expected_exons_dataframe(expected_exons)
+
+        expected_dict = expected_df.to_dict(orient='list')
+        test_dict = df.to_dict(orient='list')
+
+        self.assertEqual(expected_dict, test_dict)
+
+        df, unique_transcript_ids, unique_gene_ids = truncate_gtf(StringIO(self.gtf_content_1), feature="exon", percentiles=[0,50])
+
+        expected_exons = [
+            {"chrom": "test_chr", "start": 20, "end": 34, "strand": "+", "gene_id": "gene1", "transcript_id": "transcript1"},
+        ]
+
+        expected_df = create_expected_exons_dataframe(expected_exons)
+        expected_dict = expected_df.to_dict(orient='list')
+        test_dict = df.to_dict(orient='list')
+
+        self.assertEqual(expected_dict, test_dict)
+
+        df, unique_transcript_ids, unique_gene_ids = truncate_gtf(StringIO(self.gtf_content_1), feature="exon", percentiles=[10,20])
+
+        expected_exons = [
+            {"chrom": "test_chr", "start": 23, "end": 25, "strand": "+", "gene_id": "gene1", "transcript_id": "transcript1"},
+        ]
+
+        expected_df = create_expected_exons_dataframe(expected_exons)
+        expected_dict = expected_df.to_dict(orient='list')
+        test_dict = df.to_dict(orient='list')
+
+        self.assertEqual(expected_dict, test_dict)
+
+        ##############################
+        ############################## gtf_2
+        ##############################
+
+        df, unique_transcript_ids, unique_gene_ids = truncate_gtf(StringIO(self.gtf_content_2), feature="CDS", percentiles=[25,75])
+
+        expected_exons = [
+            {"chrom": "test_chr", "start": 136, "end": 140, "strand": "+", "gene_id": "gene2", "transcript_id": "transcript2"},
+            {"chrom": "test_chr", "start": 150, "end": 155, "strand": "+", "gene_id": "gene2", "transcript_id": "transcript2"},
+        ]
+
+        expected_df = create_expected_exons_dataframe(expected_exons, feature="CDS")
+        expected_dict = expected_df.to_dict(orient='list')
+        test_dict = df.to_dict(orient='list')
+
+        self.assertEqual(expected_dict, test_dict)
+
+        ##############################
+        ############################## gtf_3
+        ##############################
+
+
+        df, unique_transcript_ids, unique_gene_ids = truncate_gtf(StringIO(self.gtf_content_3), feature="exon", percentiles=[0,100])
+
+        expected_exons = [
+            {"chrom": "test_chr", "start": 200, "end": 230, "strand": "-", "gene_id": "gene3", "transcript_id": "transcript3"},
+            {"chrom": "test_chr", "start": 200, "end": 230, "strand": "-", "gene_id": "gene3", "transcript_id": "transcript4"},
+            {"chrom": "test_chr", "start": 240, "end": 260, "strand": "-", "gene_id":  "gene3", "transcript_id": "transcript3"}, 
+            {"chrom": "test_chr", "start": 240, "end": 260, "strand": "-", "gene_id": "gene3", "transcript_id": "transcript4"}
+        ]
+
+        expected_df = create_expected_exons_dataframe(expected_exons)
+        expected_df = expected_df.sort_values(["chrom", "start"])
+        expected_dict = expected_df.to_dict(orient='list')
+        test_dict = df.to_dict(orient='list')
+
+        self.assertEqual(expected_dict, test_dict)
+
+
+        df, unique_transcript_ids, unique_gene_ids = truncate_gtf(StringIO(self.gtf_content_3), feature="exon", percentiles=[0,50])
+
+
+        expected_exons = [
+            {"chrom": "test_chr", "start": 226, "end": 230, "strand": "-", "gene_id": "gene3", "transcript_id": "transcript3"},
+            {"chrom": "test_chr", "start": 226, "end": 230, "strand": "-", "gene_id": "gene3", "transcript_id": "transcript4"},
+            {"chrom": "test_chr", "start": 240, "end": 260, "strand": "-", "gene_id": "gene3", "transcript_id": "transcript3"}, 
+            {"chrom": "test_chr", "start": 240, "end": 260, "strand": "-", "gene_id": "gene3", "transcript_id": "transcript4"}
+        ]
+        expected_df = create_expected_exons_dataframe(expected_exons)
+        expected_df = expected_df.sort_values(["chrom", "start"])
+        expected_dict = expected_df.to_dict(orient='list')
+        test_dict = df.to_dict(orient='list')
+
+        self.assertEqual(expected_dict, test_dict)
+
+        df, unique_transcript_ids, unique_gene_ids = truncate_gtf(StringIO(self.gtf_content_4), feature="exon", percentiles=[25,75])
+
+
+        expected_exons = [
+            {"chrom": "test_chr", "start": 226, "end": 230, "strand": "-", "gene_id": "gene3", "transcript_id": "transcript3"},
+            {"chrom": "test_chr", "start": 240, "end": 260, "strand": "-", "gene_id": "gene3", "transcript_id": "transcript3"},
+            {"chrom": "test_chr", "start": 280, "end": 305, "strand": "-", "gene_id": "gene3", "transcript_id": "transcript3"}
+
+        ]
+
+        expected_df = create_expected_exons_dataframe(expected_exons)
+        expected_df = expected_df.sort_values(["chrom", "start"])
+        expected_dict = expected_df.to_dict(orient='list')
+        test_dict = df.to_dict(orient='list')
+
+        self.assertEqual(expected_dict, test_dict)
 
 if __name__ == '__main__':
     unittest.main()

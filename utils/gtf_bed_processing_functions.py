@@ -184,7 +184,7 @@ def extract_ids(attributes):
     #print(transcript_id, gene_id)
     return transcript_id, gene_id
 
-def truncate_gtf(input_file, feature = "exon", percentile = 100):
+def truncate_gtf(input_file, feature = "exon", percentiles = [0,100]):
     """
     Processes a GTF/GFF file to extract and truncate specified features based on percentiles.
 
@@ -208,10 +208,15 @@ def truncate_gtf(input_file, feature = "exon", percentile = 100):
     Example:
     >>> df = process_gtf('test.gtf', 'CDS', [0, 50])
     """
-    print(f'\tProcessing: \t{input_file} \n\tFeature: \t{feature} \n\tPercentile range: \t{[0,percentile]}')
+    percentiles.sort()
+
+    print(f'\tProcessing: \t{input_file} \n\tFeature: \t{feature} \n\tPercentile range: \t{percentiles}')
     
+
     df = pd.read_csv(input_file, sep='\t', header=None, comment='#')
     df.columns = ["chrom", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]
+
+    df["attributes"] = df["attributes"].str.strip()
 
     # Select the rows for the specified feature
     df = df[df["feature"] == feature]
@@ -219,23 +224,25 @@ def truncate_gtf(input_file, feature = "exon", percentile = 100):
     if df.empty:
         raise ValueError("ERROR: --feature '"  + feature + "' not found in GTF/GFF column 3")
 
-
     df_positive = df[df["strand"] == "+"].sort_values("start")
     df_negative = df[df["strand"] == "-"].sort_values("start", ascending=False)
 
     # Combine the sorted dataframes
     df = pd.concat([df_positive, df_negative])
+
     
     df[["transcript_id", "gene_id"]] = df["attributes"].apply(extract_ids).apply(pd.Series)
-   
+
     unique_transcript_ids = set(df["transcript_id"])
     unique_gene_ids = set(df["gene_id"])
 
     #if there's no trimming, short circuit
-    if percentile == 100:
+    if percentiles[0] == 0 and percentiles[1] == 100:
+        df = df.drop(columns=["transcript_id", "gene_id"])
+        df = df.sort_values(["chrom", "start"])
         return df, unique_transcript_ids, unique_gene_ids
     
-    print(f'\n\tNumber of {feature} entries before processing:{df.shape[0]}')
+    print(f'\n\tNumber of {feature} entries before processing: {df.shape[0]}')
     # TODO check this
     # print(f'\n\tNumber of unique transcripts before processing:{sorted(df["transcript_id"].drop_duplicates())}')
 
@@ -245,44 +252,70 @@ def truncate_gtf(input_file, feature = "exon", percentile = 100):
 
     # Group by the "transcript_id" and calculate the cumulative length and total length
     df["cumulative_length"] = df.groupby("transcript_id")["length"].cumsum()
-    df["total_length"] = df.groupby("transcript_id")["length"].transform(sum)
+    df["total_length"] = df.groupby("transcript_id")["length"].transform("sum")
 
     # Calculate the percentile of the cumulative length
     df["cumulative_percentile"] = df["cumulative_length"] / df["total_length"] * 100
 
-    # Identify the entries where 'cumulative_percentile' exceeds 'max_percentile'
-    overlaps = df[df["cumulative_percentile"] > percentile].groupby('transcript_id').first().reset_index()
+    # # Identify the entries where 'cumulative_percentile' exceeds 'max_percentile'
+    # overlaps = df[df["cumulative_percentile"] > percentiles[1]].groupby('transcript_id').first().reset_index()
+    # print(overlaps)
 
-    # Adjust the 'end' or 'start' position of overlapping entries
-    for i, row in overlaps.iterrows():
-        excess_percentile = row['cumulative_percentile'] - percentile
-        excess_length = int(row['total_length'] * excess_percentile / 100)
-        if row['strand'] == '+':
-            df.loc[(df['transcript_id'] == row['transcript_id']) & (df['end'] == row['end']), 'end'] -= excess_length
-        else:
-            df.loc[(df['transcript_id'] == row['transcript_id']) & (df['start'] == row['start']), 'start'] += excess_length
-        #print(df.to_string())
-        df.loc[(df['transcript_id'] == row['transcript_id']), 'length'] = abs(df['end'] - df['start']) + 1
-    # Recalculate the cumulative length and the cumulative percentile
-    df["cumulative_length"] = df.groupby("transcript_id")["length"].cumsum()
+    # Calculate start_int and end_int
+    def adjust_coordinates(df, percentiles):
+        adjusted_rows = []
 
-    df["cumulative_percentile"] = (df["cumulative_length"] / df["total_length"] * 100).astype(int)
+        for transcript_id, group in df.groupby('transcript_id'):
+            total_length = group['total_length'].iloc[0]
+            start_int = int(round((percentiles[0] / 100) * total_length))
+            end_int = int(round((percentiles[1] / 100) * total_length))
+
+            strand = group['strand'].iloc[0]
+            if strand == '+':
+                for _, row in group.iterrows():
+                    exon_start = row['cumulative_length'] - row['length']
+                    exon_end = row['cumulative_length']
+
+                    if exon_end > start_int and exon_start < end_int:
+                        new_start = max(row['start'], start_int - exon_start + row['start'])
+                        new_end = min(row['end'], end_int - exon_start + row['start'])
+                        adjusted_row = row.copy()
+                        adjusted_row['start'] = new_start
+                        adjusted_row['end'] = new_end
+                        adjusted_rows.append(adjusted_row)
+            else:
+                for _, row in group.iterrows():
+                    exon_start = row['cumulative_length'] - row['length']
+                    exon_end = row['cumulative_length']
+
+                    if exon_end > start_int and exon_start < end_int:
+                        new_start = max(row['start'], exon_end - end_int + row['start'])
+                        new_end = min(row['end'], exon_end - start_int + row['start'])
+                        adjusted_row = row.copy()
+                        adjusted_row['start'] = new_start
+                        adjusted_row['end'] = new_end
+                        adjusted_rows.append(adjusted_row)
+
+        return pd.DataFrame(adjusted_rows)
     
+
+
+
+    pd.set_option('display.max_columns', None)
+    df = adjust_coordinates(df, percentiles)
     
-    df = df[df["cumulative_percentile"] <= percentile]
+    print(f'\n\tNumber of {feature} entries after processing: {df.shape[0]}')
+    # # TODO check this
+    # #print(f'\n\tNumber of unique transcripts after processing:{sorted(df["transcript_id"].drop_duplicates())}')
     
-    print(f'\n\tNumber of {feature} entries after processing:\t{df.shape[0]}')
-    # TODO check this
-    #print(f'\n\tNumber of unique transcripts after processing:{sorted(df["transcript_id"].drop_duplicates())}')
-    
-    # Drop the extra columns
-    df = df.drop(columns=["length", "cumulative_length", "total_length", "cumulative_percentile", "transcript_id", "gene_id"])
-    
+    # # Drop the extra columns
+    df = df[["chrom", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]]
+
+
     df = df.sort_values(["chrom", "start"])
-    
-    # Save the selected rows to a new file
-    
+        
     return df, unique_transcript_ids, unique_gene_ids
+
 
 def parse_gtf_for_cds_extremes(gtf_file):
     """
@@ -301,7 +334,6 @@ def parse_gtf_for_cds_extremes(gtf_file):
     # Extract gene_id and transcript_id
     # df_cds['gene_id'] = df_cds['attributes'].str.extract('gene_id "([^"]+)"')
     # df_cds['transcript_id'] = df_cds['attributes'].str.extract('transcript_id "([^"]+)"')
-
 
 
     # Calculate CDS length and sum it per transcript

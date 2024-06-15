@@ -29,8 +29,8 @@ print_help <- function() {
   cat("\tExample with chunk size: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 2 Azimuth_scored_sgRNAs.bed --chunk-size 10000\n\n")
   
   cat("\tAdditional settings for method 3 (DeepHF):\n")
-  cat("\t--enzyme: Specify the enzyme (options: 'WT', 'ESP', 'HF')\n")
-  cat("\t--promoter: Specify the promoter (options: 'U6', 'T7')\n")
+  cat("\tenzyme: Specify the enzyme (options: 'WT', 'ESP', 'HF')\n")
+  cat("\tpromoter: Specify the promoter (options: 'U6', 'T7')\n")
   cat("\tExample: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 3 DeepHF_scored_sgRNAs.bed WT U6\n\n")
 
   cat("\tAdditional setting for method 5 (DeepCpf1):\n")
@@ -55,12 +55,17 @@ sgrna_file <- args[1]
 method_number <- as.integer(args[2])
 output <- args[3]
 
+#print(args)
+  
 chunk_size <- Inf
 if ("--chunk-size" %in% args) {
   chunk_size_index <- match("--chunk-size", args) + 1
   chunk_size <- as.numeric(args[chunk_size_index])
-  args <- args[-(chunk_size_index-1:chunk_size_index)]  # Remove chunk size arguments from args
+  args <- args[1:(length(args) - 2)]  # Remove chunk size arguments from args
 }
+
+#print(args)
+
 
 if (method_number == 3) {
   if (length(args) != 5) {
@@ -79,8 +84,9 @@ if (method_number == 3) {
   }
 }
 
-tracrRNA = ""
 
+tracrRNA = ""
+print(length(args))
 if (method_number == 12) {
   if (length(args) != 4) {
     cat("\n\t\tERROR: incorrect number of arguments for method 12\n\n")
@@ -88,14 +94,13 @@ if (method_number == 12) {
     quit(status = 1)
   }
   tracrRNA = args[4]
-  if (!(tracrRNA %in% c('Hsu2013', 'Chen2013', 'HF'))) {
+  if (!(tracrRNA %in% c('Hsu2013', 'Chen2013'))) {
     cat("\n\t\tERROR: Invalid tracr\n\n")
     print_help()
     quit(status = 1)
   }
 }
 
-print(args)
 
 convertPAM <- TRUE
 if (method_number == 5 && "no-convertPAM" %in% args) {
@@ -216,6 +221,8 @@ df <- read.table(sgrna_file, sep = "\t", header = TRUE, comment.char = "")
 # Initialize an empty dataframe for the results
 results_df <- df[0, ]
 
+print(chunk_size)
+
 # Process the dataframe in chunks
 for (i in seq(1, nrow(df), by = chunk_size)) {
   print(i)
@@ -226,7 +233,10 @@ for (i in seq(1, nrow(df), by = chunk_size)) {
 
 new_column_names <- c("#chr", "start", "stop", "id,sequence,pam,chromosome,position,sense", "context", "strand")
 names(results_df)[1:6] <- new_column_names
+# round the score column to 4 decimals
+results_df[, ncol(results_df)] <- round(results_df[, ncol(results_df)], 4)
 write.table(results_df, file = output, sep = "\t", row.names = FALSE, quote = FALSE)
+
 
 
 # TESTING PACKAGE
@@ -237,3 +247,10 @@ write.table(results_df, file = output, sep = "\t", row.names = FALSE, quote = FA
 # pam     <- "AGG" #3bp
 # input   <- paste0(spacer, pam)
 # results <- getDeepHFScores(input)
+# 
+# flank5 <- "ACCT" #4bp
+# spacer <- "ATCGATGCTGATGCTAGATA" #20bp
+# pam    <- "AGG" #3bp 
+# flank3 <- "TTG" #3bp
+# input  <- paste0(flank5, spacer, pam, flank3) 
+# results <- getAzimuthScores(input)
