@@ -14,7 +14,7 @@ setup(
     version=VERSION,
     author='Your Name',
     author_email='your.email@example.com',
-    url='https://github.com/yourusername/Crisprware',
+    url='https://github.com/ericmalekos/crisprware',
     license="Your License",
     keywords="genome editing, CRISPR, bioinformatics",
     description="Tools for CRISPR-based genome editing analysis.",
@@ -27,7 +27,7 @@ setup(
             'generate_guides = src.generate_guides:main',
             'index_genome = src.index_genome:main',
             'score_guides = src.score_guides:main',
-            'rank_guides = src.rank_guides:main'  
+            'rank_guides = src.rank_guides:main'
         ],
     },
     classifiers=[
@@ -45,6 +45,5 @@ setup(
         'pybigwig',
         'pandas',
         'numpy'
-        # Add other dependencies as needed
     ]
 )
