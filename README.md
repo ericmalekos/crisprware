@@ -5,7 +5,7 @@ cd crisprware
 
 conda env create -f environment.yml
 
-conda activate your_project_env
+conda activate crisprware
 
 chmod +x setup.py
 
