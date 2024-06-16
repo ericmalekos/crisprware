@@ -1,4 +1,4 @@
-name: testproject
+name: crisprware
 channels:
   - bioconda
   - conda-forge
