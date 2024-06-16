@@ -272,10 +272,11 @@ def main():
     if args.filtering_columns and (not args.minimum_values or (len(args.filtering_columns) != len(args.minimum_values))):
         raise ValueError("\n\n\tThe length of --filtering_columns and --minimum_values must match.\n\n")
 
-    sgRNA_output_path = "./" + args.output_prefix + "RankedSgRNAs/" + args.output_prefix.split("/")[-1] + "RankedSgRNA.tsv"
+    sgRNA_output_path = "./" + args.output_prefix + "RankedSgRNAs/" + args.output_prefix.split("/")[-1] + "RankedSgRNAs.tsv"
     tmp_path = create_output_directory(base_dir="./" + args.output_prefix + "RankedSgRNAs/",output_prefix="tmp/")
 
     with open(args.scored_guides, 'r') as file: header = file.readline().strip().split('\t')
+
 
     if args.ranking_columns:
         validate_scored_sgRNA_columns(header,columns = args.ranking_columns)
@@ -378,11 +379,11 @@ def main():
     if args.plot_histogram: create_histogram(finalsgRNAs, sgRNA_output_path[:-3] + "pdf", update_no_targets(initial_target_ids,finalsgRNAs))
 
     save_notarget_set(noSgRNATargetSet = targetsWithoutsgRNAs.union(update_no_targets(initial_target_ids,finalsgRNAs)),
-                      filename="."+sgRNA_output_path.strip("RankedSgRNA.tsv") + "TargetsWith0sgRNAs.tsv")
+                      filename="."+sgRNA_output_path.strip("RankedSgRNAs.tsv") + "TargetsWith0sgRNAs.tsv")
 
     counts = counts.reset_index()
     counts.columns = ['target_id', 'sgRNA_count']
-    counts.to_csv("." + sgRNA_output_path.strip("RankedSgRNA.tsv") + "TargetsgRNACounts.tsv", sep='\t', index=False)
+    counts.to_csv("." + sgRNA_output_path.strip("RankedSgRNAs.tsv") + "TargetsgRNACounts.tsv", sep='\t', index=False)
 
 
 if __name__ == "__main__":

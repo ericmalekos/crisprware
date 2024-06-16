@@ -152,27 +152,28 @@ def sgRNA_to_bed(sgRNAs, targets, header, target_header):
 
     return df, target_ids
 
-
 def sgRNA_to_tscript(sgRNAs, mode, targets, header):
 
     df = pd.read_table(BedTool(sgRNAs).intersect(targets, wo=True).fn, sep="\t", header=None)
     df.columns = header + df.columns[len(header):].tolist()
-
-
-    # This is a hacky way to determine the
+    # This is a hacky way to determine t
     int_columns = [col for col in df.columns if isinstance(col, int)]
-
-    # add either the transcript and gene id or the gene_id as "target_id"
-    if mode == "tx":
-        df[['target_id', 'gene_id']] = df.iloc[:, int_columns[8]].apply(extract_ids).apply(pd.Series)
-    else:
-        # assign an arbitrary number as it will be dropped later
-        arb_int = 999
-        df[[arb_int, 'target_id']] = df.iloc[:, int_columns[8]].apply(extract_ids).apply(pd.Series)
-        # Dropping integer-labeled columns
-        int_columns.append(arb_int)
-
+    target_col = int_columns.pop(-2)
     df = df.drop(int_columns, axis=1)
+    #print(df.head())
+
+    transcript_pattern = r'transcript_id[= ]"?([^";]*)"?'
+    gene_pattern = r'gene_id[= ]"?([^";]*)"?'
+
+    df['transcript_id'] = df[target_col].str.extract(transcript_pattern)
+    df['gene_id'] = df[target_col].str.extract(gene_pattern)
+
+    if mode == "tx":
+        df.rename(columns={'transcript_id': 'target_id'}, inplace=True)
+    else:
+        df = df.drop(['transcript_id',target_col], axis=1)
+        df.rename(columns={'gene_id': 'target_id'}, inplace=True)
+
     target_ids = set(df["target_id"])
     return df, target_ids
 
