@@ -2,7 +2,7 @@
 
 '''
     This script takes the output from FiltersgRNABED and scores it
-    with Ruleset3 and Guidescan2. 
+    with Ruleset3 and Guidescan2.
 
     ./src/IndexGenome -f ./test_data/test.fasta -o test_
 '''
@@ -31,7 +31,7 @@ def parse_arguments():
         "-o", "--output_prefix",
         type=str,
         help="Prefix for output files. [default='gscan_index']",
-        default="gscan_index"
+        default="GscanIndex"
     )
 
     parser.add_argument(
@@ -41,7 +41,7 @@ def parse_arguments():
         off-target scoring. If multiple files are passed, coordinates \
         will be merged with a union operation. \
         Leave empty to use entire fasta.",
-        type=str,   
+        type=str,
         default="",
         nargs='*'
     )
@@ -58,8 +58,8 @@ def parse_arguments():
 
     parser.add_argument(
         "-w", "--context_window",
-        nargs=2, 
-        type=int, 
+        nargs=2,
+        type=int,
         help="Pass two, space-separated, integers to specifiy the \
             nucleotide window around the --locations_to_keep \
             '<upstream>' '<downstream>'. This can be used to \
@@ -114,11 +114,11 @@ def main():
         print(f"\n\tSaving merged interval bed to {bed_output_path}")
 
         locs_to_keep.saveas(bed_output_path)
-        
+
 
         fasta_output_path=create_output_directory(output_prefix=args.output_prefix + "subset.fasta",
                                                   base_dir=args.output_prefix)
-        
+
         print(f"\n\tSaving subset fasta to {fasta_output_path}")
 
         subset_fasta_with_bed(fasta_path=args.fasta,
@@ -136,7 +136,7 @@ def main():
         remove(args.fasta + ".reverse.dna")
     except:
         print(f"... Failed to remove 'reverse.dna' and 'forward.dna'")
-    
+
 
 if __name__ == "__main__":
     main()

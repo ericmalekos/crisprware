@@ -1,5 +1,6 @@
 import unittest
 import pandas as pd
+
 from utils.quantified_rna_functions import calculate_statistics,process_kallisto,\
 process_salmon,process_flair,process_mandalorian,process_dataframes,infer_file_type_from_first_line,\
 process_files,filter_dataframe,add_gene_ids_and_subset
@@ -34,6 +35,12 @@ class TestProcessRNA(unittest.TestCase):
                         "./tests/test_data/processed_rna_seq/kallisto/kallisto_abundance_2.tsv"]
         output = process_kallisto(kallisto_tpms)
         expected_output = pd.read_csv("./tests/test_output/processed_rna_out/kallisto_2_output.tsv", delimiter='\t')
+        
+        expected_output = expected_output.sort_values(by='transcript_id', ascending=False).reset_index(drop=True)
+        output = output.sort_values(by='transcript_id', ascending=False).reset_index(drop=True)
+        
+        #assert_frame_equal(output, expected_output)
+
         self.assertTrue(output.equals(expected_output), "DataFrames are not equal")
 
 ###############################################################################################################
@@ -50,6 +57,10 @@ class TestProcessRNA(unittest.TestCase):
         output = process_salmon(salmon_tpms)
         #output.to_csv("./tests/test_output/processed_rna_out/salmon_2_output.tsv", sep="\t", index=False)
         expected_output = pd.read_csv("./tests/test_output/processed_rna_out/salmon_2_output.tsv", delimiter='\t')
+        expected_output = expected_output.sort_values(by='transcript_id', ascending=False).reset_index(drop=True)
+        output = output.sort_values(by='transcript_id', ascending=False).reset_index(drop=True)
+        
+        
         self.assertTrue(output.equals(expected_output), "DataFrames are not equal")
 
 ###############################################################################################################
@@ -66,6 +77,10 @@ class TestProcessRNA(unittest.TestCase):
                        "./tests/test_data/processed_rna_seq/mandalorian/mandalorian_isoforms_2.filtered.clean.tpm"]
         output = process_mandalorian(mandalorian_tpms)
         expected_output = pd.read_csv("./tests/test_output/processed_rna_out/mandalorian_2_output.tsv", delimiter='\t')
+        
+        expected_output = expected_output.sort_values(by='transcript_id', ascending=False).reset_index(drop=True)
+        output = output.sort_values(by='transcript_id', ascending=False).reset_index(drop=True)
+        
         self.assertTrue(output.equals(expected_output), "DataFrames are not equal")
 
 if __name__ == '__main__':

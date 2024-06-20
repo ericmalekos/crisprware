@@ -157,7 +157,7 @@ def parse_arguments():
         "-o", "--output_prefix",
         help="Prefix to use for files.",
         type=str,
-        default="scoredOut_"
+        default=""
     )
 
     parser.add_argument(
@@ -282,8 +282,8 @@ def cleavage_scoring(sgRNADF, tracr, threads = 2, chunk_size = 200000, minStdDev
       sgRNAs with a z-score below this threshold will be excluded. Defaults to None, which disables filtering.
 
     Returns:
-    - pandas.DataFrame: The input DataFrame augmented with 'rs3_z_score' and 'rs3_cdf' columns, and optionally filtered
-      based on the 'rs3_z_score' threshold.
+    - pandas.DataFrame: The input DataFrame augmented with 'RS3_score' and 'rs3_cdf' columns, and optionally filtered
+      based on the 'RS3_score' threshold.
     """
 
     print(f"\n\tBeginning RS3 cleavage scoring\n\tIf memory constrained reduce '--chunk_size'\n")
@@ -294,25 +294,25 @@ def cleavage_scoring(sgRNADF, tracr, threads = 2, chunk_size = 200000, minStdDev
         sgRNAScores_Hsu2013 = compute_rs3_scores(sgRNAlist, "Hsu2013", threads, chunk_size)
         sgRNAScores_Chen2013 = compute_rs3_scores(sgRNAlist, "Chen2013", threads, chunk_size)
 
-        sgRNADF['rs3_z_score_Hsu2013'] = sgRNAScores_Hsu2013
-        sgRNADF['rs3_z_score_Hsu2013'] = sgRNADF['rs3_z_score_Hsu2013'].round(4)
-        # sgRNADF['rs3_cdf_Hsu2013'] = norm.cdf(sgRNADF['rs3_z_score_Hsu2013'])
+        sgRNADF['RS3_score_Hsu2013'] = sgRNAScores_Hsu2013
+        sgRNADF['RS3_score_Hsu2013'] = sgRNADF['RS3_score_Hsu2013'].round(4)
+        # sgRNADF['rs3_cdf_Hsu2013'] = norm.cdf(sgRNADF['RS3_score_Hsu2013'])
         # sgRNADF['rs3_cdf_Hsu2013'] = sgRNADF['rs3_cdf_Hsu2013'].round(4)
 
-        sgRNADF['rs3_z_score_Chen2013'] = sgRNAScores_Chen2013
-        sgRNADF['rs3_z_score_Chen2013'] = sgRNADF['rs3_z_score_Chen2013'].round(4)
-        # sgRNADF['rs3_cdf_Chen2013'] = norm.cdf(sgRNADF['rs3_z_score_Chen2013'])
+        sgRNADF['RS3_score_Chen2013'] = sgRNAScores_Chen2013
+        sgRNADF['RS3_score_Chen2013'] = sgRNADF['RS3_score_Chen2013'].round(4)
+        # sgRNADF['rs3_cdf_Chen2013'] = norm.cdf(sgRNADF['RS3_score_Chen2013'])
         # sgRNADF['rs3_cdf_Chen2013'] = sgRNADF['rs3_cdf_Chen2013'].round(4)
     elif tracr in ["Hsu2013", "Chen2013"]:
         sgRNAScores = compute_rs3_scores(sgRNAlist, tracr, threads, chunk_size)
 
-        sgRNADF['rs3_z_score_' + tracr] = sgRNAScores
-        sgRNADF['rs3_z_score_' + tracr] = sgRNADF['rs3_z_score'].round(4)
-        # sgRNADF['rs3_cdf'] = norm.cdf(sgRNADF['rs3_z_score'])
+        sgRNADF['RS3_score_' + tracr] = sgRNAScores
+        sgRNADF['RS3_score_' + tracr] = sgRNADF['RS3_score_' + tracr].round(4)
+        # sgRNADF['rs3_cdf'] = norm.cdf(sgRNADF['RS3_score'])
         # sgRNADF['rs3_cdf'] = sgRNADF['rs3_cdf'].round(4)
 
         if minStdDev:
-            sgRNADF = sgRNADF[sgRNADF['rs3_z_score' + tracr] > minStdDev]
+            sgRNADF = sgRNADF[sgRNADF['RS3_score' + tracr] > minStdDev]
 
     sgRNADF = sgRNADF.copy()
 
@@ -384,9 +384,9 @@ def main():
 
     if not args.skip_rs3:
         if args.tracr == 'both':
-            final_columns += ['rs3_z_score_Hsu2013', 'rs3_z_score_Chen2013']
+            final_columns += ['RS3_score_Hsu2013', 'RS3_score_Chen2013']
         else:
-            final_columns += ['rs3_z_score' + args.tracr]
+            final_columns += ['RS3_score_' + args.tracr]
         sgRNADF = cleavage_scoring(sgRNADF = sgRNADF,
                                    tracr = args.tracr,
                                    chunk_size=args.chunk_size,
