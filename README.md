@@ -51,7 +51,7 @@ index_genome -f tests/test_data/ce11/chrIII_sequence.fasta
 
 generate_guides \
 -f tests/test_data/ce11/chrIII_sequence.fasta \
--k tests/test_data/ce11/ce11.ncbiRefSeq.gtf \
+-k tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
 --feature CDS
 
 # Scoring will take ~5 minutes and uses 8 threads by default.
@@ -73,19 +73,42 @@ rank_guides \
 --output_all
 ```
 
-For Cas12A guide selection change `generate_guides` settings to
+### Generate Guides Alternate PAMs
+
+Default generate_guides settings are equivalent to
 
 ```
 generate_guides \
--f tests/test_data/ce11/chrIII_sequence.fasta \
--k tests/test_data/ce11/ce11.ncbiRefSeq.gtf \
---pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 8 2
+-f <fasta> \
+--pam [-p] NGG
+--sgRNA_length [-l] 20
+--context_window [-w] 4 6
+--active_site_offset_5 [-5] "-4"
+--active_site_offset_3 [-5] "-4"
+
 ```
 
-For on-target scoring, first install [crisprScore](https://github.com/crisprVerse/crisprScore).
+![plot](./images/NGG_cleavage.png)
+
+Note that `context_window[0]` extends the sequence in the 5' direction, `context_window[1]` in the 3' direction. `active_site_offset`s are calculated relative to PAM position, and should be passed in quotes if they are negative.
+
+
+For Cas12A guide selection change `generate_guides` settings to
+
+```
+generate_guides \ 
+-f <fasta> \
+--pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 7 2
+```
+
+
+![plot](./images/TTTV_cleavage.png)
+
+Here the pam is 5-prime to the protospacer so `--pam_5_prime` flag is set and the length.
+
+For on-target scoring of Cas12A guides, first install [crisprScore](https://github.com/crisprVerse/crisprScore).
 
 ```./scripts/crisprscore.R 30_sgrnas.bed 11 DeepSpCas9_sgRNAs.bed```
-
 
 
 Guidescan2 is not compatible with PAMs 5' to protospacers, for off-target scoring in these cases I suggest [Flash Fry](https://github.com/mckennalab/FlashFry?tab=readme-ov-file)
