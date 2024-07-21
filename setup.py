@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 # Include README as long description
 with open("README.md", 'r') as f:
@@ -13,14 +13,14 @@ setup(
     name='crisprware',
     version=VERSION,
     author='Your Name',
-    author_email='your.email@example.com',
+    author_email='ericmalekos@gmail.com',
     url='https://github.com/ericmalekos/crisprware',
     license="Your License",
     keywords="genome editing, CRISPR, bioinformatics",
     description="Tools for CRISPR-based genome editing analysis.",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    packages=['src','utils'],
+    packages=find_packages(),  # Automatically find and include all packages
     entry_points={
         'console_scripts': [
             'preprocess_annotation = src.preprocess_annotation:main',
@@ -45,5 +45,7 @@ setup(
         'pybigwig',
         'pandas',
         'numpy'
-    ]
+    ],
+    scripts=['scripts/allele_specific_guides.py', 'scripts/bigwig_to_signalwindow.py', 'scripts/crisprscore.R',
+    'scripts/gtf_from_ribotish.py', 'scripts/replace_snps.py']
 )

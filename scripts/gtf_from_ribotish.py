@@ -13,8 +13,8 @@ import pandas as pd
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Convert Ribotish TSV to GTF, with filtering and selection options.")
     parser.add_argument("-r", "--ribotish", required=True, help="Path to the Ribotish predict TSV file")
-    parser.add_argument("-i", "--input_gtf", required=True, help="Path to the corresponding GTF file")  # Fixed
-    parser.add_argument("-o", "--output_gtf", required=True, help="Path to output the new GTF file")  # Fixed
+    parser.add_argument("-i", "--input_gtf", required=True, help="Path to the corresponding GTF file")
+    parser.add_argument("-o", "--output_gtf", required=True, help="Path to output the new GTF file")
     parser.add_argument("--min_aalen", type=int, default=1, help="Minimum amino acid length")
     parser.add_argument("--min_inframecount", type=int, default=1, help="Minimum in-frame count")
     parser.add_argument("--max_tisqvalue", type=float, default=1.0, help="Maximum TIS Q-value")
@@ -30,7 +30,7 @@ def load_ribotish_data(ribotish_file):
     return pd.read_csv(ribotish_file, sep='\t')
 
 def filter_and_select_data(df, args):
-    # Convert "None" strings to actual None (NaN) for relevant columns
+    # Convert "None" strings to NaN for relevant columns
     for col in ['TISQvalue', 'FrameQvalue', 'FisherQvalue']:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 

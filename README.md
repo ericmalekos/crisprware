@@ -5,16 +5,12 @@ CRISPRware is a comprehensive toolkit designed to preprocess NGS data and identi
 ## Table of Contents
 1. [Installation](#installation)
 2. [Usage](#usage)
-3. [Methods](#methods)
-    - [CRISPRware Workflow](#crisprware-workflow)
+3. [Requirements](#requirements)
+4. [Leveraging NGS data](#methods)
     - [RNASeq Guided Preprocessing](#rnaseq-guided-preprocessing)
     - [RiboSeq Guided Preprocessing](#riboseq-guided-preprocessing)
     - [Genomic Preprocessing](#genomic-preprocessing)
-    - [Identifying Guide RNAs](#identifying-guide-rnas)
-    - [Building Off-target Index](#building-off-target-index)
-    - [Scoring Guide RNAs](#scoring-guide-rnas)
-    - [Ranking Guide RNAs](#ranking-guide-rnas)
-4. [Full Commands](#commands)
+5. [Full Commands](#commands)
 
 
 ## Installation
@@ -34,35 +30,43 @@ chmod +x setup.py
 ./setup.py install
 ```
 
-## Basic Usage
+## Usage
 ### Input Requirements
 - **FASTA File**
-### Optional Inputs
-- **BED File**: A BED file can be provided to specify regions of interest within the genome. This file can help to limit the search space for gRNA identification.
-- **GTF/GFF File**: A GTF or GFF file can be used to provide gene annotations. This information can be used to filter gRNAs based on specific genomic features such as exons or coding sequences .
+### Optional inputs
+- **BED file**: A BED file can be provided to specify regions of interest within the genome. This file can help to limit the search space for gRNA identification.
+- **GTF/GFF file**: A GTF or GFF file can be used to provide gene annotations. This information can be used to filter gRNAs based on specific genomic features such as exons or coding sequences .
 
-### CRISPRware Workflow
-We demonstrate usage with ce11 chromosome III fasta and NCBI GTF, included in the tests/test/data/ce11 directory: 
+### CRISPRware workflow
+We demonstrate usage with ce11 chromosome III fasta and NCBI GTF, included in the tests/test_data/ce11 directory: 
+
+Note the example off-target index is limited to chrIII, not the full ce11 genome
+
 ```
-# Note the off-target index is limited to chrIII, not the full ce11 genome
-
 index_genome -f tests/test_data/ce11/chrIII_sequence.fasta
+```
 
-# Default settings generate NGG protospacer guides
+Default settings generate NGG protospacer guides
 
-generate_guides \
--f tests/test_data/ce11/chrIII_sequence.fasta \
+```
+generate_guides -f tests/test_data/ce11/chrIII_sequence.fasta \
 -k tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
 --feature CDS
+```
 
-# Scoring will take ~5 minutes and uses 8 threads by default.
-# Change this with --threads <int>
+Scoring will take ~5 minutes and uses 8 threads by default.
+Change this with --threads <int>. `--tracr` is either `Chen2013` or `Hsu2013`, see [RuleSet3](https://github.com/gpp-rnd/rs3) scoring for details
 
-score_guides \
--b sgRNAs/sgRNAs.bed \
--i GscanIndex/GscanIndex \
---tracr Chen2013
+```
+score_guides -b sgRNAs/sgRNAs.bed -i GscanIndex/GscanIndex --tracr Chen2013
+```
 
+Ranking is done based on scoring columns  
+`-c` is matched with `-m` order so this filters out `RS3_score_Chen2013 < 0`,  `specificity_gscan_index < 0.2`  
+`-p 5 65`, `-f CDS` filters out gRNAs outside of the 5th-65th percentile of the CDS  
+`--output_all` outputs TSV and histograms for each stage of filtering in addition to the final output.
+
+```
 rank_guides \
 -k ScoredSgRNAs/ScoredSgRNAs.tsv \
 -t tests/test_data/ce11/ce11.ncbiRefSeq.gtf \
@@ -74,9 +78,75 @@ rank_guides \
 --output_all
 ```
 
-### Generate Guides Alternate PAMs
+## Requirements
 
-Default generate_guides settings are equivalent to
+Memory requirements may be substantial in both the `index_genome` and `score_guides` steps. Guidescan2 authors provide compiled indices for some model species in the [download section of their website](https://guidescan.com/downloads) which can be downloaded directly to avoid use of `index_genome`.  
+For `score_guides` we provide a parameter `--chunk_size <n>` which can be used to decrease memory usage by processing `<n>` guides at a time instead of all at once. Default setting is 100000. Increasing this number will speed up processing time and memory requirements, decreasing will slow down processing time and decrease memory requirements.
+
+## Leveraging NGS data
+
+CRISPRware offers a series of modules to preprocess NGS data and determine suitable gRNAs for CRISPR applications.
+
+### RNASeq Guided Preprocessing
+
+The module `preprocess_annotation` takes processed RNASeq TPMs from Kallisto, Salmon, FLAIR, or Mandalorian from one or more samples along with the GTF/GFF gene annotation. All processed samples should be from the same quantification tool, don't mix Salmon and Kallisto files. If multiple samples are passed, max, min, median, and mean TPM values for each transcript are determined, and the user can supply minimum cut-offs for any combination of these to filter out lowly expressed isoforms. All detected isoforms (TPM > 0) are kept by default. The user can also set an integer flag `--top-n <n>` which will filter out all but the <n> most highly expressed isoform for each gene. So, `--top-n 1` will retain only the gene model of the most highly expressed isoform - according to median_tpm if multiple RNA seq files are passed. 
+There are also `--tss_window` and `--tes_window` options, which produce BED for dCas target choices. User can use these GTFs/BEDs in the `generate_guides` step and the `rank_guides` step. 
+
+```
+preprocess_annotation -g test_data/chr19_ucsc_mm39.ncbiRefSeq.gtf \
+-t quant1.sf quant2.sf quant3.sf \
+--type infer \
+--median 5 \
+--top_n 10 \
+--top_n_column median \
+--model consensus metagene shortest longest \
+--tss_window 300 300
+--tes_window 300 300
+```
+
+*IMPORTANT: ensure the GTF and the TPM files are have the same transcript IDs*
+
+
+### RiboSeq Guided Preprocessing
+
+A number of tools exists for calling translated ORFs from RiboSeq. In order to find gRNAs against these putative coding regions we can convert output from these programs into a GTF with annotated coding sequence (CDS) entries and run the pipeline normally. 
+
+For ORFs called with [RiboTISH](https://github.com/zhpn1024/ribotish/tree/master) set these options in the `ribotish predict` command: `--inframecount`, `--blocks`, `--aaseq` and provide the same GTF that was passed to `ribotish`.
+
+For other RiboSeq ORF callers raise a github issue and I will address it.
+
+Full filtering options:
+
+```
+./scripts/gtf_from_ribotish.py -h
+
+options:
+  -h, --help            show this help message and exit
+  -r RIBOTISH, --ribotish RIBOTISH
+                        Path to the Ribotish predict TSV file
+  -i INPUT_GTF, --input_gtf INPUT_GTF
+                        Path to the corresponding GTF file
+  -o OUTPUT_GTF, --output_gtf OUTPUT_GTF
+                        Path to output the new GTF file
+  --min_aalen MIN_AALEN
+                        Minimum amino acid length
+  --min_inframecount MIN_INFRAMECOUNT
+                        Minimum in-frame count
+  --max_tisqvalue MAX_TISQVALUE
+                        Maximum TIS Q-value
+  --max_frameqvalue MAX_FRAMEQVALUE
+                        Maximum Frame Q-value
+  --max_fisherqvalue MAX_FISHERQVALUE
+                        Maximum Fisher Q-value
+  --select_based_on {AALen,InFrameCount,TISQvalue,FrameQvalue,FisherQvalue}
+                        Column to select the best row for each Tid, TisType pair
+  --genetype GENETYPE   GeneType to filter, must match a column entry
+  --tistype TISTYPE     TisType to filter, must match a column entry
+```
+
+### Generate guides against alternate PAMs
+
+Default `generate_guides` settings are equivalent to
 
 ```
 generate_guides \
@@ -91,7 +161,7 @@ generate_guides \
 
 ![plot](./images/NGG_cleavage.png)
 
-Note that `context_window[0]` extends the sequence in the 5' direction, `context_window[1]` in the 3' direction. `active_site_offset`s are calculated relative to PAM position, and should be passed in quotes if they are negative.
+All [IUPAC ambiguity codes](https://genome.ucsc.edu/goldenPath/help/iupac.html) are allowed and will be automically expanded, e.g. NGG -> AGG, TGG, CGG, GGG. Note that `context_window[0]` extends the sequence in the 5' direction, `context_window[1]` in the 3' direction. `active_site_offset`s are calculated relative to PAM-protospacer position, and should be passed in quotes if they are negative.
 
 
 For Cas12A guide selection change `generate_guides` settings to
@@ -105,49 +175,68 @@ generate_guides \
 
 ![plot](./images/TTTV_cleavage.png)
 
-Here the pam is 5-prime to the protospacer so `--pam_5_prime` flag is set and the length.
+Here the pam is 5-prime to the protospacer so `--pam_5_prime` flag is set and the length is increased 23. The window is resized for compatibility with DeepCpf1 and EnPAMGB scoring and final sequence should be 34 nts long.
 
-For on-target scoring of Cas12A guides, first install [crisprScore](https://github.com/crisprVerse/crisprScore).
+### Additional scoring methods
 
-```./scripts/crisprscore.R 30_sgrnas.bed 11 DeepSpCas9_sgRNAs.bed```
+For additional on-target scoring, including of Cas12A/Cpf1 guides, first install [crisprScore](https://github.com/crisprVerse/crisprScore) (recommendation: install in a new conda environment). Once installed the crisprScore.R script can be used to score guides.
+
+```
+conda activate <crisprscore env>
+
+./scripts/crisprscore.R
+
+	Usage: crisprscore.R <path_to_sgrna_bed_file> <method_number> <outputfile> [<additional settings> ... ] 
+	Example: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 2 Azimuth_scored_sgRNAs.bed
+	Methods:
+	1:  RuleSet1 - SpCas9 (Length: 30)
+	2:  Azimuth - SpCas9 (Length: 30)
+	3:  DeepHF - SpCas9 (Length: 23)
+	4:  Lindel - SpCas9 (Length: 65)
+	5:  DeepCpf1 - AsCas12a (Length: 34)
+	6:  EnPAMGB - enAsCas12a (Length: 34)
+	7:  CRISPRscan - SpCas9 (Length: 35)
+	8:  CasRx-RF - CasRx (Length: NA)
+	9:  CRISPRai - SpCas9 (Length: 22)
+	10: CRISPRater - SpCas9 (Length: 20)
+	11: DeepSpCas9 - SpCas9 (Length: 30)
+	12: RuleSet3 - SpCas9 (Length: 30)
+
+
+	Additional optional argument for chunk size:
+	--chunk-size: Specify the size of chunks for processing the dataframe (optional)
+	Example with chunk size: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 2 Azimuth_scored_sgRNAs.bed --chunk-size 10000
+
+	Additional settings for method 3 (DeepHF):
+	enzyme: Specify the enzyme (options: 'WT', 'ESP', 'HF')
+	promoter: Specify the promoter (options: 'U6', 'T7')
+	Example: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 3 DeepHF_scored_sgRNAs.bed WT U6
+
+	Additional setting for method 5 (DeepCpf1):
+	--no-convertPAM: Specify whether non-canonical PAMs are converted to TTTC [default: TRUE]
+	Example: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 5 DeepCpf1_scored_sgRNAs.bed --no-convertPAM
+
+	Additional setting for method 12 (RuleSet3):
+	--tracrRNA: Specify tracrRNA (options: 'Hsu2013', 'Chen2013')
+
+	Example: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 12 rs3_scored_sgRNAs.bed Chen2013
+```
+
+The output of this script should be passed to `score_guides` in order to properly format for `rank_guides`. Additional score columns will be added unless the user specifies `--skip_rs3` and/or `--skip_gs2`.
+
+```
+./scripts/crisprscore.R 34_sgrnas.bed 6 EnPAMGB_sgRNAs.bed
+
+score_guides -b EnPAMGB_sgRNAs.bed --skip_rs3 --skip_gs2
+```
 
 
 Guidescan2 is not compatible with PAMs 5' to protospacers, for off-target scoring in these cases I suggest [Flash Fry](https://github.com/mckennalab/FlashFry?tab=readme-ov-file)
 
-
-## Methods
-
-CRISPRware offers a series of modules to preprocess NGS data and determine suitable gRNAs for CRISPR applications.
-
-### RNASeq Guided Preprocessing
-
-A number of scripts exist to preprocess NGS data prior to determining gRNAs. The module `preprocess_annotation` takes processed RNASeq TPMs from Kallisto/Salmon (short-read) or FLAIR/Mandalorian (long-read) from one or more samples along with the GTF/GFF gene annotation. If multiple samples are passed, max, min, median, and mean TPM values for each transcript are determined, and the user can supply minimum cut-offs for any combination of these to filter out lowly expressed isoforms. All detected isoforms (TPM > 0) are kept by default. The user can also set an integer flag `--top-n <n>` which will filter out all but the <n> most highly expressed isoform for each gene.
-
-Following filtering, a filtered GTF is created, along with four optional GTF files: shortest, longest, metagene, and consensus. Each of these four GTFs will have a single isoform model for a given gene.
-
-### RiboSeq Guided Preprocessing
-
-RiboSeq is a technique that allows researchers to evaluate the coding potential of canonical and noncanonical open reading frames (ORFs) by sequencing ribosome-protected fragments. CRISPRware can take ORFs called from RiboSeq and generate new GTFs with de novo CDS entries. Currently, GTFs can be generated from the output of either PRICE or Ribo-TISH, two widely used RiboSeq processing tools.
-
-### Genomic Preprocessing
+### Custom off-target indices
 
 Targeting noncoding elements can be guided by any NGS data that yields BED coordinate files. Additionally, a helper script `bigwig_to_signalwindow.py` can take a BED and BigWig signal file and return the window in each BED entry that has the highest mean signal.
 
-### Identifying Guide RNAs
-
-The first processing module in CRISPRware is `generate_guides`, which scans an input genome for protospacers based on a user-defined PAM sequence. GTF/GFF and BED files can be passed to limit the search space to regions of interest.
-
-### Building Off-target Index
-
-Off-target scoring is performed by GuideScan2, and the wrapper script `index_genome.py` is used to generate the index from a fasta file. The wrapper script includes the option to subset the fasta in order to calculate the off-target effects against user-defined areas of interest.
-
-### Scoring Guide RNAs
-
-Following gRNA identification, the output is passed to `score_guides.py`, which calculates the GuideScan2 off-target scoring and Ruleset 3 on-target scoring for each guide. Both scoring methods include multithreading, and the user can specify the number of gRNAs to process concurrently.
-
-### Ranking Guide RNAs
-
-The final module, `rank_guides`, takes the scored guides as input and filters them according to user-defined criteria. Any number of scoring columns and minimum cut-offs can be used to filter out undesirable gRNAs.
 
 ## Full Commands
 ```
