@@ -35,10 +35,10 @@ def filter_df_by_column(df, column, min_value):
 def group_and_minimize(df, rank_column, num_to_keep):
     df = df.sort_values(by=['target_id', rank_column], ascending=[True, False])
     if num_to_keep == -1:
-        print("\t--num_to_keep=-1, all sgRNAs returned")
+        print("\t--num_to_keep=-1, all gRNAs returned")
         return df
 
-    print(f"\tKeeping top {num_to_keep} sgRNAs per target, according to {rank_column}")
+    print(f"\tKeeping top {num_to_keep} gRNAs per target, according to {rank_column}")
     # Group by target_id and keep the top entries as specified by number_of_guides
     df = df.groupby('target_id').head(num_to_keep)
     return df
@@ -125,9 +125,9 @@ def validate_and_modify_bed(file_path):
     return df, target_ids
 
 
-def sgRNA_to_bed(sgRNAs, targets, header, target_header):
+def gRNA_to_bed(gRNAs, targets, header, target_header):
 
-    df = pd.read_table(BedTool(sgRNAs).intersect(targets, wo=True).fn, sep="\t", header=None)
+    df = pd.read_table(BedTool(gRNAs).intersect(targets, wo=True).fn, sep="\t", header=None)
 
     #print(df)
     #drop the last column (number of overlapping bases)
@@ -135,14 +135,14 @@ def sgRNA_to_bed(sgRNAs, targets, header, target_header):
 
     num_columns = len(df.columns)
 
-    sgRNAheader = header + target_header
+    gRNAheader = header + target_header
     columns_to_drop = target_header[:-1]
 
     # Determine the number of columns to rename (minimum of the two lengths)
-    num_rename = min(num_columns, len(sgRNAheader))
+    num_rename = min(num_columns, len(gRNAheader))
 
     # Create a dictionary mapping current column names to new names
-    rename_dict = dict(zip(df.columns[:num_rename], sgRNAheader[:num_rename]))
+    rename_dict = dict(zip(df.columns[:num_rename], gRNAheader[:num_rename]))
 
     # Rename the columns
     df.rename(columns=rename_dict, inplace=True)
@@ -152,9 +152,9 @@ def sgRNA_to_bed(sgRNAs, targets, header, target_header):
 
     return df, target_ids
 
-def sgRNA_to_tscript(sgRNAs, mode, targets, header):
+def gRNA_to_tscript(gRNAs, mode, targets, header):
 
-    df = pd.read_table(BedTool(sgRNAs).intersect(targets, wo=True).fn, sep="\t", header=None)
+    df = pd.read_table(BedTool(gRNAs).intersect(targets, wo=True).fn, sep="\t", header=None)
     df.columns = header + df.columns[len(header):].tolist()
     # This is a hacky way to determine t
     int_columns = [col for col in df.columns if isinstance(col, int)]
@@ -177,32 +177,32 @@ def sgRNA_to_tscript(sgRNAs, mode, targets, header):
     target_ids = set(df["target_id"])
     return df, target_ids
 
-def analyze_target_ids(df, no_sgRNASet):
+def analyze_target_ids(df, no_gRNASet):
     """
-    Analyzes the distribution of sgRNAs across target IDs in a DataFrame and provides statistics.
+    Analyzes the distribution of gRNAs across target IDs in a DataFrame and provides statistics.
 
-    This function calculates and prints the median, minimum, and maximum number of sgRNAs associated
+    This function calculates and prints the median, minimum, and maximum number of gRNAs associated
     with target IDs in the provided DataFrame. It also reports the number of targets with no associated
-    sgRNA guides based on an external set of target IDs.
+    gRNA guides based on an external set of target IDs.
 
     Parameters:
-    - df (pd.DataFrame): DataFrame containing sgRNA data with a 'target_id' column.
-    - no_sgRNASet (set): A set of target IDs that have no associated sgRNA guides.
+    - df (pd.DataFrame): DataFrame containing gRNA data with a 'target_id' column.
+    - no_gRNASet (set): A set of target IDs that have no associated gRNA guides.
 
     Returns:
-    - pd.Series: A Series containing the counts of sgRNAs per target ID.
+    - pd.Series: A Series containing the counts of gRNAs per target ID.
 
     Prints:
-    - Median number of sgRNAs per target.
-    - Minimum number of sgRNAs per target.
-    - Maximum number of sgRNAs per target.
-    - Number of targets with 0 sgRNA guides.
+    - Median number of gRNAs per target.
+    - Minimum number of gRNAs per target.
+    - Maximum number of gRNAs per target.
+    - Number of targets with 0 gRNA guides.
     """
 
     # Count the occurrences of each target_id and calculate basic statistics
     counts = df['target_id'].value_counts()
 
-    zero_counts = pd.Series(0, index=no_sgRNASet)
+    zero_counts = pd.Series(0, index=no_gRNASet)
     all_counts = pd.concat([counts, zero_counts])
     median_all = all_counts.median()
 
@@ -211,14 +211,14 @@ def analyze_target_ids(df, no_sgRNASet):
     min_count = counts.min()
     max_count = counts.max()
 
-    print(f"\n#\tMedian number of sgRNAs per target: {median_all}")
-    print(f"#\tNumber of targets with 0 sgRNA guides: {len(no_sgRNASet)}\n#")
+    print(f"\n#\tMedian number of gRNAs per target: {median_all}")
+    print(f"#\tNumber of targets with 0 gRNA guides: {len(no_gRNASet)}\n#")
 
 
     print(f"#\tCalculations exluding targets with 0 counts:")
-    print(f"#\n#\t\tMedian number of sgRNAs per target: {median_count}")
-    print(f"#\t\tMinimum number of sgRNAs per target: {min_count}")
-    print(f"#\t\tMaximum number of sgRNAs per target: {max_count}")
+    print(f"#\n#\t\tMedian number of gRNAs per target: {median_count}")
+    print(f"#\t\tMinimum number of gRNAs per target: {min_count}")
+    print(f"#\t\tMaximum number of gRNAs per target: {max_count}")
     print("#\n#######################################################################\n")
-    # Return the counts of sgRNAs per target ID for further analysis if needed
+    # Return the counts of gRNAs per target ID for further analysis if needed
     return counts

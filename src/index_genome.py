@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 
 '''
-    This script takes the output from FiltersgRNABED and scores it
-    with Ruleset3 and Guidescan2.
+    This is a wrapper script for generating Guidescan2 indices
 
-    ./src/IndexGenome -f ./test_data/test.fasta -o test_
+    index_genome -f ./test_data/test.fasta
 '''
 import argparse
 import subprocess
 from os import remove
-from utils.utility_functions import create_output_directory
+#from utils.utility_functions import create_output_directory
 from utils.gtf_bed_processing_functions import merge_targets
 from utils.dna_sequence_functions import subset_fasta_with_bed
-
+from utils.utility_functions import create_output
 
 
 def parse_arguments():
@@ -25,13 +24,6 @@ def parse_arguments():
         type=str,
         help="FASTA file to use as a reference for index creation.",
         required=True
-    )
-
-    parser.add_argument(
-        "-o", "--output_prefix",
-        type=str,
-        help="Prefix for output files. [default='gscan_index']",
-        default="GscanIndex"
     )
 
     parser.add_argument(
@@ -70,6 +62,12 @@ def parse_arguments():
         default=[20,20]
     )
 
+    parser.add_argument(
+        "-o", "--output_directory",
+        help="Path to output. [default: current directory]",
+        type=str,
+        default=""
+    )
 
     return parser.parse_args()
 
@@ -96,28 +94,26 @@ def main():
     if args.fasta.endswith(".gz"):
         raise ValueError(f'\n\n\tERROR: {args.fasta} needs to be unzipped.\n')
 
-    #if not args.output_prefix.endswith("_") : args.output_prefix += "_"
-    #index_dir = args.output_prefix + "Index"
-    if not args.output_prefix.endswith("index"): args.output_prefix+="index"
-    index_output_path = create_output_directory(output_prefix=args.output_prefix,
-                                                base_dir=args.output_prefix)
-    if not args.locations_to_keep:
-        guideScanIndex(args.fasta, index_output_path.strip("_"))
-    else:
+    index_output_path, _ = create_output(args.fasta, outdir=args.output_directory, extension="gscan2")
 
-        bed_output_path = create_output_directory(output_prefix=args.output_prefix + "merged.bed",
-                                                  base_dir=args.output_prefix+"/tmp")
+    print(index_output_path)
+
+    if not args.locations_to_keep:
+        guideScanIndex(args.fasta, index_output_path)
+    else:
+    
+        bed_output_path, _ = create_output(args.fasta, extension="gscan2", tmp=False)
+        bed_output_path += "_merged.bed"
 
         locs_to_keep = merge_targets(args.locations_to_keep, gtf_feature=args.feature,
                                      operation="merge", window=args.context_window)
 
         print(f"\n\tSaving merged interval bed to {bed_output_path}")
 
-        locs_to_keep.saveas(bed_output_path)
+        locs_to_keep.saveas(bed_output_path)    
 
-
-        fasta_output_path=create_output_directory(output_prefix=args.output_prefix + "subset.fasta",
-                                                  base_dir=args.output_prefix)
+        fasta_output_path, _ = create_output(args.fasta, extension="gscan2", tmp=False)
+        fasta_output_path += "_subset.fasta"
 
         print(f"\n\tSaving subset fasta to {fasta_output_path}")
 
@@ -129,13 +125,16 @@ def main():
         print("\tSaving Index to " + index_output_path)
         guideScanIndex(fasta_output_path, index_output_path.strip("_"))
 
+        args.fasta = fasta_output_path
+    
     try:
         print(f"\n\tRemoving intermediate file: {args.fasta}.forward.dna")
-        remove(args.fasta + ".forward.dna")
+        remove(f"{args.fasta}.forward.dna")
         print(f"\tRemoving intermediate file: {args.fasta}.reverse.dna\n")
-        remove(args.fasta + ".reverse.dna")
+        remove(f"{args.fasta}.reverse.dna")
     except:
         print(f"... Failed to remove 'reverse.dna' and 'forward.dna'")
+
 
 
 if __name__ == "__main__":

@@ -55,10 +55,10 @@ generate_guides -f tests/test_data/ce11/chrIII_sequence.fasta \
 ```
 
 Scoring will take ~5 minutes and uses 8 threads by default.
-Change this with --threads <int>. `--tracr` is either `Chen2013` or `Hsu2013`, see [RuleSet3](https://github.com/gpp-rnd/rs3) scoring for details
+Change this with `--threads` <int>. `--tracr` is either `Chen2013`,`Hsu2013`, os `both`, see [RuleSet3](https://github.com/gpp-rnd/rs3) scoring for details
 
 ```
-score_guides -b sgRNAs/sgRNAs.bed -i GscanIndex/GscanIndex --tracr Chen2013
+score_guides -b sgRNAs/sgRNAs.bed -i chrIII_sequence_gscan2/chrIII_sequence_gscan2 --tracr Chen2013
 ```
 
 Ranking is done based on scoring columns  
@@ -104,7 +104,7 @@ preprocess_annotation -g test_data/chr19_ucsc_mm39.ncbiRefSeq.gtf \
 --tes_window 300 300
 ```
 
-*IMPORTANT: ensure the GTF and the TPM files are have the same transcript IDs*
+*IMPORTANT: ensure the GTF and the TPM files have the same transcript IDs*
 
 
 ### RiboSeq Guided Preprocessing

@@ -6,15 +6,15 @@
 '''
 
 import pandas as pd
-#from pathlib import Path
 import argparse
 import pybedtools as pyb
 import matplotlib.pyplot as plt
-from utils.utility_functions import create_output_directory
+#from utils.utility_functions import create_output_directory
 from utils.rank_guides_functions import create_combined_weighted_column,\
-    validate_and_modify_bed,df_to_pybed,sgRNA_to_bed,select_guides,\
-        sgRNA_to_tscript,group_and_minimize,analyze_target_ids
+    validate_and_modify_bed,df_to_pybed,gRNA_to_bed,select_guides,\
+        gRNA_to_tscript,group_and_minimize,analyze_target_ids
 from utils.gtf_bed_processing_functions import truncate_gtf
+from utils.utility_functions import create_output
 
 
 def restricted_int(x):
@@ -25,13 +25,13 @@ def restricted_int(x):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Rank sgRNA output from score_guides."
+        description="Rank gRNA output from score_guides."
     )
 
     parser.add_argument(
         "-k", "--scored_guides",
         type=str,
-        help="<score_guides_output>.tsv output from score_guides.",
+        help="<score_guides_output>.bed output from score_guides.",
         required=True
     )
 
@@ -49,7 +49,7 @@ def parse_arguments():
         "--target_mode",
         type=str,
         default="gene",
-        help="If a GTF/GFF is used to select targets, sgRNAs can be grouped \
+        help="If a GTF/GFF is used to select targets, gRNAs can be grouped \
         at either the 'tx' or 'gene' level e.g. '--target_mode gene -n 10' \
         chooses 10 guides per gene, '--target_mode tx -n 10' chooses 10 \
         per transcript [default: gene].",
@@ -68,7 +68,7 @@ def parse_arguments():
         "-p", "--percentile_range",
         nargs=2,
         help="Allowable range of guide for each transcript and feature set, e.g. \n \
-            '-p 60 80 -f exon' returns sgRNAs in the 60th to 80th percentile of exons \n \
+            '-p 60 80 -f exon' returns gRNAs in the 60th to 80th percentile of exons \n \
             for a given transcript. Default setting returns guides \n \
             anywhere in the CDS for each transcript [default: 0 100]",
         type=restricted_int,
@@ -93,7 +93,7 @@ def parse_arguments():
         "--output_all",
         default=False,
         action="store_true",
-        help="Set flag to save sgRNA-target TSVs at each \
+        help="Set flag to save gRNA-target TSVs at each \
             stage of filtering rather than just the end.[default: False]"
     )
 
@@ -101,7 +101,7 @@ def parse_arguments():
         "--plot_histogram",
         default=False,
         action="store_true",
-        help="Set flag to plot a histogram of the distribution of sgRNAs per target \
+        help="Set flag to plot a histogram of the distribution of gRNAs per target \
             after each filtering step. Sets '--output_all' to True.[default: False]"
     )
 
@@ -150,18 +150,17 @@ def parse_arguments():
         action="store_false"
     )
 
-
     parser.add_argument(
-        "-o", "--output_prefix",
+        "-o", "--output_directory",
+        help="Path to output. [default: current directory]",
         type=str,
-        help="Prefix for output file",
         default=""
     )
 
     return parser.parse_args()
 
 
-def validate_scored_sgRNA_columns(header, columns):
+def validate_scored_gRNA_columns(header, columns):
     required_columns = ['#chr', 'start', 'stop', 'strand']
     # Check the fixed columns
     for column in columns:
@@ -179,17 +178,17 @@ def update_no_targets(original_target_ids, target_df):
     removed_target_ids = original_target_ids - updated_target_ids
     return removed_target_ids
 
-def create_histogram(df, output_pdf_path, targetsWith0Guides=""):
+def create_histogram(df, output_pdf_path, target_type="Target ID", targetsWith0Guides=""):
     """
-    Creates and saves a histogram that shows the frequency of sgRNAs per target ID,
-    including targets with zero sgRNAs, to a PDF file.
+    Creates and saves a histogram that shows the frequency of gRNAs per target ID,
+    including targets with zero gRNAs, to a PDF file.
 
     Parameters:
-    - df (pd.DataFrame): DataFrame containing sgRNA data, including a 'target_id' column.
+    - df (pd.DataFrame): DataFrame containing gRNA data, including a 'target_id' column.
     - output_pdf_path (str): Path (including filename) where the histogram PDF will be saved.
-    - targetsWith0Guides (list): A list of target IDs that have zero associated sgRNAs.
+    - targetsWith0Guides (list): A list of target IDs that have zero associated gRNAs.
 
-    The histogram includes an additional bar representing the number of targets with zero sgRNAs.
+    The histogram includes an additional bar representing the number of targets with zero gRNAs.
     """
     # Count the occurrences of each 'target_id'
     target_id_counts = df['target_id'].value_counts()
@@ -206,9 +205,9 @@ def create_histogram(df, output_pdf_path, targetsWith0Guides=""):
     # Plotting the histogram
     plt.figure(figsize=(10, 6))
     ax = frequency_counts.plot(kind='bar')
-    plt.title('Frequency of Target ID Counts')
-    plt.xlabel('Number of sgRNAs per Target ID')
-    plt.ylabel('Number of Unique Target IDs')
+    plt.title(f'Frequency of {target_type} counts')
+    plt.xlabel(f'Number of gRNAs per {target_type}')
+    plt.ylabel(f'Number of unique {target_type}s')
 
     # Setting x-axis labels to only appear every 5 ticks
     ticks = ax.xaxis.get_ticklocs()
@@ -225,7 +224,7 @@ def create_histogram(df, output_pdf_path, targetsWith0Guides=""):
 def save_notarget_set(noSgRNATargetSet, filename):
 
     sorted_strings = sorted(noSgRNATargetSet)
-    with open(filename, "w") as file:
+    with open(filename, "w+") as file:
         for item in sorted_strings:
             file.write(item + "\n")
 
@@ -242,22 +241,20 @@ def filter_df_by_cutoff(df, column_name, cutoff_value):
     """
     df = df[df[column_name] >= cutoff_value]
 
-    print(f"\tRemaining sgRNAs after applying cutoff {cutoff_value} to '{column_name}': {len(df)}")
+    print(f"\tRemaining gRNAs after applying cutoff {cutoff_value} to '{column_name}': {len(df)}")
 
     return df
 
-def save_output(args,finalsgRNAs,out_path,initial_target_ids):
+def save_output(args,finalgRNAs,out_path,initial_target_ids):
 
-    targetsWithoutsgRNAs = update_no_targets(initial_target_ids,finalsgRNAs)
+    targetsWithoutgRNAs = update_no_targets(initial_target_ids,finalgRNAs)
 
-    _ = analyze_target_ids(finalsgRNAs, targetsWithoutsgRNAs)
+    _ = analyze_target_ids(finalgRNAs, targetsWithoutgRNAs)
 
-    if args.output_all: finalsgRNAs.to_csv(out_path, sep='\t', index=False)
-    if args.plot_histogram: create_histogram(finalsgRNAs, out_path[:-3] + "pdf", targetsWithoutsgRNAs)
+    if args.output_all: finalgRNAs.to_csv(out_path, sep='\t', index=False)
+    if args.plot_histogram: create_histogram(finalgRNAs, out_path[:-3] + "pdf", args.target_mode, targetsWithoutgRNAs)
 
 def main():
-
-    #TODO it should not require minimum values for ranking column
 
     pd.set_option('display.max_columns', None)
     args = parse_arguments()
@@ -272,23 +269,23 @@ def main():
     if args.filtering_columns and (not args.minimum_values or (len(args.filtering_columns) != len(args.minimum_values))):
         raise ValueError("\n\n\tThe length of --filtering_columns and --minimum_values must match.\n\n")
 
-    sgRNA_output_path = "./" + args.output_prefix + "RankedSgRNAs/" + args.output_prefix.split("/")[-1] + "RankedSgRNAs.tsv"
-    tmp_path = create_output_directory(base_dir="./" + args.output_prefix + "RankedSgRNAs/",output_prefix="tmp/")
+    gRNA_output_path, tmp_path = create_output(args.scored_guides, outdir=args.output_directory, extension="rankedgRNA", stripped="_scoredgRNA", tmp=True)
+    gRNA_output_path += ".bed"
 
     with open(args.scored_guides, 'r') as file: header = file.readline().strip().split('\t')
 
 
     if args.ranking_columns:
-        validate_scored_sgRNA_columns(header,columns = args.ranking_columns)
+        validate_scored_gRNA_columns(header,columns = args.ranking_columns)
     if args.filtering_columns:
-        validate_scored_sgRNA_columns(header,columns = args.filtering_columns)
+        validate_scored_gRNA_columns(header,columns = args.filtering_columns)
 
-    sgRNAs = pyb.BedTool(args.scored_guides)
+    gRNAs = pyb.BedTool(args.scored_guides)
 
     # Determine target file type
     targetFileType = args.targets.split(".")[-1].lower()
     initial_target_ids = None
-    targetsWithoutsgRNAs = None
+    targetsWithoutgRNAs = None
 
 
     if targetFileType in ["gff", "gtf", "gff3", "gff2"]:
@@ -297,14 +294,14 @@ def main():
         # For establishing initial count
         _, transcript_ids, gene_ids = truncate_gtf(input_file = args.targets, feature = args.feature, percentiles = [0,100])
 
-        finalsgRNAs, targetIDs = sgRNA_to_tscript(sgRNAs=sgRNAs, mode=args.target_mode, targets=pyb.BedTool(args.targets), header=header)
+        finalgRNAs, targetIDs = gRNA_to_tscript(gRNAs=gRNAs, mode=args.target_mode, targets=pyb.BedTool(args.targets), header=header)
         initial_target_ids = transcript_ids if args.target_mode == "tx" else gene_ids
-        finalsgRNAs = finalsgRNAs.drop_duplicates()
+        finalgRNAs = finalgRNAs.drop_duplicates()
         print(f'\n\tInitial {args.target_mode} count:\t{len(initial_target_ids)}')
 
         print("\n\n\tPrior to positional filtering: ")
-        out_path = tmp_path + args.output_prefix + "0_sgRNAsTargets_preFilter.tsv"
-        save_output(args,finalsgRNAs,out_path,initial_target_ids)
+        out_path = tmp_path + "0_gRNAsTargets_preFilter.bed"
+        save_output(args,finalgRNAs,out_path,initial_target_ids)
 
         trimmed = tmp_path + "trimmedAnnotation_" + args.targets.split("/")[-1]
 
@@ -316,7 +313,7 @@ def main():
 
         trimmed_gtf.to_csv(trimmed, sep="\t", header=False, index=False, doublequote=False, quoting=3, quotechar="",  escapechar="\\")
         targets = pyb.BedTool(trimmed)
-        finalsgRNAs, targetIDs = sgRNA_to_tscript(sgRNAs=sgRNAs, mode=args.target_mode, targets=targets, header=header)
+        finalgRNAs, targetIDs = gRNA_to_tscript(gRNAs=gRNAs, mode=args.target_mode, targets=targets, header=header)
 
     else:
         if targetFileType not in ["bed"]:
@@ -327,63 +324,59 @@ def main():
         print(f"\n\tNumber of targets: {len(initial_target_ids)}")
         target_bed, target_header = df_to_pybed(df=target_bed_df)
 
-        finalsgRNAs,targetIDs = sgRNA_to_bed(sgRNAs=sgRNAs, targets=target_bed, header=header, target_header=target_header)
+        finalgRNAs,targetIDs = gRNA_to_bed(gRNAs=gRNAs, targets=target_bed, header=header, target_header=target_header)
 
 
     if args.ranking_columns:
-        finalsgRNAs = create_combined_weighted_column(df=finalsgRNAs, column_names=args.ranking_columns,
+        finalgRNAs = create_combined_weighted_column(df=finalgRNAs, column_names=args.ranking_columns,
                                                   weights=args.column_weights, normalize_columns=args.normalize_columns)
 
-    # print("initial_target_ids")
-    # print(initial_target_ids)
-    # print("targetIDs")
-    # print(targetIDs)
 
-    targetsWithoutsgRNAs = initial_target_ids - targetIDs
+    targetsWithoutgRNAs = initial_target_ids - targetIDs
 
     # filter by column values
     print("\n\n\tPrior to filtering: ")
-    out_path = tmp_path + args.output_prefix + "1_sgRNAsTargets_preFilter.tsv"
-    save_output(args=args,finalsgRNAs=finalsgRNAs,out_path=out_path,initial_target_ids=initial_target_ids)
+    out_path = tmp_path + "1_gRNAsTargets_preFilter.bed"
+    save_output(args=args,finalgRNAs=finalgRNAs,out_path=out_path,initial_target_ids=initial_target_ids)
 
     i = 2
     if args.filtering_columns:
         for column, cutoff in zip(args.filtering_columns, args.minimum_values):
             print(f"\n\tFiltering column {column} > {cutoff}")
-            finalsgRNAs = filter_df_by_cutoff(df = finalsgRNAs, column_name=column, cutoff_value=cutoff)
-            out_path = tmp_path + args.output_prefix + str(i) + "_sgRNAsTargets_" + column + str(cutoff) + "Filter.tsv"
-            save_output(args=args,finalsgRNAs=finalsgRNAs,out_path=out_path,initial_target_ids=initial_target_ids)
+            finalgRNAs = filter_df_by_cutoff(df = finalgRNAs, column_name=column, cutoff_value=cutoff)
+            out_path = tmp_path + str(i) + "_gRNAsTargets_" + column + str(cutoff) + "Filter.bed"
+            save_output(args=args,finalgRNAs=finalgRNAs,out_path=out_path,initial_target_ids=initial_target_ids)
             i += 1
 
     # Filter by spacing
-    out_path = tmp_path + args.output_prefix + str(i) + "_sgRNAsTargets_spacing" + "Filter.tsv" ; i += 1
+    out_path = tmp_path + str(i) + "_gRNAsTargets_spacing" + "Filter.bed" ; i += 1
     if args.ranking_columns:
-        finalsgRNAs = select_guides(df=finalsgRNAs, rank_column="combined_weighted", min_spacing=args.min_spacing)
-        save_output(args,finalsgRNAs,out_path,initial_target_ids)
+        finalgRNAs = select_guides(df=finalgRNAs, rank_column="combined_weighted", min_spacing=args.min_spacing)
+        save_output(args,finalgRNAs,out_path,initial_target_ids)
 
     # Filter by number_of_guides per target
     #if args.number_of_guides != -1:
     if args.ranking_columns:
-        finalsgRNAs = group_and_minimize(finalsgRNAs, "combined_weighted", args.number_of_guides)
+        finalgRNAs = group_and_minimize(finalgRNAs, "combined_weighted", args.number_of_guides)
 
-    counts = analyze_target_ids(finalsgRNAs, update_no_targets(initial_target_ids,finalsgRNAs))
+    counts = analyze_target_ids(finalgRNAs, update_no_targets(initial_target_ids,finalgRNAs))
 
-    if 'id,sequence,pam,chromosome,position,sense' in finalsgRNAs.columns:
-        finalsgRNAs[['sequence']] = finalsgRNAs['id,sequence,pam,chromosome,position,sense'].str.split(',', expand=True).iloc[:, 1:2]
-        finalsgRNAs = finalsgRNAs.drop(['id,sequence,pam,chromosome,position,sense'], axis = 1)
+    if 'id,sequence,pam,chromosome,position,sense' in finalgRNAs.columns:
+        finalgRNAs[['sequence']] = finalgRNAs['id,sequence,pam,chromosome,position,sense'].str.split(',', expand=True).iloc[:, 1:2]
+        finalgRNAs = finalgRNAs.drop(['id,sequence,pam,chromosome,position,sense'], axis = 1)
 
-    if 'context' in finalsgRNAs.columns:
-        finalsgRNAs = finalsgRNAs.drop(['context'], axis = 1)
+    if 'context' in finalgRNAs.columns:
+        finalgRNAs = finalgRNAs.drop(['context'], axis = 1)
 
-    finalsgRNAs.to_csv(sgRNA_output_path, sep='\t', index=False)
-    if args.plot_histogram: create_histogram(finalsgRNAs, sgRNA_output_path[:-3] + "pdf", update_no_targets(initial_target_ids,finalsgRNAs))
+    finalgRNAs.to_csv(gRNA_output_path, sep='\t', index=False)
+    if args.plot_histogram: create_histogram(finalgRNAs, gRNA_output_path[:-3] + "pdf", args.target_mode, update_no_targets(initial_target_ids,finalgRNAs))
 
-    save_notarget_set(noSgRNATargetSet = targetsWithoutsgRNAs.union(update_no_targets(initial_target_ids,finalsgRNAs)),
-                      filename="."+sgRNA_output_path.strip("RankedSgRNAs.tsv") + "TargetsWith0sgRNAs.tsv")
+    save_notarget_set(noSgRNATargetSet = targetsWithoutgRNAs.union(update_no_targets(initial_target_ids,finalgRNAs)),
+                      filename=gRNA_output_path.replace("rankedgRNA.bed", "") + "targetsWith0gRNAs.txt")
 
     counts = counts.reset_index()
-    counts.columns = ['target_id', 'sgRNA_count']
-    counts.to_csv("." + sgRNA_output_path.strip("RankedSgRNAs.tsv") + "TargetsgRNACounts.tsv", sep='\t', index=False)
+    counts.columns = ['target_id', 'gRNA_count']
+    counts.to_csv(gRNA_output_path.strip("rankedgRNA.bed") + "targetgRNACounts.bed", sep='\t', index=False)
 
 
 if __name__ == "__main__":

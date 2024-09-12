@@ -4,7 +4,7 @@
 
 '''
 import argparse
-from utils.utility_functions import create_output_directory
+from utils.utility_functions import create_output
 from utils.gtf_bed_processing_functions import create_metagene_model,\
     create_constitutive_model,filter_gtf_by_transcript_ids, parse_gtf_for_cds_extremes,\
     extract_transcript_gene_relationship, gtf_to_tss_tes_bed
@@ -136,6 +136,13 @@ def parse_arguments():
         If this is not provided it will be deduced from the GTF/GFF3 and saved as \
         './annotations/intermediateFiles/tx2gene.tsv'."
     )
+    
+    parser.add_argument(
+        "-o", "--output_directory",
+        help="Path to output. [default: current directory]",
+        type=str,
+        default=""
+    )
 
     args = parser.parse_args()
     print('\n')
@@ -200,8 +207,13 @@ def main():
 
     args = parse_arguments()
 
-    create_output_directory(base_dir="./annotations/",output_prefix="intermediateFiles/")
+    #create_output_directory(base_dir="./annotations/",output_prefix="intermediateFiles/")
+    gtf_output_path, tmp_path = create_output(args.gtf, outdir=args.output_directory, tmp=True)
 
+    print("gtf_output_path:", gtf_output_path)
+
+
+    gtf_output_path += "_"
     GTF_path = args.gtf
     GTF_file = args.gtf.split('/')[-1]
 
@@ -221,10 +233,10 @@ def main():
 
         if not args.tx_to_gene:
             print('\n\tGenerating transcript-gene relationships')
-            tx_to_gene = extract_transcript_gene_relationship(GTF_path)
-            tx2gene = './annotations/intermediateFiles/tx2gene.tsv'
+            tx_to_gene = extract_transcript_gene_relationship(args.gtf)
+            tx2gene = tmp_path + 'tx2gene.tsv'
             print('\n\tSaving transcript-gene relationships to:\t' + tx2gene)
-            with open("./annotations/intermediateFiles/tx2gene.tsv", 'w') as f:
+            with open(tx2gene, 'w') as f:
                 for key, value in tx_to_gene.items():
                     f.write(f"{key}\t{value}\n")
         else:
@@ -235,7 +247,7 @@ def main():
                     tx_to_gene[key] = value
 
         result_df = add_gene_ids_and_subset(transcript_df, relationship=tx_to_gene, col = args.top_n_column, n = args.top_n)
-        result_df_out = './annotations/intermediateFiles/filtered_' + '.'.join(GTF_file.split('.')[:-1]) + '.tsv'
+        result_df_out = tmp_path + 'filtered_' + '.'.join(GTF_file.split('.')[:-1]) + '.tsv'
 
         print('\tSaving quantification file to:\t\t' + result_df_out)
         result_df.to_csv(result_df_out, sep="\t", index=False)
@@ -247,7 +259,7 @@ def main():
         filtered_gtf_lines = filter_gtf_by_transcript_ids(input_file = GTF_path, transcript_ids = transcript_ids)
 
         GTF_file = 'filtered_' + '.'.join(GTF_file.split('.')[:-1]) + '.gtf'
-        GTF_path = './annotations/' + GTF_file
+        GTF_path = gtf_output_path + GTF_file
         print('\tSaving transcript filtered GTF to:\t' + GTF_path)
         with open(GTF_path, 'w') as f:
             for line in filtered_gtf_lines:
@@ -266,7 +278,7 @@ def main():
 
             if "longest" in args.model:
                 GTF_file = 'longestCDS_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
-                GTF_path = './annotations/' + GTF_file
+                GTF_path = gtf_output_path + GTF_file
                 print('\n\tSaving longest CDS GTF to: ' + GTF_path)
 
                 #longest_df.drop(['gene_id', 'transcript_id', 'cds_length'], axis=1).to_csv(GTF_path, sep='\t', index=False, header = False, quoting=3)
@@ -277,7 +289,7 @@ def main():
 
             if "shortest" in args.model:
                 GTF_file = 'shortestCDS_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
-                GTF_path = './annotations/' + GTF_file
+                GTF_path = gtf_output_path + GTF_file
                 print('\tSaving shortest CDS GTF to: ' + GTF_path)
 
                 #shortest_df.drop(['gene_id', 'transcript_id', 'cds_length'], axis=1).to_csv(GTF_path, sep='\t', index=False, header=False, quoting=3)
@@ -290,7 +302,7 @@ def main():
             output_str = create_metagene_model(cur_GTF_path)
 
             GTF_file = 'meta_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
-            GTF_path = './annotations/' + GTF_file
+            GTF_path = gtf_output_path + GTF_file
             print('\tSaving metagene GTF to: ' + GTF_path)
             with open(GTF_path, 'w') as f:
                 f.write(output_str)
@@ -303,13 +315,13 @@ def main():
             output_str, genes_without_consensus = create_constitutive_model(cur_GTF_path)
 
             GTF_file = 'consensus_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
-            GTF_path = './annotations/' + GTF_file
+            GTF_path = gtf_output_path + GTF_file
 
             print('\tSaving consensus GTF to: ' + GTF_path)
             with open(GTF_path, 'w') as f:
                 f.write(output_str)
 
-            genes_without_consensus_out = './annotations/genes_without_consensus_model.txt'
+            genes_without_consensus_out = gtf_output_path + 'genes_without_consensus_model.txt'
             print('\n\tA CONSENSUS MODEL COULD NOT BE GENERATED FOR ' + str(len(genes_without_consensus)) + ' GENES')
             print('\tIf this number is large, consider filtering by TPM expression more strictly or using a more conservative GTF.')
             print('\tIf this number is small, consider manually removing problematic transcripts from the quantification TSVs and rerunning this module.')

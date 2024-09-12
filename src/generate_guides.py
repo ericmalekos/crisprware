@@ -16,7 +16,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pybedtools import BedTool
 from utils.dna_sequence_functions import NTS, map_ambiguous_sequence, \
     revcom, merge_targets, include_sgRNA, get_chromosome_boundaries
-from utils.utility_functions import create_output_directory
+from utils.utility_functions import create_output
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -204,19 +204,19 @@ def parse_arguments():
         default=True,
         action="store_false"
     )
-    
-    parser.add_argument(
-        "-o", "--output_prefix",
-        type=str,
-        help="Prefix for output files.",
-        default=""
-    )
 
     parser.add_argument(
         "-t", "--threads",
         type=int,
         help="Number of threads. [default: 4]",
         default=4,
+    )
+
+    parser.add_argument(
+        "-o", "--output_directory",
+        help="Path to output. [default: current directory]",
+        type=str,
+        default=""
     )
 
     return parser.parse_args()
@@ -427,11 +427,11 @@ def reverse_cut_site_offset(bedline, args):
 
     return "\t".join(bedlist)
 
-def write_results(final_targets, sgRNA_output_path, args):
+def write_results(final_targets, gRNA_output_path, args):
     """
     Writes the processed sgRNA target results to a specified output file.
     """
-    with open(sgRNA_output_path, 'a') as k:
+    with open(gRNA_output_path, 'a') as k:
         for line in final_targets:
             if not args.coords_as_active_site:
                 k.write(reverse_cut_site_offset(line, args))
@@ -466,10 +466,10 @@ def main():
     #     raise ValueError("--active_site_offset_5 should be less than or equal to --active_site_offset_3")
     args.gc_range = sorted(args.gc_range)
 
-    sgRNA_output_path = "./" + args.output_prefix + "sgRNAs/" + args.output_prefix.split("/")[-1] + "sgRNAs.bed"
-    create_output_directory(base_dir=sgRNA_output_path,output_prefix="")
+    gRNA_output_path, _ = create_output(args.fasta, outdir=args.output_directory, extension="gRNA")
+    gRNA_output_path += ".bed"
 
-    with open(sgRNA_output_path, 'w') as f:
+    with open(gRNA_output_path, 'w') as f:
         f.write('#chr\tstart\tstop\tid,sequence,pam,chromosome,position,sense\tcontext\tstrand\n')
 
     keep_chroms = None
@@ -547,7 +547,7 @@ def main():
                 final_targets = bed_chr_results
 
             final_targets_str = [str(line) for line in final_targets]
-            write_results(final_targets_str, sgRNA_output_path, args)
+            write_results(final_targets_str, gRNA_output_path, args)
 
 if __name__ == "__main__":
     main()
