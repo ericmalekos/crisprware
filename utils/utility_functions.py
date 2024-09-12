@@ -39,8 +39,6 @@ def create_output(file_path, outdir=None, extension="", stripped="", tmp=False):
     tmp_dir = ""
     if tmp:
         tmp_dir = join(new_directory, "tmp/")
-        print(new_directory)
-        print(tmp_dir)
         makedirs(tmp_dir, exist_ok=True)
 
     if extension:

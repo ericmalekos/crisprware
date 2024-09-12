@@ -207,10 +207,8 @@ def main():
 
     args = parse_arguments()
 
-    #create_output_directory(base_dir="./annotations/",output_prefix="intermediateFiles/")
     gtf_output_path, tmp_path = create_output(args.gtf, outdir=args.output_directory, tmp=True)
-
-    print("gtf_output_path:", gtf_output_path)
+    #print("gtf_output_path:", gtf_output_path)
 
 
     gtf_output_path += "_"
@@ -277,7 +275,7 @@ def main():
             longest_df, shortest_df = parse_gtf_for_cds_extremes(cur_GTF_path)
 
             if "longest" in args.model:
-                GTF_file = 'longestCDS_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
+                GTF_file = 'longestCDS.gtf'
                 GTF_path = gtf_output_path + GTF_file
                 print('\n\tSaving longest CDS GTF to: ' + GTF_path)
 
@@ -288,7 +286,7 @@ def main():
                     save_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
 
             if "shortest" in args.model:
-                GTF_file = 'shortestCDS_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
+                GTF_file = 'shortestCDS.gtf'
                 GTF_path = gtf_output_path + GTF_file
                 print('\tSaving shortest CDS GTF to: ' + GTF_path)
 
@@ -301,7 +299,7 @@ def main():
         if "metagene" in args.model:
             output_str = create_metagene_model(cur_GTF_path)
 
-            GTF_file = 'meta_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
+            GTF_file = 'meta.gtf'
             GTF_path = gtf_output_path + GTF_file
             print('\tSaving metagene GTF to: ' + GTF_path)
             with open(GTF_path, 'w') as f:
@@ -314,7 +312,7 @@ def main():
 
             output_str, genes_without_consensus = create_constitutive_model(cur_GTF_path)
 
-            GTF_file = 'consensus_' + '.'.join(cur_GTF_file.split('.')[:-1]) + '.gtf'
+            GTF_file = 'consensus.gtf'
             GTF_path = gtf_output_path + GTF_file
 
             print('\tSaving consensus GTF to: ' + GTF_path)
