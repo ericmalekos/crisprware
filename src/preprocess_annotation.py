@@ -134,7 +134,7 @@ def parse_arguments():
         help="A TSV with transcript IDs in the first column and Gene IDs in the second. \
         The transcript IDs must match the first column entries of the --quant_files. \
         If this is not provided it will be deduced from the GTF/GFF3 and saved as \
-        './annotations/intermediateFiles/tx2gene.tsv'."
+        './tmp/tx2gene.tsv'."
     )
     
     parser.add_argument(
@@ -170,26 +170,29 @@ def save_tss_tes_bed(args, GTF_path, GTF_file):
     - GTF_file (str): The filename of the GTF file.
 
     Notes:
-    - The function assumes the existence of the './annotations/' directory.
     - The generated BED file contains TSS positions for each transcript in the GTF file.
     """
 
     # hacky approach to allow TSS or TES not be output
+    tss_window = args.tss_window
+    tes_window = args.tes_window
+
     output_TSS, output_TES = True, True
     if not args.tss_window:
-        args.tss_window = [1, 1]
+        tss_window = [1, 1]
         output_TSS = False
     if not args.tes_window:
-        args.tes_window = [1, 1]
+        tes_window = [1, 1]
         output_TES = False
 
-    tss_bed, tes_bed = gtf_to_tss_tes_bed(GTF_path, tss_upstream=args.tss_window[0],
-                                        tss_downstream=args.tss_window[1],
-                                        tes_upstream=args.tes_window[0],
-                                        tes_downstream=args.tes_window[1])
+    tss_bed, tes_bed = gtf_to_tss_tes_bed(GTF_path, tss_upstream=tss_window[0],
+                                        tss_downstream=tss_window[1],
+                                        tes_upstream=tes_window[0],
+                                        tes_downstream=tes_window[1])
 
-    tss_bed_out = './annotations/TSS_' + '.'.join(GTF_file.split('.')[:-1]) + '.bed'
-    tes_bed_out = './annotations/TES_' + '.'.join(GTF_file.split('.')[:-1]) + '.bed'
+
+    tss_bed_out = '/'.join(GTF_path.split('/')[:-1] + ['TSS_' + GTF_file[:-3] + 'bed'])
+    tes_bed_out = '/'.join(GTF_path.split('/')[:-1] + ['TES_' + GTF_file[:-3] + 'bed'])
 
     if output_TSS:
         print('\n\tSaving TSS:\t' + tss_bed_out + '\n')
@@ -256,7 +259,7 @@ def main():
         #transcript_ids = extract_transcript_ids_from_dataframe(result_df)
         filtered_gtf_lines = filter_gtf_by_transcript_ids(input_file = GTF_path, transcript_ids = transcript_ids)
 
-        GTF_file = 'filtered_' + '.'.join(GTF_file.split('.')[:-1]) + '.gtf'
+        GTF_file = 'filtered.gtf'
         GTF_path = gtf_output_path + GTF_file
         print('\tSaving transcript filtered GTF to:\t' + GTF_path)
         with open(GTF_path, 'w') as f:
@@ -268,7 +271,7 @@ def main():
             save_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
 
     if args.model:
-        cur_GTF_file = GTF_file
+        #cur_GTF_file = GTF_file
         cur_GTF_path = GTF_path
 
         if "shortest" or "longest" in args.model:
