@@ -1,6 +1,6 @@
 from os.path import basename, splitext, join
 from os import getcwd, makedirs
-
+import gzip 
 def create_output(file_path, outdir=None, extension="", stripped="", tmp=False):
     """
     Creates an output directory based on the given output prefix and base directory.
@@ -46,3 +46,26 @@ def create_output(file_path, outdir=None, extension="", stripped="", tmp=False):
     else:
         full_path = join(new_directory, f"{base_name}")
     return full_path, tmp_dir
+
+def decompress_gzip_if_needed(file_path):
+    """
+    Decompresses a gzip file if needed and returns the path to the decompressed file.
+
+    Parameters:
+        file_path (str): The path to the input file.
+
+    Returns:
+        tuple: A tuple containing:
+            - str: The path to the decompressed file (or original file if not gzipped).
+            - bool: True if the file was gzipped and decompressed, False otherwise.
+    """
+    if file_path.endswith('.gz'):
+        print(f"Unzipping {file_path}")
+        decompressed_path = file_path[:-3]  # Remove .gz extension
+        with gzip.open(file_path, 'rb') as f_in:
+            with open(decompressed_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+        print(f"Unzipped file saved as {decompressed_path}")
+        return decompressed_path, True
+    else:
+        return file_path, False

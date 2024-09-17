@@ -7,11 +7,10 @@
 '''
 import argparse
 import subprocess
-from os import remove
-#from utils.utility_functions import create_output_directory
+from os import remove, path
 from utils.gtf_bed_processing_functions import merge_targets
 from utils.dna_sequence_functions import subset_fasta_with_bed
-from utils.utility_functions import create_output
+from utils.utility_functions import create_output, decompress_gzip_if_needed
 
 
 def parse_arguments():
@@ -72,6 +71,16 @@ def parse_arguments():
     return parser.parse_args()
 
 def guideScanIndex(fasta, output):
+    """
+    This function generates a Guidescan index for a given fasta file.
+
+    Parameters:
+        fasta (str): The path to the input fasta file.
+        output (str): The path where the output index will be saved.
+
+    Returns:
+        int: A success code (1) indicating that the index was generated successfully.
+    """
 
     cmd = [
         'guidescan',
@@ -91,8 +100,10 @@ def main():
 
     args = parse_arguments()
 
-    if args.fasta.endswith(".gz"):
-        raise ValueError(f'\n\n\tERROR: {args.fasta} needs to be unzipped.\n')
+    # Decompress the file if it's gzipped
+    #original_fasta = args.fasta
+    args.fasta, was_gzipped = decompress_gzip_if_needed(args.fasta)
+
 
     index_output_path, _ = create_output(args.fasta, outdir=args.output_directory, extension="gscan2")
 
@@ -135,7 +146,9 @@ def main():
     except:
         print(f"... Failed to remove 'reverse.dna' and 'forward.dna'")
 
-
+    if was_gzipped and path.exists(args.fasta):
+        print(f"Removing unzipped file: {args.fasta}")
+        remove(args.fasta)
 
 if __name__ == "__main__":
     main()
