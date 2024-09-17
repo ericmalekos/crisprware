@@ -107,8 +107,6 @@ def main():
 
     index_output_path, _ = create_output(args.fasta, outdir=args.output_directory, extension="gscan2")
 
-    print(index_output_path)
-
     if not args.locations_to_keep:
         guideScanIndex(args.fasta, index_output_path)
     else:

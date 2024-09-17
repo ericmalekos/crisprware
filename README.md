@@ -14,21 +14,24 @@ CRISPRware is a comprehensive toolkit designed to preprocess NGS data and identi
 
 
 ## Installation
+
+If you have not already, install one of the package managers [miniconda](https://docs.anaconda.com/miniconda/) or [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html)
+
+### Ubuntu installation
 With conda installed perform the following commands.
+(If you installed micromamba, conda -> micromamba)
 
 ```
-git clone https://github.com/ericmalekos/crisprware crisprware
+git clone https://github.com/ericmalekos/crisprware crisprware && cd crisprware
 
-cd crisprware
+conda env create -f environment.yml && conda activate crisprware
 
-conda env create -f environment.yml
-
-conda activate crisprware
-
-chmod +x setup.py
-
-./setup.py install
+pip install .
 ```
+
+### MacOs installation
+Try running `git -h`, if you hit an error `xcrun: error: invalid developer path ...`, you may need to install the Command Line Tools package with `xcode-select --install`
+With this complete, follow the same instructions as for Ubuntu.
 
 ## Usage
 ### Input Requirements
@@ -46,6 +49,12 @@ Note the example off-target index is limited to chrIII, not the full ce11 genome
 index_genome -f tests/test_data/ce11/chrIII_sequence.fasta
 ```
 
+We can build gene models from NCBI GTF,
+
+```
+preprocess_annotation -g tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf -m metagene consensus longest shortest
+```
+
 Default settings generate NGG protospacer guides
 
 ```
@@ -58,7 +67,7 @@ Scoring will take ~5 minutes and uses 8 threads by default.
 Change this with `--threads` <int>. `--tracr` is either `Chen2013`,`Hsu2013`, os `both`, see [RuleSet3](https://github.com/gpp-rnd/rs3) scoring for details
 
 ```
-score_guides -b sgRNAs/sgRNAs.bed -i chrIII_sequence_gscan2/chrIII_sequence_gscan2 --tracr Chen2013
+score_guides -b chrIII_sequence_gRNA/chrIII_sequence_gRNA.bed -i chrIII_sequence_gscan2/chrIII_sequence_gscan2 --tracr Chen2013 --threads 8
 ```
 
 Ranking is done based on scoring columns  
@@ -68,10 +77,10 @@ Ranking is done based on scoring columns
 
 ```
 rank_guides \
--k ScoredSgRNAs/ScoredSgRNAs.tsv \
--t tests/test_data/ce11/ce11.ncbiRefSeq.gtf \
+-k chrIII_sequence_scoredgRNA/chrIII_sequence_scoredgRNA.bed \
+-t ../tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
 -f CDS \
--c RS3_score_Chen2013 specificity_gscan_index \
+-c RS3_score_Chen2013 specificity_chrIII_sequence_gscan2 \
 -m 0 0.2 \
 -p 5 65 \
 -r RS3_score_Chen2013 \

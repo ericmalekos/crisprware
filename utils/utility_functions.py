@@ -23,7 +23,6 @@ def create_output(file_path, outdir=None, extension="", stripped="", tmp=False):
         base_name = base_name.replace(stripped, "")
 
     # Get the current working directory
-    print(outdir)
     if not outdir:
         outdir = getcwd()
 
