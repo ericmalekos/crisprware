@@ -195,13 +195,13 @@ def save_tss_tes_bed(args, GTF_path, GTF_file):
     tes_bed_out = '/'.join(GTF_path.split('/')[:-1] + ['TES_' + GTF_file[:-3] + 'bed'])
 
     if output_TSS:
-        print('\n\tSaving TSS:\t' + tss_bed_out + '\n')
+        print('\n\tSaving TSS:\t' + tss_bed_out)
         with open(tss_bed_out, 'w') as f:
             for entry in tss_bed:
                 f.write(entry + '\n')
 
     if output_TES:
-        print('\n\tSaving TES:\t' + tes_bed_out + '\n')
+        print('\tSaving TES:\t' + tes_bed_out)
         with open(tes_bed_out, 'w') as f:
             for entry in tes_bed:
                 f.write(entry + '\n')
@@ -334,7 +334,8 @@ def main():
                 save_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
 
 
-    elif args.model != "none" and ( args.tss_window or args.tes_window):
+    elif not args.model and ( args.tss_window or args.tes_window) and not args.tpm_files:
+        print("here")
         save_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
 
     print('\n')
