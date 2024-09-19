@@ -1,5 +1,5 @@
-from os.path import basename, splitext, join
-from os import getcwd, makedirs
+from os.path import basename, splitext, join, exists
+from os import getcwd, makedirs, remove
 import gzip 
 def create_output(file_path, outdir=None, extension="", stripped="", tmp=False):
     """
@@ -59,12 +59,19 @@ def decompress_gzip_if_needed(file_path):
             - bool: True if the file was gzipped and decompressed, False otherwise.
     """
     if file_path.endswith('.gz'):
-        print(f"Unzipping {file_path}")
+        print(f"\tUnzipping {file_path}")
         decompressed_path = file_path[:-3]  # Remove .gz extension
         with gzip.open(file_path, 'rb') as f_in:
             with open(decompressed_path, 'wb') as f_out:
                 f_out.write(f_in.read())
-        print(f"Unzipped file saved as {decompressed_path}")
+        print(f"\tUnzipped file saved as {decompressed_path}")
         return decompressed_path, True
     else:
         return file_path, False
+    
+def remove_file(file_path):
+    if exists(file_path):
+        print(f"\tRemoving file: {file_path}")
+        remove(file_path)
+    else:
+        print(f"\tFile not found: {file_path}")

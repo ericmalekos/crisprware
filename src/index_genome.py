@@ -7,10 +7,9 @@
 '''
 import argparse
 import subprocess
-from os import remove, path
 from utils.gtf_bed_processing_functions import merge_targets
 from utils.dna_sequence_functions import subset_fasta_with_bed
-from utils.utility_functions import create_output, decompress_gzip_if_needed
+from utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
 
 
 def parse_arguments():
@@ -26,7 +25,7 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--locations_to_keep",
+        "-k", "--locations_to_keep",
         help="List of BED/GTF files with coordinates to use \
         for index creation. These locations will be used for \
         off-target scoring. If multiple files are passed, coordinates \
@@ -136,17 +135,11 @@ def main():
 
         args.fasta = fasta_output_path
     
-    try:
-        print(f"\n\tRemoving intermediate file: {args.fasta}.forward.dna")
-        remove(f"{args.fasta}.forward.dna")
-        print(f"\tRemoving intermediate file: {args.fasta}.reverse.dna\n")
-        remove(f"{args.fasta}.reverse.dna")
-    except:
-        print(f"... Failed to remove 'reverse.dna' and 'forward.dna'")
+    remove_file(f"{args.fasta}.forward.dna")
+    remove_file(f"{args.fasta}.reverse.dna")
 
-    if was_gzipped and path.exists(args.fasta):
-        print(f"Removing unzipped file: {args.fasta}")
-        remove(args.fasta)
+    if was_gzipped:
+        remove_file(args.fasta)
 
 if __name__ == "__main__":
     main()

@@ -16,7 +16,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pybedtools import BedTool
 from utils.dna_sequence_functions import NTS, map_ambiguous_sequence, \
     revcom, merge_targets, include_sgRNA, get_chromosome_boundaries
-from utils.utility_functions import create_output
+from utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -462,6 +462,9 @@ def check_files(locations_to_keep, locations_to_discard):
 def main():
     args = parse_arguments()
 
+
+    args.fasta, was_gzipped = decompress_gzip_if_needed(args.fasta)
+
     # if args.active_site_offset_5 >= args.active_site_offset_3:
     #     raise ValueError("--active_site_offset_5 should be less than or equal to --active_site_offset_3")
     args.gc_range = sorted(args.gc_range)
@@ -548,6 +551,9 @@ def main():
 
             final_targets_str = [str(line) for line in final_targets]
             write_results(final_targets_str, gRNA_output_path, args)
+
+    if was_gzipped:
+        remove_file(args.fasta)
 
 if __name__ == "__main__":
     main()

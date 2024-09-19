@@ -29,9 +29,12 @@ conda env create -f environment.yml && conda activate crisprware
 pip install .
 ```
 
-### MacOs installation
+### MacOs installation and troubleshooting
 Try running `git -h`, if you hit an error `xcrun: error: invalid developer path ...`, you may need to install the Command Line Tools package with `xcode-select --install`
 With this complete, follow the same instructions as for Ubuntu.
+
+You may encounter an error with the `score_guides` module. In short you need to install a specific version of `libomp` for RS3 scoring, this can be accomplished with the command `brew install libomp@11.1.0`. You need to have [homebrew](https://brew.sh/) installed. 
+
 
 ## Usage
 ### Input Requirements
@@ -52,7 +55,8 @@ index_genome -f tests/test_data/ce11/chrIII_sequence.fasta
 We can build gene models from NCBI GTF,
 
 ```
-preprocess_annotation -g tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf -m metagene consensus longest shortest
+preprocess_annotation -g tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
+-m metagene consensus longest shortest
 ```
 
 Default settings generate NGG protospacer guides
@@ -67,7 +71,8 @@ Scoring will take ~5 minutes and uses 8 threads by default.
 Change this with `--threads` <int>. `--tracr` is either `Chen2013`,`Hsu2013`, os `both`, see [RuleSet3](https://github.com/gpp-rnd/rs3) scoring for details
 
 ```
-score_guides -b chrIII_sequence_gRNA/chrIII_sequence_gRNA.bed -i chrIII_sequence_gscan2/chrIII_sequence_gscan2 --tracr Chen2013 --threads 8
+score_guides -b chrIII_sequence_gRNA/chrIII_sequence_gRNA.bed \
+-i chrIII_sequence_gscan2/chrIII_sequence_gscan2 --tracr Chen2013 --threads 8
 ```
 
 Ranking is done based on scoring columns  
@@ -78,7 +83,7 @@ Ranking is done based on scoring columns
 ```
 rank_guides \
 -k chrIII_sequence_scoredgRNA/chrIII_sequence_scoredgRNA.bed \
--t ../tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
+-t tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
 -f CDS \
 -c RS3_score_Chen2013 specificity_chrIII_sequence_gscan2 \
 -m 0 0.2 \
