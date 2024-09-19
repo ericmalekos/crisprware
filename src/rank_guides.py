@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from utils.rank_guides_functions import create_combined_weighted_column,\
     validate_and_modify_bed,df_to_pybed,gRNA_to_bed,select_guides,\
         gRNA_to_tscript,group_and_minimize,analyze_target_ids
-from utils.gtf_bed_processing_functions import truncate_gtf
+from utils.gtf_bed_processing_functions import truncate_gtf, check_gff_needs_update, update_gff
 from utils.utility_functions import create_output
 
 
@@ -39,7 +39,7 @@ def parse_arguments():
         "-t", "--targets",
         type=str,
         help="BED/GTF/GFF used to select final guides per target. \
-            For GTF/GFF, set --target_mode to either 'gene' or 'transcript'. \
+            For GTF/GFF, set --target_mode to either 'gene' or 'tx'. \
             For BED, targets are each entry. Use '--number_of_targets' \
             to set the number of guides chosen for each target.",
         required=True
@@ -290,6 +290,12 @@ def main():
 
     if targetFileType in ["gff", "gtf", "gff3", "gff2"]:
         print(f'\n\t{args.targets} is {targetFileType.upper()} format')
+
+        if check_gff_needs_update(args.targets):
+            print('\tUpdating GFF file')
+            base_name = args.targets.rsplit('.', 1)[0]
+            args.targets = update_gff(args.targets, base_name + '.updated.gff')
+            print('\n\tSaving updated GFF to:\t' + args.targets)
 
         # For establishing initial count
         _, transcript_ids, gene_ids = truncate_gtf(input_file = args.targets, feature = args.feature, percentiles = [0,100])

@@ -1,7 +1,7 @@
 import pandas as pd
 from pybedtools import BedTool
 import re
-
+from os.path import abspath
 
 def preprocess_file(file, gtf_feature="exon"):
     """
@@ -819,3 +819,114 @@ def is_inside(region1, region2):
     Check if region1 is inside region2.
     """
     return region2[0] <= region1[0] and region2[1] >= region1[1]
+
+
+def update_gff(input_file, output_file):
+    """
+    Process a GFF file to modify its format according to specified rules.
+
+    Args:
+    input_file (str): Path to the input GFF file.
+    output_file (str): Path to the output GFF file.
+
+    This function performs the following modifications:
+    1. Changes "mRNA" to "transcript" in the third column.
+    2. Assigns a gene_id feature to each gene.
+    3. Establishes the transcript-gene relationship using the "Parent" features,
+       and adds both gene_id and transcript_id features to each transcript.
+    4. Assigns the correct transcript_id and gene_id features to all other entries.
+
+    Returns:
+    str: The absolute path to the created output file.
+    """
+    gene_id_map = {}
+    transcript_id_map = {}
+
+    with open(input_file, 'r') as infile, open(output_file, 'w') as outfile:
+        for line in infile:
+            if line.startswith('#'):
+                outfile.write(line)
+                continue
+
+            fields = line.strip().split('\t')
+            if len(fields) != 9:
+                continue
+
+            attributes = dict(item.split('=') for item in fields[8].split(';'))
+
+            if fields[2] == 'gene':
+                gene_id = attributes['ID']
+                gene_id_map[gene_id] = gene_id
+                attributes['gene_id'] = gene_id
+            elif fields[2] == 'mRNA':
+                fields[2] = 'transcript'
+                transcript_id = attributes['ID']
+                parent_gene = attributes['Parent']
+                gene_id = gene_id_map.get(parent_gene, parent_gene)
+                transcript_id_map[transcript_id] = (gene_id, transcript_id)
+                attributes['gene_id'] = gene_id
+                attributes['transcript_id'] = transcript_id
+            else:
+                parent = attributes.get('Parent', '')
+                if parent in transcript_id_map:
+                    gene_id, transcript_id = transcript_id_map[parent]
+                    attributes['gene_id'] = gene_id
+                    attributes['transcript_id'] = transcript_id
+
+            # Reconstruct the attributes string
+            new_attributes = ';'.join(f"{k}={v}" for k, v in attributes.items())
+            fields[8] = new_attributes
+
+            outfile.write('\t'.join(fields) + '\n')
+
+    # Return the absolute path of the output file
+    return abspath(output_file)
+
+def check_gff_needs_update(input_file):
+    """
+    Check if a GFF file needs to be updated based on specific criteria, using pandas for efficiency.
+
+    Args:
+    input_file (str): Path to the input GFF file.
+
+    Returns:
+    bool: True if the file needs to be updated, False otherwise.
+
+    This function checks if:
+    1. There are any 'mRNA' entries in the third column (instead of 'transcript').
+    2. All entries have a 'gene_id' attribute.
+    3. All non-gene entries have a 'transcript_id' attribute.
+    4. All transcript entries have corresponding gene entries.
+    """
+    # Read the GFF file into a pandas DataFrame
+    columns = ['seqid', 'source', 'type', 'start', 'end', 'score', 'strand', 'phase', 'attributes']
+    df = pd.read_csv(input_file, sep='\t', comment='#', names=columns, header=None)
+
+    # Check for 'mRNA' entries
+    if 'mRNA' in df['type'].values:
+        return True
+
+    # Check if there are any 'transcript' entries
+    if 'transcript' not in df['type'].values:
+        return True
+
+    # Parse attributes into separate columns
+    df['gene_id'] = df['attributes'].str.extract(r'gene_id=([^;]+)')
+    df['transcript_id'] = df['attributes'].str.extract(r'transcript_id=([^;]+)')
+
+    # Check if all entries have 'gene_id'
+    if df['gene_id'].isnull().any():
+        return True
+
+    # Check if all non-gene entries have 'transcript_id'
+    non_gene_entries = df[df['type'] != 'gene']
+    if non_gene_entries['transcript_id'].isnull().any():
+        return True
+
+    # Check if all transcript IDs have corresponding gene entries
+    transcript_gene_ids = df[df['type'] == 'transcript']['gene_id'].unique()
+    all_gene_ids = df[df['type'] == 'gene']['gene_id'].unique()
+    if not set(transcript_gene_ids).issubset(set(all_gene_ids)):
+        return True
+
+    return False

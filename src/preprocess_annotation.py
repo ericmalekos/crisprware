@@ -7,7 +7,7 @@ import argparse
 from utils.utility_functions import create_output
 from utils.gtf_bed_processing_functions import create_metagene_model,\
     create_constitutive_model,filter_gtf_by_transcript_ids, parse_gtf_for_cds_extremes,\
-    extract_transcript_gene_relationship, gtf_to_tss_tes_bed
+    extract_transcript_gene_relationship, gtf_to_tss_tes_bed, update_gff, check_gff_needs_update
 from utils.quantified_rna_functions import add_gene_ids_and_subset,\
     filter_dataframe,process_files
 
@@ -210,9 +210,14 @@ def main():
 
     args = parse_arguments()
 
+    if check_gff_needs_update(args.gtf):
+        print('\tUpdating GFF file')
+        base_name = args.gtf.rsplit('.', 1)[0]
+        args.gtf = update_gff(args.gtf, base_name + '.updated.gff')
+        print('\n\tSaving updated GFF to:\t' + args.gtf)
+
     gtf_output_path, tmp_path = create_output(args.gtf, outdir=args.output_directory, tmp=True)
     #print("gtf_output_path:", gtf_output_path)
-
 
     gtf_output_path += "_"
     GTF_path = args.gtf
