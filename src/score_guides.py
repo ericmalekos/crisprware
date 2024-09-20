@@ -137,7 +137,7 @@ def parse_arguments():
     parser.add_argument(
         "--min_rs3",
         type=float,
-        default=None,
+        default=float('-inf'),
         help="Minimum cleavage RS3 score. RS3 cleavage scores are formatted \
             as z-scores, so this is interpreted as a standard deviation cutoff. \
             Functionality also available in rank_guides.py. Applying at this \
@@ -270,7 +270,7 @@ def compute_rs3_scores(gRNAlist, tracr, threads, chunk_size):
 
     return gRNAScores
 
-def cleavage_scoring(gRNADF, tracr, threads = 2, chunk_size = 200000, minStdDev = None):
+def cleavage_scoring(gRNADF, tracr, threads = 2, chunk_size = 200000, minStdDev = float('-inf')):
     """
     Computes RS3 cleavage scores for gRNAs using the specified tracrRNA sequence and filters based on minimum standard deviation.
 
@@ -312,8 +312,8 @@ def cleavage_scoring(gRNADF, tracr, threads = 2, chunk_size = 200000, minStdDev 
         # gRNADF['rs3_cdf'] = norm.cdf(gRNADF['RS3_score'])
         # gRNADF['rs3_cdf'] = gRNADF['rs3_cdf'].round(4)
 
-        if minStdDev:
-            gRNADF = gRNADF[gRNADF['RS3_score_' + tracr] > minStdDev]
+        print(gRNADF['RS3_score_' + tracr].head())
+        gRNADF = gRNADF[gRNADF['RS3_score_' + tracr] > minStdDev]
 
     gRNADF = gRNADF.copy()
 

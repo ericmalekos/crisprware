@@ -551,6 +551,9 @@ def main():
 
             final_targets_str = [str(line) for line in final_targets]
             write_results(final_targets_str, gRNA_output_path, args)
+            
+            print(f"\n\tSaved output file to {gRNA_output_path}\n")
+
 
     if was_gzipped:
         remove_file(args.fasta)

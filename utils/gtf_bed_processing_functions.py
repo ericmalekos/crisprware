@@ -884,10 +884,10 @@ def update_gff(input_file, output_file):
 
 def check_gff_needs_update(input_file):
     """
-    Check if a GFF file needs to be updated based on specific criteria, using pandas for efficiency.
+    Check if a GFF or GTF file needs to be updated based on specific criteria, using pandas for efficiency.
 
     Args:
-    input_file (str): Path to the input GFF file.
+    input_file (str): Path to the input GFF or GTF file.
 
     Returns:
     bool: True if the file needs to be updated, False otherwise.
@@ -898,7 +898,7 @@ def check_gff_needs_update(input_file):
     3. All non-gene entries have a 'transcript_id' attribute.
     4. All transcript entries have corresponding gene entries.
     """
-    # Read the GFF file into a pandas DataFrame
+    # Read the GFF/GTF file into a pandas DataFrame
     columns = ['seqid', 'source', 'type', 'start', 'end', 'score', 'strand', 'phase', 'attributes']
     df = pd.read_csv(input_file, sep='\t', comment='#', names=columns, header=None)
 
@@ -908,11 +908,11 @@ def check_gff_needs_update(input_file):
 
     # Check if there are any 'transcript' entries
     if 'transcript' not in df['type'].values:
+        print(df['type'].values)
         return True
 
-    # Parse attributes into separate columns
-    df['gene_id'] = df['attributes'].str.extract(r'gene_id=([^;]+)')
-    df['transcript_id'] = df['attributes'].str.extract(r'transcript_id=([^;]+)')
+    # Extract gene_id and transcript_id using the provided function
+    df['transcript_id'], df['gene_id'] = zip(*df['attributes'].apply(extract_ids))
 
     # Check if all entries have 'gene_id'
     if df['gene_id'].isnull().any():
@@ -921,12 +921,6 @@ def check_gff_needs_update(input_file):
     # Check if all non-gene entries have 'transcript_id'
     non_gene_entries = df[df['type'] != 'gene']
     if non_gene_entries['transcript_id'].isnull().any():
-        return True
-
-    # Check if all transcript IDs have corresponding gene entries
-    transcript_gene_ids = df[df['type'] == 'transcript']['gene_id'].unique()
-    all_gene_ids = df[df['type'] == 'gene']['gene_id'].unique()
-    if not set(transcript_gene_ids).issubset(set(all_gene_ids)):
         return True
 
     return False

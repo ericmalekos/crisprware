@@ -260,7 +260,7 @@ def main():
     args = parse_arguments()
 
     if args.ranking_columns and not args.column_weights:
-        print(f"\n\n\tColumn weights not set, setting to weights to 1")
+        print(f"\n\n\tColumn weights not set, setting weights to 1")
         args.column_weights = [1] * len(args.ranking_columns)
 
     if args.ranking_columns and (len(args.ranking_columns) != len(args.column_weights)):
