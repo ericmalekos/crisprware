@@ -924,3 +924,39 @@ def check_gff_needs_update(input_file):
         return True
 
     return False
+
+
+def check_gtf_or_gff(file_path):
+    
+    with open(file_path, 'r') as file:
+        lines = file.readlines()
+        
+        # Skip comment lines at the beginning of the file
+        i = 0
+        while i < len(lines) and lines[i].startswith('#'):
+            i += 1
+        
+        # Check the first 100 non-comment lines
+        gff_count = 0
+        gtf_count = 0
+        max_lines = min(i + 100, len(lines))
+        
+        while i < max_lines:
+            line = lines[i].strip()
+            fields = line.split('\t')
+            
+            if len(fields) >= 9:
+                attributes = fields[8]
+                if '=' in attributes:
+                    gff_count += 1
+                if 'gene_id' in attributes:
+                    gtf_count += 1
+            
+            i += 1
+        
+        if gff_count > 0 and gtf_count == 0:
+            return 'GFF'
+        elif gtf_count > 0 and gff_count == 0:
+            return 'GTF'
+        else:
+            raise ValueError('The file format is ambiguous or not well-defined.')

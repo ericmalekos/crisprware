@@ -93,7 +93,9 @@ def process_flair(files):
         # Renaming 'target_id' column to 'transcript_id'
         data.columns = [data.columns[0]] + [f'COUNTS_{col}' for col in data.columns[1:]]
         data.iloc[:, 0] = data.iloc[:, 0].str.split('_').str[0]
+        data['ids'] = data['ids'].str.replace(';', ':')
         dfs.append(data.rename(columns={'ids': 'transcript_id'}))
+        print(data.head())
 
     if len(dfs) > 1:
         return process_dataframes(dfs)

@@ -4,10 +4,11 @@
 
 '''
 import argparse
-from utils.utility_functions import create_output
+from utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
 from utils.gtf_bed_processing_functions import create_metagene_model,\
     create_constitutive_model,filter_gtf_by_transcript_ids, parse_gtf_for_cds_extremes,\
-    extract_transcript_gene_relationship, gtf_to_tss_tes_bed, update_gff, check_gff_needs_update
+    extract_transcript_gene_relationship, gtf_to_tss_tes_bed, update_gff,\
+    check_gff_needs_update,check_gtf_or_gff
 from utils.quantified_rna_functions import add_gene_ids_and_subset,\
     filter_dataframe,process_files
 
@@ -210,7 +211,11 @@ def main():
 
     args = parse_arguments()
 
-    if check_gff_needs_update(args.gtf):
+    args.gtf, was_gzipped = decompress_gzip_if_needed(args.gtf)
+
+    annot_type = check_gtf_or_gff(args.gtf)
+    
+    if check_gff_needs_update(args.gtf) and annot_type == 'GFF':
         print('\tUpdating GFF file')
         base_name = args.gtf.rsplit('.', 1)[0]
         args.gtf = update_gff(args.gtf, base_name + '.updated.gff')
@@ -344,6 +349,9 @@ def main():
         save_tss_tes_bed(args, GTF_path = GTF_path, GTF_file = GTF_file)
 
     print('\n')
+
+    if was_gzipped:
+        remove_file(args.gtf)
 
 
 if __name__ == "__main__":
