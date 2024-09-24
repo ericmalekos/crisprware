@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from utils.rank_guides_functions import create_combined_weighted_column,\
     validate_and_modify_bed,df_to_pybed,gRNA_to_bed,select_guides,\
         gRNA_to_tscript,group_and_minimize,analyze_target_ids
-from utils.gtf_bed_processing_functions import truncate_gtf, check_gff_needs_update, update_gff
+from utils.gtf_bed_processing_functions import truncate_gtf, check_gff_needs_update, update_gff, decompress_gzip_if_needed
 from utils.utility_functions import create_output
 
 
@@ -287,8 +287,10 @@ def main():
     initial_target_ids = None
     targetsWithoutgRNAs = None
 
+    if targetFileType in ["gff", "gtf", "gff3", "gff2", "gff.gz", "gtf.gz", "gff3.gz", "gff2.gz"]:
 
-    if targetFileType in ["gff", "gtf", "gff3", "gff2"]:
+        args.targets, was_gzipped = decompress_gzip_if_needed(args.targets)
+
         print(f'\n\t{args.targets} is {targetFileType.upper()} format')
 
         if check_gff_needs_update(args.targets):

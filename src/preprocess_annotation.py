@@ -215,11 +215,12 @@ def main():
 
     annot_type = check_gtf_or_gff(args.gtf)
     
-    if check_gff_needs_update(args.gtf) and annot_type == 'GFF':
-        print('\tUpdating GFF file')
-        base_name = args.gtf.rsplit('.', 1)[0]
-        args.gtf = update_gff(args.gtf, base_name + '.updated.gff')
-        print('\n\tSaving updated GFF to:\t' + args.gtf)
+    if annot_type == 'GFF':
+        if check_gff_needs_update(args.gtf):
+            print('\tUpdating GFF file')
+            base_name = args.gtf.rsplit('.', 1)[0]
+            args.gtf = update_gff(args.gtf, base_name + '.updated.gff')
+            print('\n\tSaving updated GFF to:\t' + args.gtf)
 
     gtf_output_path, tmp_path = create_output(args.gtf, outdir=args.output_directory, tmp=True)
     #print("gtf_output_path:", gtf_output_path)

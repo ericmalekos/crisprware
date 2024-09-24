@@ -908,7 +908,6 @@ def check_gff_needs_update(input_file):
 
     # Check if there are any 'transcript' entries
     if 'transcript' not in df['type'].values:
-        print(df['type'].values)
         return True
 
     # Extract gene_id and transcript_id using the provided function

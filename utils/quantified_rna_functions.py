@@ -95,7 +95,6 @@ def process_flair(files):
         data.iloc[:, 0] = data.iloc[:, 0].str.split('_').str[0]
         data['ids'] = data['ids'].str.replace(';', ':')
         dfs.append(data.rename(columns={'ids': 'transcript_id'}))
-        print(data.head())
 
     if len(dfs) > 1:
         return process_dataframes(dfs)
