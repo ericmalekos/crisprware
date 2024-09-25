@@ -107,7 +107,7 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "-w ", "--tss_window",
+        "-w", "--tss_window",
         nargs=2,
         type=int,
         default=None,
@@ -118,7 +118,7 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "-e ", "--tes_window",
+        "-e", "--tes_window",
         nargs=2,
         type=int,
         default=None,
@@ -129,7 +129,7 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "-x ", "--tx_to_gene",
+        "-x", "--tx_to_gene",
         type=str,
         default=None,
         help="A TSV with transcript IDs in the first column and Gene IDs in the second. \
@@ -138,6 +138,15 @@ def parse_arguments():
         './tmp/tx2gene.tsv'."
     )
     
+    parser.add_argument(
+        "--strip_tx_id",
+        # type=bool,
+        # default=False,
+        action="store_true",
+        help="Set this flag if there are transcript IDs in the quantification files \
+        but not in the GTF/GFF3. [default: False]"
+    )
+
     parser.add_argument(
         "-o", "--output_directory",
         help="Path to output. [default: current directory]",
@@ -236,6 +245,7 @@ def main():
         print('\n\tRemoving transcripts below threshold')
 
         transcript_df = filter_dataframe(process_files(args.tpm_files), \
+                                        strip_tx_id = args.strip_tx_id, \
                                         tscript_max = args.max, \
                                         tscript_min = args.min, \
                                         tscript_mean = args.mean, \

@@ -225,7 +225,7 @@ def process_files(paths, filetype="infer"):
     else:
         raise ValueError("No valid files found.")
 
-def filter_dataframe(df, **filters):
+def filter_dataframe(df, strip_tx_id=False, **filters):
     """
     Filters a DataFrame based on specified column thresholds.
 
@@ -245,6 +245,10 @@ def filter_dataframe(df, **filters):
 
     print(f'\n\tInitial unique transcripts:\t\t\t{    df["transcript_id"].nunique()}')
 
+    if strip_tx_id:
+        df['transcript_id'] = df['transcript_id'].str.split('.').str[0]
+        print(f'\tUnique transcripts after ID stripping:\t\t{df["transcript_id"].nunique()}')
+    
     for column, threshold in filters.items():
         if column in ["tscript_min", "tscript_max", "tscript_median", "tscript_mean"]:
             df = df[df[column] > threshold]
