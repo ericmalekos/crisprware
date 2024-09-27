@@ -13,8 +13,8 @@ import matplotlib.pyplot as plt
 from utils.rank_guides_functions import create_combined_weighted_column,\
     validate_and_modify_bed,df_to_pybed,gRNA_to_bed,select_guides,\
         gRNA_to_tscript,group_and_minimize,analyze_target_ids
-from utils.gtf_bed_processing_functions import truncate_gtf, check_gtf_or_gff, convert_gff3_to_gtf, decompress_gzip_if_needed
-from utils.utility_functions import create_output
+from utils.gtf_bed_processing_functions import truncate_gtf, check_gtf_or_gff, convert_gff3_to_gtf
+from utils.utility_functions import create_output, decompress_gzip_if_needed
 
 
 def restricted_int(x):
@@ -295,8 +295,6 @@ def main():
         
         if annot_type == 'GFF':
             args.gtf = convert_gff3_to_gtf(args.targets)
-
-
 
 
         print(f'\n\t{args.targets} is {targetFileType.upper()} format')

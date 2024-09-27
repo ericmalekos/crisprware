@@ -311,8 +311,6 @@ def cleavage_scoring(gRNADF, tracr, threads = 2, chunk_size = 200000, minStdDev 
         gRNADF['RS3_score_' + tracr] = gRNADF['RS3_score_' + tracr].round(4)
         # gRNADF['rs3_cdf'] = norm.cdf(gRNADF['RS3_score'])
         # gRNADF['rs3_cdf'] = gRNADF['rs3_cdf'].round(4)
-
-        print(gRNADF['RS3_score_' + tracr].head())
         gRNADF = gRNADF[gRNADF['RS3_score_' + tracr] > minStdDev]
 
     gRNADF = gRNADF.copy()
