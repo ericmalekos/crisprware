@@ -1,7 +1,8 @@
 import pandas as pd
 from pybedtools import BedTool
 import re
-from os.path import abspath
+from os.path import abspath, basename, splitext
+import subprocess
 
 def preprocess_file(file, gtf_feature="exon"):
     """
@@ -959,3 +960,38 @@ def check_gtf_or_gff(file_path):
             return 'GTF'
         else:
             raise ValueError('The file format is ambiguous or not well-defined.')
+        
+
+def convert_gff3_to_gtf(input_file):
+    """
+    Convert a GFF3 file to GTF format using gffread.
+
+    This function takes a GFF3 file as input and converts it to GTF format
+    using the gffread command-line tool. The output file will have the same
+    base name as the input file but with a .gtf extension, and will be saved
+    in the current working directory.
+
+    Args:
+        input_file (str): The path to the input GFF3 file.
+
+    Returns:
+        str or None: The path to the output GTF file if conversion was
+        successful, or None if an error occurred.
+
+    Raises:
+        subprocess.CalledProcessError: If the gffread command fails.
+    """
+    # Get the absolute path, extract the basename, and change the extension to .gtf
+    abs_path = abspath(input_file)
+    base_name = basename(abs_path)
+    output_file = splitext(base_name)[0] + '.gtf'
+    
+    try:
+        command = f"gffread {abs_path} -T -o {output_file}"
+        result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+        print(f"Conversion successful. GTF file saved as {output_file}")
+        return output_file
+    except subprocess.CalledProcessError as e:
+        print(f"Error during conversion: {e}")
+        print(f"gffread output: {e.output}")
+        return None

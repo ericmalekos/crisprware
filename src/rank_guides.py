@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from utils.rank_guides_functions import create_combined_weighted_column,\
     validate_and_modify_bed,df_to_pybed,gRNA_to_bed,select_guides,\
         gRNA_to_tscript,group_and_minimize,analyze_target_ids
-from utils.gtf_bed_processing_functions import truncate_gtf, check_gff_needs_update, update_gff, decompress_gzip_if_needed
+from utils.gtf_bed_processing_functions import truncate_gtf, check_gtf_or_gff, convert_gff3_to_gtf, decompress_gzip_if_needed
 from utils.utility_functions import create_output
 
 
@@ -291,13 +291,16 @@ def main():
 
         args.targets, was_gzipped = decompress_gzip_if_needed(args.targets)
 
+        annot_type = check_gtf_or_gff(args.targets)
+        
+        if annot_type == 'GFF':
+            args.gtf = convert_gff3_to_gtf(args.targets)
+
+
+
+
         print(f'\n\t{args.targets} is {targetFileType.upper()} format')
 
-        if check_gff_needs_update(args.targets):
-            print('\tUpdating GFF file')
-            base_name = args.targets.rsplit('.', 1)[0]
-            args.targets = update_gff(args.targets, base_name + '.updated.gff')
-            print('\n\tSaving updated GFF to:\t' + args.targets)
 
         # For establishing initial count
         _, transcript_ids, gene_ids = truncate_gtf(input_file = args.targets, feature = args.feature, percentiles = [0,100])
