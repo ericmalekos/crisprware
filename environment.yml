@@ -10,6 +10,7 @@ dependencies:
   - pybedtools>=0.9
   - matplotlib
   - pybigwig
+  - gffread
   - pip
   - pip:
     - lightgbm==3.3.5

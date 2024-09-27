@@ -44,7 +44,8 @@ setup(
         'lightgbm==3.3.5',
         'pybigwig',
         'pandas',
-        'numpy'
+        'numpy',
+        'gffread'
     ],
     scripts=['scripts/allele_specific_guides.py', 'scripts/bigwig_to_signalwindow.py', 'scripts/crisprscore.R',
     'scripts/gtf_from_ribotish.py', 'scripts/replace_snps.py']
