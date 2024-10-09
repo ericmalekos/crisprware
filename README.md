@@ -48,9 +48,9 @@ docker run crisprware preprocess_annotation -g tests/test_data/ce11/chrIII_ce11.
 ```
 
 ## Tutorials
-### CRISPRware Tutorial: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://github.com/ericmalekos/crisprware/blob/main/colab_notebooks/CRISPRware_Tutorial.ipynb)
+### CRISPRware Tutorial: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ericmalekos/crisprware/blob/main/colab_notebooks/CRISPRware_Tutorial.ipynb)
 
-### CRISPRware Rice Genome Tutorial: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://github.com/ericmalekos/crisprware/blob/main/colab_notebooks/RiceGenome_Tutorial.ipynb)
+### CRISPRware Rice Genome Tutorial: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ericmalekos/crisprware/blob/main/colab_notebooks/RiceGenome_Tutorial.ipynb)
 
 
 ## Quickstart
