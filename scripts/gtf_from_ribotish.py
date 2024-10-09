@@ -50,7 +50,7 @@ def filter_and_select_data(df, args):
     
     return best_rows
 
-def convert_to_gtf(df, input_gtf_path, output_gtf_path):
+def process_and_sort_gtf(df, input_gtf_path, output_gtf_path):
     gtf_columns = ['seqname', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attribute']
     # Read the GTF with QUOTE_NONE to handle quotes in attributes correctly
     gtf_df = pd.read_csv(input_gtf_path, sep='\t', comment='#', header=None, names=gtf_columns, quoting=3, dtype={'start': int, 'end': int})
@@ -61,30 +61,58 @@ def convert_to_gtf(df, input_gtf_path, output_gtf_path):
     # Keep only relevant transcript and exon entries
     relevant_gtf_df = gtf_df[gtf_df['transcript_id'].isin(df['Tid']) & gtf_df['feature'].isin(['transcript', 'exon'])]
 
+    # Create a list to store all GTF entries
+    all_entries = []
+
+    # Add existing transcript and exon entries
+    all_entries.extend(relevant_gtf_df.to_dict('records'))
+
+    # Add new CDS entries
+    for _, ribo_row in df.iterrows():
+        for block in ribo_row['Blocks'].split(','):
+            start, end = map(int, block.split('-'))
+            start += 1  # Adjust start position
+            attributes = f'gene_id "{ribo_row["Gid"]}"; transcript_id "{ribo_row["Tid"]}"; gene_name "{ribo_row["Symbol"]}";'
+            if 'GeneType' in df.columns:
+                attributes += f' gene_type "{ribo_row["GeneType"]}";'
+            else:
+                attributes += ' gene_type "unknown";'
+            
+            chromosome, _, strand = ribo_row["GenomePos"].split(":")
+            
+            cds_entry = {
+                'seqname': chromosome,
+                'source': 'ribotish',
+                'feature': 'CDS',
+                'start': start,
+                'end': end,
+                'score': '.',
+                'strand': strand,
+                'frame': '0',
+                'attribute': attributes
+            }
+            all_entries.append(cds_entry)
+
+    # Convert all entries to a DataFrame
+    all_entries_df = pd.DataFrame(all_entries)
+
+    # Sort the DataFrame
+    sorted_df = all_entries_df.sort_values(by=['seqname', 'start', 'end'])
+
+    # Write sorted entries to the output GTF
     with open(output_gtf_path, 'w') as out_file:
-        # Write filtered transcript and exon entries to the output GTF
-        for _, row in relevant_gtf_df.iterrows():
-            out_file.write('\t'.join(map(str, row[:9])) + '\n')  # Ensure all columns up to 'attribute' are written
-        
-        # Append new CDS entries for each relevant transcript based on the Blocks column from the Ribotish TSV
-        for _, ribo_row in df.iterrows():
-                    for block in ribo_row['Blocks'].split(','):
-                        start, end = block.split('-')
-                        start = str(int(start) + 1)
-                        attributes = f'gene_id "{ribo_row["Gid"]}"; transcript_id "{ribo_row["Tid"]}"; gene_name "{ribo_row["Symbol"]}";'
-                        if 'GeneType' in df.columns:  # Check if GeneType column exists
-                            attributes += f' gene_type "{ribo_row["GeneType"]}";'
-                        else:
-                            attributes += ' gene_type "unknown";'  # Fallback if GeneType not in Ribotish data
-                        # Construct and write the GTF line for CDS
-                        gtf_line = f'{ribo_row["GenomePos"].split(":")[0]}\tribotish\tCDS\t{start}\t{end}\t.\t{ribo_row["GenomePos"].split(":")[2]}\t0\t{attributes}\n'
-                        out_file.write(gtf_line)
+        for _, row in sorted_df.iterrows():
+            out_file.write('\t'.join(map(str, row)) + '\n')
+
+    print(f"Sorted GTF file has been written to {output_gtf_path}")
+
+
 def main():
     args = parse_arguments()
     ribotish_df = load_ribotish_data(args.ribotish)
     filtered_selected_df = filter_and_select_data(ribotish_df, args)
     filtered_selected_df.to_csv('filtered_ribotish.tsv', sep = '\t', )
-    convert_to_gtf(filtered_selected_df, args.input_gtf, args.output_gtf)
+    process_and_sort_gtf(filtered_selected_df, args.input_gtf, args.output_gtf)
 
 if __name__ == "__main__":
     main()

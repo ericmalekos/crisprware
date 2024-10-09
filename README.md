@@ -4,13 +4,14 @@ CRISPRware is a comprehensive toolkit designed to preprocess NGS data and identi
 
 ## Table of Contents
 1. [Installation](#installation)
-2. [Usage](#usage)
-3. [Requirements](#requirements)
-4. [Leveraging NGS data](#methods)
+2. [Tutorials](#tutorials)
+3. [Quickstart](#usage)
+4. [Requirements](#requirements)
+5. [Leveraging NGS data](#methods)
     - [RNASeq Guided Preprocessing](#rnaseq-guided-preprocessing)
     - [RiboSeq Guided Preprocessing](#riboseq-guided-preprocessing)
     - [Genomic Preprocessing](#genomic-preprocessing)
-5. [Full Commands](#commands)
+6. [Full Commands](#commands)
 
 
 ## Installation
@@ -43,10 +44,16 @@ docker pull ericmalekos/crisprware:latest
 
 docker run crisprware preprocess_gtf -h
 
-docker run crisprware preprocess_annotation -g tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf -m metagene consensus longest shortest
+docker run crisprware preprocess_annotation -g tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf -m longest
 ```
 
-## Usage
+## Tutorials
+### CRISPRware Tutorial: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://github.com/ericmalekos/crisprware/blob/main/colab_notebooks/CRISPRware_Tutorial.ipynb)
+
+### CRISPRware Rice Genome Tutorial: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://github.com/ericmalekos/crisprware/blob/main/colab_notebooks/RiceGenome_Tutorial.ipynb)
+
+
+## Quickstart
 ### Input Requirements
 - **FASTA File**
 ### Optional inputs
