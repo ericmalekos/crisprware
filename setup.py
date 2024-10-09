@@ -47,5 +47,5 @@ setup(
         'numpy'
     ],
     scripts=['scripts/allele_specific_guides.py', 'scripts/bigwig_to_signalwindow.py', 'scripts/crisprscore.R',
-    'scripts/gtf_from_ribotish.py', 'scripts/replace_snps.py']
+    'scripts/gtf_from_ribotish.py','scripts/gtf_from_price.py', 'scripts/replace_snps.py']
 )

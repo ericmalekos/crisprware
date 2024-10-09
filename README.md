@@ -17,7 +17,7 @@ CRISPRware is a comprehensive toolkit designed to preprocess NGS data and identi
 
 If you have not already, install one of the package managers [miniconda](https://docs.anaconda.com/miniconda/) or [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html)
 
-### Ubuntu installation
+### Linux installation
 With conda installed perform the following commands.
 (If you installed micromamba, conda -> micromamba)
 
@@ -31,10 +31,20 @@ pip install .
 
 ### MacOs installation and troubleshooting
 Try running `git -h`, if you hit an error `xcrun: error: invalid developer path ...`, you may need to install the Command Line Tools package with `xcode-select --install`
-With this complete, follow the same instructions as for Ubuntu.
+With this complete, follow the same instructions as for Linux.
 
 You may encounter an error with the `score_guides` module. In short you need to install a specific version of `libomp` for RS3 scoring, this can be accomplished with the command `brew install libomp@11.1.0`. You need to have [homebrew](https://brew.sh/) installed. 
 
+### Docker 
+Avoid local installation by pulling the latest docker image
+and run commands:
+```
+docker pull ericmalekos/crisprware:latest
+
+docker run crisprware preprocess_gtf -h
+
+docker run crisprware preprocess_annotation -g tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf -m metagene consensus longest shortest
+```
 
 ## Usage
 ### Input Requirements

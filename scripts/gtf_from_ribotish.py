@@ -83,7 +83,7 @@ def main():
     args = parse_arguments()
     ribotish_df = load_ribotish_data(args.ribotish)
     filtered_selected_df = filter_and_select_data(ribotish_df, args)
-    filtered_selected_df.to_csv('filtered_' + args.ribotish, sep = '\t', )
+    filtered_selected_df.to_csv('filtered_ribotish.tsv', sep = '\t', )
     convert_to_gtf(filtered_selected_df, args.input_gtf, args.output_gtf)
 
 if __name__ == "__main__":

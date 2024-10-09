@@ -385,7 +385,7 @@ def main():
 
     counts = counts.reset_index()
     counts.columns = ['target_id', 'gRNA_count']
-    counts.to_csv(gRNA_output_path.strip("rankedgRNA.bed") + "targetgRNACounts.bed", sep='\t', index=False)
+    counts.to_csv(gRNA_output_path.strip("rankedgRNA.bed") + "targetgRNACounts.txt", sep='\t', index=False)
 
 
 if __name__ == "__main__":

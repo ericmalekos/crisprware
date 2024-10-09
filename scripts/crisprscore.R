@@ -86,7 +86,7 @@ if (method_number == 3) {
 
 
 tracrRNA = ""
-print(length(args))
+#print(length(args))
 if (method_number == 12) {
   if (length(args) != 4) {
     cat("\n\t\tERROR: incorrect number of arguments for method 12\n\n")
@@ -221,11 +221,11 @@ df <- read.table(sgrna_file, sep = "\t", header = TRUE, comment.char = "")
 # Initialize an empty dataframe for the results
 results_df <- df[0, ]
 
-print(chunk_size)
+#print(chunk_size)
 
 # Process the dataframe in chunks
 for (i in seq(1, nrow(df), by = chunk_size)) {
-  print(i)
+  #print(i)
   chunk <- df[i:min(i + chunk_size - 1, nrow(df)), ]
   scored_chunk <- apply_scoring_to_chunk(chunk)
   results_df <- rbind(results_df, scored_chunk)
@@ -254,3 +254,19 @@ write.table(results_df, file = output, sep = "\t", row.names = FALSE, quote = FA
 # flank3 <- "TTG" #3bp
 # input  <- paste0(flank5, spacer, pam, flank3) 
 # results <- getAzimuthScores(input)
+
+# flank5 <- "ACC" #3bp
+# pam    <- "TTTT" #4bp
+# spacer <- "AATCGATGCTGATGCTAGATATT" #23bp
+# flank3 <- "AAGT" #4bp
+# input  <- paste0(flank5, pam, spacer, flank3) 
+# results <- getDeepCpf1Scores(input)
+# results
+# 
+# flank5 <- "ACC" #3bp
+# pam    <- "TTTT" #4bp
+# spacer <- "AATCGATGCTGATGCTAGATATT" #23bp
+# flank3 <- "AAGT" #4bp
+# input  <- paste0(flank5, pam, spacer, flank3) 
+# results <- getEnPAMGBScores(input)
+# results

@@ -1,0 +1,29 @@
+# Use an official Miniconda image as the base
+FROM continuumio/miniconda3
+
+# Set working directory
+WORKDIR /app
+
+# Install git
+RUN apt-get update && apt-get install -y git
+
+# Clone the repository
+RUN git clone https://github.com/ericmalekos/crisprware crisprware
+
+# Change to the crisprware directory
+WORKDIR /app/crisprware
+
+# Create conda environment from environment.yml
+RUN conda env create -f environment.yml
+
+# Activate conda environment
+SHELL ["conda", "run", "-n", "crisprware", "/bin/bash", "-c"]
+
+# Install the package
+RUN pip install .
+
+# Add conda environment to PATH
+ENV PATH /opt/conda/envs/crisprware/bin:$PATH
+
+# Set the entrypoint to use the conda environment
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "crisprware"]

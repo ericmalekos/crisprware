@@ -140,8 +140,6 @@ def parse_arguments():
     
     parser.add_argument(
         "--strip_tx_id",
-        # type=bool,
-        # default=False,
         action="store_true",
         help="Set this flag if there are transcript IDs in the quantification files \
         but not in the GTF/GFF3. [default: False]"
