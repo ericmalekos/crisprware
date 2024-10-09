@@ -10,8 +10,8 @@ def parse_arguments():
     parser.add_argument("-o", "--output_gtf", required=True, help="Path to output the new GTF file")
     parser.add_argument("-p", "--min_p_value", type=float, default=1.0, help="Minimum p value for filtering")
     parser.add_argument("--min_aalen", type=int, default=1, help="Minimum amino acid length")
-    parser.add_argument("--type", help="Type to filter, must match a column entry")
-    parser.add_argument("--codon", help="Codon to filter, must match a column entry")
+    parser.add_argument("--tis_type", help="Tis Type to filter")
+    parser.add_argument("--start_codon", help="start codon to filter")
 
     return parser.parse_args()
 
@@ -45,10 +45,10 @@ def filter_data(df, args):
     df['AALen'] = df['Location'].apply(calculate_aalen)
     filtered_df = df[(df['p value'] <= args.min_p_value) & (df['AALen'] >= args.min_aalen)]
     
-    if args.type:
-        filtered_df = filtered_df[filtered_df['Type'] == args.type]
-    if args.codon:
-        filtered_df = filtered_df[filtered_df['Codon'] == args.codon]
+    if args.tis_type:
+        filtered_df = filtered_df[filtered_df['Type'] == args.tis_type]
+    if args.start_codon:
+        filtered_df = filtered_df[filtered_df['Codon'] == args.start_codon]
     
     return filtered_df
 

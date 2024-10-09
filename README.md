@@ -10,9 +10,9 @@ CRISPRware is a comprehensive toolkit designed to preprocess NGS data and identi
 5. [Leveraging NGS data](#methods)
     - [RNASeq Guided Preprocessing](#rnaseq-guided-preprocessing)
     - [RiboSeq Guided Preprocessing](#riboseq-guided-preprocessing)
-    - [Genomic Preprocessing](#genomic-preprocessing)
-6. [Full Commands](#commands)
-
+6. [Alternate PAMs and scoring methods](#altpams-and-scoring)
+7. [Full Commands](#commands)
+8. [References](#references)
 
 ## Installation
 
@@ -43,15 +43,19 @@ and run commands:
 docker pull ericmalekos/crisprware:latest
 
 docker run crisprware preprocess_gtf -h
-
-docker run crisprware preprocess_annotation -g tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf -m longest
 ```
 
 ## Tutorials
-### CRISPRware Tutorial: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ericmalekos/crisprware/blob/main/colab_notebooks/CRISPRware_Tutorial.ipynb)
+These interactive notebooks demonstrate use of CRISPRware modules with text explanations and codeblocks. These are the best place to start for gaining understanding of the workflow and capabilities of this software. In each case the first block sets up the environment by pulling the latest version from Github.
 
-### CRISPRware Rice Genome Tutorial: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ericmalekos/crisprware/blob/main/colab_notebooks/RiceGenome_Tutorial.ipynb)
+### Full Tutorial: <a href="https://colab.research.google.com/github/ericmalekos/crisprware/blob/main/colab_notebooks/CRISPRware_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" style="vertical-align: middle; margin-left: 5px;"/></a>
+Covers all major CRISPRware functions.
 
+### CRISPRware Rice Genome Tutorial: <a href="https://colab.research.google.com/github/ericmalekos/crisprware/blob/main/colab_notebooks/RiceGenome_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" style="vertical-align: middle; margin-left: 5px;"/></a>
+End to end proessing of rice osa1_r7 genome and gene annotation.
+
+### CRISPRware NGS applications: <a href="https://colab.research.google.com/github/ericmalekos/crisprware/blob/main/colab_notebooks/NGS_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" style="vertical-align: middle; margin-left: 5px;"/></a>
+Many examples of retrieving public NGS data and applying to custom gRNA library design.
 
 ## Quickstart
 ### Input Requirements
@@ -142,14 +146,14 @@ preprocess_annotation -g test_data/chr19_ucsc_mm39.ncbiRefSeq.gtf \
 
 A number of tools exists for calling translated ORFs from RiboSeq. In order to find gRNAs against these putative coding regions we can convert output from these programs into a GTF with annotated coding sequence (CDS) entries and run the pipeline normally. 
 
-For ORFs called with [RiboTISH](https://github.com/zhpn1024/ribotish/tree/master) set these options in the `ribotish predict` command: `--inframecount`, `--blocks`, `--aaseq` and provide the same GTF that was passed to `ribotish`.
+For ORFs called with [RiboTISH](https://github.com/zhpn1024/ribotish/tree/master) set these options in the `ribotish predict` command: `--inframecount`, `--blocks`, `--aaseq` and provide the same GTF that was passed to `ribotish`. Default settings should work for ORFs called with [Price](https://github.com/erhard-lab/price), but it does have fewer filtering options.
 
 For other RiboSeq ORF callers raise a github issue and I will address it.
 
 Full filtering options:
 
 ```
-./scripts/gtf_from_ribotish.py -h
+gtf_from_ribotish.py -h
 
 options:
   -h, --help            show this help message and exit
@@ -173,9 +177,29 @@ options:
                         Column to select the best row for each Tid, TisType pair
   --genetype GENETYPE   GeneType to filter, must match a column entry
   --tistype TISTYPE     TisType to filter, must match a column entry
+
+
+gtf_from_price.py -h
+
+options:
+  -h, --help            show this help message and exit
+  -i INPUT_TSV, --input_tsv INPUT_TSV
+                        Path to the input price TSV file
+  -g INPUT_GTF, --input_gtf INPUT_GTF
+                        Path to the input GTF file to be used as a reference
+  -o OUTPUT_GTF, --output_gtf OUTPUT_GTF
+                        Path to output the new GTF file
+  -p MIN_P_VALUE, --min_p_value MIN_P_VALUE
+                        Minimum p value for filtering
+  --min_aalen MIN_AALEN
+                        Minimum amino acid length
+  --tis_type TIS_TYPE   Tis Type to filter
+  --start_codon START_CODON
+                        start codon to filter
+
 ```
 
-### Generate guides against alternate PAMs
+## Alternate PAMs and scoring methods
 
 Default `generate_guides` settings are equivalent to
 
@@ -186,7 +210,7 @@ generate_guides \
 --sgRNA_length [-l] 20
 --context_window [-w] 4 6
 --active_site_offset_5 [-5] "-4"
---active_site_offset_3 [-5] "-4"
+--active_site_offset_3 [-3] "-4"
 
 ```
 
@@ -200,7 +224,7 @@ For Cas12A guide selection change `generate_guides` settings to
 ```
 generate_guides \ 
 -f <fasta> \
---pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 7 2
+--pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 8 2
 ```
 
 
@@ -256,17 +280,13 @@ conda activate <crisprscore env>
 The output of this script should be passed to `score_guides` in order to properly format for `rank_guides`. Additional score columns will be added unless the user specifies `--skip_rs3` and/or `--skip_gs2`.
 
 ```
-./scripts/crisprscore.R 34_sgrnas.bed 6 EnPAMGB_sgRNAs.bed
+crisprscore.R 34_sgrnas.bed 6 EnPAMGB_sgRNAs.bed
 
 score_guides -b EnPAMGB_sgRNAs.bed --skip_rs3 --skip_gs2
 ```
 
 
 Guidescan2 is not compatible with PAMs 5' to protospacers, for off-target scoring in these cases I suggest [Flash Fry](https://github.com/mckennalab/FlashFry?tab=readme-ov-file)
-
-### Custom off-target indices
-
-Targeting noncoding elements can be guided by any NGS data that yields BED coordinate files. Additionally, a helper script `bigwig_to_signalwindow.py` can take a BED and BigWig signal file and return the window in each BED entry that has the highest mean signal.
 
 
 ## Full Commands
@@ -574,3 +594,25 @@ options:
   -o OUTPUT_PREFIX, --output_prefix OUTPUT_PREFIX
                         Prefix for output file
 ```
+
+## References
+When using the CRISPRware in your research, please cite:
+
+<ul>
+    <li><a href="https://www.biorxiv.org/content/10.1101/2024.06.18.599405v1">CRISPRware</a></li>
+    <li><a href="https://www.biorxiv.org/content/10.1101/2022.05.02.490368v1">Guidescan2</a></li>
+    <li><a href="https://www.nature.com/articles/s41467-022-34320-7">crisprVerse</a></li>
+</ul>
+
+<p>And the cleavage-score method(s) you used:</p>
+<ul>
+    <li><a href="https://www.nature.com/articles/nbt.3026">Ruleset1</a></li>
+    <li><a href="https://www.nature.com/articles/nbt.3437">Azimuth</a></li>
+    <li><a href="https://www.nature.com/articles/s41467-022-33024-2">Ruleset3</a></li>
+    <li><a href="https://academic.oup.com/nar/article/46/3/1375/4754467">CRISPRater</a></li>
+    <li><a href="https://www.nature.com/articles/nmeth.3543">CRISPRscan</a></li>
+    <li><a href="https://www.nature.com/articles/s41467-019-12281-8">DeepHF</a></li>
+    <li><a href="https://www.science.org/doi/10.1126/sciadv.aax9249">DeepSpCas9</a></li>
+    <li><a href="https://www.nature.com/articles/s41587-020-0600-6">EnPamGB</a></li>
+    <li><a href="https://www.nature.com/articles/nbt.4061">DeepCpf1</a></li>
+</ul>
