@@ -224,7 +224,7 @@ For Cas12A guide selection change `generate_guides` settings to
 ```
 generate_guides \ 
 -f <fasta> \
---pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 8 2
+--pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 8 3
 ```
 
 

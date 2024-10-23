@@ -201,8 +201,8 @@ def parse_arguments():
         rather than the coordinates of the entire protospacer. For purposes \
         of keeping or discarding sgRNAs, overlap with the active site \
         coordinates will be used regardless [default: True]",
-        default=True,
-        action="store_false"
+        default=False,
+        action="store_true"
     )
 
     parser.add_argument(
