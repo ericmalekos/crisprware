@@ -222,7 +222,7 @@ All [IUPAC ambiguity codes](https://genome.ucsc.edu/goldenPath/help/iupac.html) 
 For Cas12A guide selection change `generate_guides` settings to
 
 ```
-generate_guides \ 
+generate_guides \
 -f <fasta> \
 --pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 8 3
 ```
@@ -234,59 +234,58 @@ Here the pam is 5-prime to the protospacer so `--pam_5_prime` flag is set and th
 
 ### Additional scoring methods
 
-For additional on-target scoring, including of Cas12A/Cpf1 guides, first install [crisprScore](https://github.com/crisprVerse/crisprScore) (recommendation: install in a new conda environment). Once installed the crisprScore.R script can be used to score guides.
+For additional on-target scoring, including of Cas12A/Cpf1 guides, first install [crisprScore](https://github.com/crisprVerse/crisprScore) (recommendation: install in a new conda environment). Once installed the `crisprScore_multi.R` script can be used to score guides. The scoring methods have different requirements related to the 5'/3' flanking sequence lengths of the input which is set in the `--context_window` argument of `generate_guides`. As long as the flank sequence is equal to or longer than the required flank length then the method can be applied. Any number of scoring methods can be applied in a single run in which case you want the context window to be the legnth of the longest required input. Here is an example of finding and scoring all gRNAs of the exons of the genes ITGA2B and ITGB3, with a 50bp buffer around each exon. Assuming you have a human genome fasta and GTF in the current directory:
 
 ```
-conda activate <crisprscore env>
+# extract a bed of gene exons, +/- 50 bps
 
-./scripts/crisprscore.R
+awk 'BEGIN{FS=OFS="\t"} $0!~/^#/ && $3=="exon" && $9~/gene_name "(ITGA2B|ITGB3)";/ {s=$4-1-50; if(s<0)s=0; e=$5+50; print $1,s,e}' gencode.v49.primary_assembly.annotation.gtf \
+| sort -k1,1 -k2,2n \
+| bedtools merge -i - > itga2b_itgb3_exons_50bpBuffer.merged.bed
 
-	Usage: crisprscore.R <path_to_sgrna_bed_file> <method_number> <outputfile> [<additional settings> ... ] 
-	Example: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 2 Azimuth_scored_sgRNAs.bed
-	Methods:
-	1:  RuleSet1 - SpCas9 (Length: 30)
-	2:  Azimuth - SpCas9 (Length: 30)
-	3:  DeepHF - SpCas9 (Length: 23)
-	4:  Lindel - SpCas9 (Length: 65)
-	5:  DeepCpf1 - AsCas12a (Length: 34)
-	6:  EnPAMGB - enAsCas12a (Length: 34)
-	7:  CRISPRscan - SpCas9 (Length: 35)
-	8:  CasRx-RF - CasRx (Length: NA)
-	9:  CRISPRai - SpCas9 (Length: 22)
-	10: CRISPRater - SpCas9 (Length: 20)
-	11: DeepSpCas9 - SpCas9 (Length: 30)
-	12: RuleSet3 - SpCas9 (Length: 30)
+# generate guide RNAs with a 13-bp 5' flank and 32-bp 3' flank which includes the NGG PAM. 
 
+generate_guides -f GRCh38.primary_assembly.genome.fa \
+-k itga2b_itgb3_exons_50bpBuffer.merged.bed \
+--coords_as_active_site \
+--context_window 13 32
 
-	Additional optional argument for chunk size:
-	--chunk-size: Specify the size of chunks for processing the dataframe (optional)
-	Example with chunk size: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 2 Azimuth_scored_sgRNAs.bed --chunk-size 10000
+# score with Cas9 methods, notice the last two inputs are the flanks - now excluding the PAM length
 
-	Additional settings for method 3 (DeepHF):
-	enzyme: Specify the enzyme (options: 'WT', 'ESP', 'HF')
-	promoter: Specify the promoter (options: 'U6', 'T7')
-	Example: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 3 DeepHF_scored_sgRNAs.bed WT U6
+crisprscore_multi.R sgRNAs/sgRNAs.bed 1,2,3,4,5,6,7,8,9,10,11,12,13,14 sgRNAs_scored.bed Cas9 13 29
 
-	Additional setting for method 5 (DeepCpf1):
-	--no-convertPAM: Specify whether non-canonical PAMs are converted to TTTC [default: TRUE]
-	Example: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 5 DeepCpf1_scored_sgRNAs.bed --no-convertPAM
+# Perform off-target scoring and formatting of bed for rank_guides
+# turn off --drop_duplicates and set --threshol=-1 to retain all gRNAs
 
-	Additional setting for method 12 (RuleSet3):
-	--tracrRNA: Specify tracrRNA (options: 'Hsu2013', 'Chen2013')
-
-	Example: crisprscore.R tests/test_data/chr19_GRCm39_sgRNA.bed 12 rs3_scored_sgRNAs.bed Chen2013
+score_guides -b sgRNAs_scored.bed \
+-i Hg38_Index/Hg38_index \
+--skip_rs3 \
+--drop_duplicates \
+--threshold=-1
 ```
 
-The output of this script should be passed to `score_guides` in order to properly format for `rank_guides`. Additional score columns will be added unless the user specifies `--skip_rs3` and/or `--skip_gs2`.
+Example usage for Cas12a
 
 ```
-crisprscore.R 34_sgrnas.bed 6 EnPAMGB_sgRNAs.bed
+# generate Cas12a guides
 
-score_guides -b EnPAMGB_sgRNAs.bed --skip_rs3 --skip_gs2
+generate_guides \
+-f GRCh38.primary_assembly.genome.fa \
+-k itga2b_itgb3_exons_50bpBuffer.merged.bed \
+--pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 8 3 \
+--coords_as_active_site \
+-o Cas12a
+
+# score with Cas12a methods, note the 5' prime context goes 8->4, removing the PAM length
+
+crisprscore_multi.R  Cas12asgRNAs/Cas12asgRNAs.bed 15,16,17 scored_Cas12asgRNAs.bed Cas12a 4 3
+
+# format for rank_guides
+
+score_guides -b scored_Cas12asgRNAs.bed --skip_rs3 --skip_gs2
 ```
 
-
-Guidescan2 is not compatible with PAMs 5' to protospacers, for off-target scoring in these cases I suggest [Flash Fry](https://github.com/mckennalab/FlashFry?tab=readme-ov-file)
+Guidescan2 is not compatible with PAMs 5' to protospacers, for off-target scoring in these cases I suggest [FlashFry](https://github.com/mckennalab/FlashFry?tab=readme-ov-file). I am working on a tutorial for FlashFry off-target scoring.
 
 
 ## Full Commands
@@ -599,19 +598,68 @@ options:
   -o OUTPUT_DIRECTORY, --output_directory OUTPUT_DIRECTORY
                         Path to output. [default: current directory]
 
+
+conda activate <crisprscore env>
+
+crisprscore_multi.R
+
+	Usage: crisprscore.R <path_to_sgrna_bed_file> <comma_separated_method_numbers> <outputfile> <enzyme> <5prime_flank_length> <3prime_flank_length> [--chunk-size <size>] [--debug]
+	Example: crisprscore.R input.tsv 1,2,5 output_scored.tsv Cas9 13 29
+	Example with debug: crisprscore.R input.tsv 1,2,11 output_scored.tsv Cas12a 4 3 --debug
+
+	Input TSV format:
+	Required column: 'context' (can be in any position)
+	All other columns are preserved in the output
+
+	Enzyme types:
+	Cas9 - Use for SpCas9-based scoring methods (1-14)
+	Cas12a - Use for AsCas12a-based scoring methods (15-17)
+
+	Context format:
+	For Cas9: [5' flank] + [20nt spacer] + [3nt PAM] + [3' flank]
+	For Cas12a: [5' flank] + [4nt PAM] + [23nt spacer] + [3' flank]
+	Specify the lengths of your 5' and 3' flanks as arguments
+	The script will automatically trim to the required length for each scoring method
+
+	Scoring Methods for Cas9:
+	1:  RuleSet1 - SpCas9 (Length: 30)
+	2:  Azimuth - SpCas9 (Length: 30)
+	3:  DeepHF_WT_U6 - SpCas9 (Length: 23)
+	4:  DeepHF_WT_T7 - SpCas9 (Length: 23)
+	5:  DeepHF_ESP_U6 - SpCas9 (Length: 23)
+	6:  DeepHF_ESP_T7 - SpCas9 (Length: 23)
+	7:  DeepHF_HF_U6 - SpCas9 (Length: 23)
+	8:  DeepHF_HF_T7 - SpCas9 (Length: 23)
+	9:  Lindel - SpCas9 (Length: 65)
+	10: CRISPRscan - SpCas9 (Length: 35)
+	11: CRISPRater - SpCas9 (Length: 20, spacer only)
+	12: DeepSpCas9 - SpCas9 (Length: 30)
+	13: RuleSet3_Hsu2013 - SpCas9 (Length: 30)
+	14: RuleSet3_Chen2013 - SpCas9 (Length: 30)
+
+	Scoring Methods for Cas12a:
+	15: DeepCpf1 - AsCas12a (Length: 34, canonical PAM conversion)
+	16: DeepCpf1_noConvert - AsCas12a (Length: 34, no PAM conversion)
+	17: EnPAMGB - enAsCas12a (Length: 34)
+
+	Note: CasRx-RF and CRISPRai methods are not currently available
+
+	Optional arguments:
+	--chunk-size <size>: Process dataframe in chunks of specified size (default: entire file)
+	--debug: Show detailed trimming information for each method (shows what sequence is sent to each scoring function)
+
 ```
 
 ## References 
 
-<p>When using the CRISPRware track hub in your research, please cite:</p>
+<p>When using CRISPRware in your research, please cite:</p>
 
 <ul>
     <li><a href="https://www.biorxiv.org/content/10.1101/2024.06.18.599405v1">CRISPRware</a></li>
-    <li><a href="https://www.biorxiv.org/content/10.1101/2022.05.02.490368v1">Guidescan2</a></li>
     <li><a href="https://www.nature.com/articles/s41467-022-34320-7">crispVerse</a></li>
 </ul>
 
-<p>And the cleavage-score method(s) you used:</p>
+<p>And the score method(s) you used:</p>
 
 <ul>
     <li><a href="https://www.nature.com/articles/nbt.3026">Ruleset1</a></li>
@@ -623,4 +671,5 @@ options:
     <li><a href="https://www.science.org/doi/10.1126/sciadv.aax9249">DeepSpCas9</a></li>
     <li><a href="https://www.nature.com/articles/s41587-020-0600-6">EnPamGB</a></li>
     <li><a href="https://www.nature.com/articles/nbt.4061">DeepCpf1</a></li>
+      <li><a href="https://www.biorxiv.org/content/10.1101/2022.05.02.490368v1">Guidescan2</a></li>
 </ul>
