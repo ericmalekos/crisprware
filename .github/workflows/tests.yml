@@ -18,9 +18,17 @@ jobs:
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
-          environment-file: .github/workflows/environment-ci.yml
-          activate-environment: crisprware
           miniforge-version: latest
+          python-version: "3.10"
+          activate-environment: crisprware
+
+      - name: Install conda dependencies
+        run: |
+          conda install -y -c conda-forge -c bioconda \
+            biopython pybedtools pybigwig pandas numpy
+
+      - name: Install pip dependencies
+        run: pip install lightgbm==3.3.5 "rs3>=0.0.15"
 
       - name: Install package
         run: pip install -e . --no-deps
