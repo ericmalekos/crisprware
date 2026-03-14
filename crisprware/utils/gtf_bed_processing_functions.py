@@ -4,6 +4,7 @@ import re
 from os.path import abspath, basename, splitext
 import subprocess
 
+
 def preprocess_file(file, gtf_feature="exon"):
     """
     Preprocesses a file and converts it to a sorted BedTool object.
@@ -16,10 +17,10 @@ def preprocess_file(file, gtf_feature="exon"):
     Returns:
     - BedTool: A BedTool object representing the sorted genomic intervals from the input file.
     """
-    extensions = ['.gtf', '.gff', '.gff2', '.gff3']
+    extensions = [".gtf", ".gff", ".gff2", ".gff3"]
     extension = file[-4:].lower()
     if extension in extensions:
-        df = pd.read_csv(file, sep='\t', header=None, comment='#', quoting=3)
+        df = pd.read_csv(file, sep="\t", header=None, comment="#", quoting=3)
         df = df[df[2] == gtf_feature]
 
         # Check if the DataFrame is empty after filtering
@@ -44,20 +45,18 @@ def filter_gtf_by_transcript_ids(input_file, transcript_ids):
     """
     filtered_lines = []
 
-    with open(input_file, 'r') as f:
+    with open(input_file, "r") as f:
         for line in f:
             if line.startswith("#"):
                 continue
 
             _, attributes = parse_line(line)
-            transcript_id = attributes.get('transcript_id', None)
-
+            transcript_id = attributes.get("transcript_id", None)
 
             if transcript_id and transcript_id in transcript_ids:
                 filtered_lines.append(line)
 
     return filtered_lines
-
 
 
 def parse_input(input_file):
@@ -80,7 +79,7 @@ def parse_input(input_file):
 
     genes = {}
 
-    with open(input_file, 'r') as f:
+    with open(input_file, "r") as f:
         for line in f:
             if line.startswith("#"):
                 continue
@@ -89,27 +88,34 @@ def parse_input(input_file):
             if not fields or not attributes:
                 continue
 
-            gene_id = attributes.get('gene_id', None)
-            transcript_id = attributes.get('transcript_id', None)
+            gene_id = attributes.get("gene_id", None)
+            transcript_id = attributes.get("transcript_id", None)
             chromosome = fields[0]
             start, end = int(fields[3]), int(fields[4])
             feature_type = fields[2]
             strand = fields[6]
 
             if gene_id not in genes:
-                genes[gene_id] = {'exons': {}, 'CDS_coords': {}, 'CDS': set(), 'strand': strand, 'chromosome': chromosome}
+                genes[gene_id] = {
+                    "exons": {},
+                    "CDS_coords": {},
+                    "CDS": set(),
+                    "strand": strand,
+                    "chromosome": chromosome,
+                }
 
-            if feature_type == 'exon':
-                if transcript_id not in genes[gene_id]['exons']:
-                    genes[gene_id]['exons'][transcript_id] = []
-                genes[gene_id]['exons'][transcript_id].append((start, end))
-            elif feature_type == 'CDS':
-                genes[gene_id]['CDS'].add(transcript_id)
-                if transcript_id not in genes[gene_id]['CDS_coords']:
-                    genes[gene_id]['CDS_coords'][transcript_id] = []
-                genes[gene_id]['CDS_coords'][transcript_id].append((start, end))
+            if feature_type == "exon":
+                if transcript_id not in genes[gene_id]["exons"]:
+                    genes[gene_id]["exons"][transcript_id] = []
+                genes[gene_id]["exons"][transcript_id].append((start, end))
+            elif feature_type == "CDS":
+                genes[gene_id]["CDS"].add(transcript_id)
+                if transcript_id not in genes[gene_id]["CDS_coords"]:
+                    genes[gene_id]["CDS_coords"][transcript_id] = []
+                genes[gene_id]["CDS_coords"][transcript_id].append((start, end))
 
     return genes
+
 
 def parse_line(line):
     """
@@ -128,23 +134,24 @@ def parse_line(line):
            Keys are attribute names (like 'gene_id' or 'transcript_id'), and values are the corresponding attribute values.
     """
 
-    fields = line.strip().split('\t')
+    fields = line.strip().split("\t")
     attributes = {}
 
-    for attr in fields[8].split(';'):
+    for attr in fields[8].split(";"):
         attr = attr.strip()
         if not attr:
             continue
 
         # Checking if it's more like a GTF (space delimiter) or GFF (equal delimiter)
-        if ' ' in attr:
-            key, value = attr.split(' ', 1)
+        if " " in attr:
+            key, value = attr.split(" ", 1)
             attributes[key] = value.strip('"')
-        elif '=' in attr:
-            key, value = attr.split('=', 1)
+        elif "=" in attr:
+            key, value = attr.split("=", 1)
             attributes[key] = value
 
     return fields, attributes
+
 
 def extract_transcript_gene_relationship(input_file):
     """
@@ -157,35 +164,37 @@ def extract_transcript_gene_relationship(input_file):
     - A dictionary with transcript_ids as keys and gene_ids as values.
     """
     relationship = {}
-    with open(input_file, 'r') as f:
+    with open(input_file, "r") as f:
         for line in f:
             if line.startswith("#"):
                 continue
 
             _, attributes = parse_line(line)
-            gene_id = attributes.get('gene_id', None)
-            transcript_id = attributes.get('transcript_id', None)
+            gene_id = attributes.get("gene_id", None)
+            transcript_id = attributes.get("transcript_id", None)
             if transcript_id and gene_id:
                 relationship[transcript_id] = gene_id
     return relationship
 
+
 def extract_ids(attributes):
 
-    #print(attributes)
+    # print(attributes)
 
     transcript_match = re.search(r'transcript_id[= ]"?([^";]*)"?', attributes)
 
     gene_match = re.search(r'gene_id[= ]"?([^";]*)"?', attributes)
 
-    #print(transcript_match.group(1))
+    # print(transcript_match.group(1))
 
     transcript_id = transcript_match.group(1) if transcript_match else None
     gene_id = gene_match.group(1) if gene_match else None
 
-    #print(transcript_id, gene_id)
+    # print(transcript_id, gene_id)
     return transcript_id, gene_id
 
-def truncate_gtf(input_file, feature = "exon", percentiles = [0,100]):
+
+def truncate_gtf(input_file, feature="exon", percentiles=[0, 100]):
     """
     Processes a GTF/GFF file to extract and truncate specified features based on percentiles.
 
@@ -211,10 +220,9 @@ def truncate_gtf(input_file, feature = "exon", percentiles = [0,100]):
     """
     percentiles.sort()
 
-    print(f'\tProcessing: \t{input_file} \n\tFeature: \t{feature} \n\tPercentile range: \t{percentiles}')
+    print(f"\tProcessing: \t{input_file} \n\tFeature: \t{feature} \n\tPercentile range: \t{percentiles}")
 
-
-    df = pd.read_csv(input_file, sep='\t', header=None, comment='#')
+    df = pd.read_csv(input_file, sep="\t", header=None, comment="#")
     df.columns = ["chrom", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]
 
     df["attributes"] = df["attributes"].str.strip()
@@ -223,7 +231,7 @@ def truncate_gtf(input_file, feature = "exon", percentiles = [0,100]):
     df = df[df["feature"] == feature]
 
     if df.empty:
-        raise ValueError("ERROR: --feature '"  + feature + "' not found in GTF/GFF column 3")
+        raise ValueError("ERROR: --feature '" + feature + "' not found in GTF/GFF column 3")
 
     df_positive = df[df["strand"] == "+"].sort_values("start")
     df_negative = df[df["strand"] == "-"].sort_values("start", ascending=False)
@@ -231,22 +239,20 @@ def truncate_gtf(input_file, feature = "exon", percentiles = [0,100]):
     # Combine the sorted dataframes
     df = pd.concat([df_positive, df_negative])
 
-
     df[["transcript_id", "gene_id"]] = df["attributes"].apply(extract_ids).apply(pd.Series)
 
     unique_transcript_ids = set(df["transcript_id"])
     unique_gene_ids = set(df["gene_id"])
 
-    #if there's no trimming, short circuit
+    # if there's no trimming, short circuit
     if percentiles[0] == 0 and percentiles[1] == 100:
         df = df.drop(columns=["transcript_id", "gene_id"])
         df = df.sort_values(["chrom", "start"])
         return df, unique_transcript_ids, unique_gene_ids
 
-    print(f'\n\tNumber of {feature} entries before processing: {df.shape[0]}')
+    print(f"\n\tNumber of {feature} entries before processing: {df.shape[0]}")
     # TODO check this
     # print(f'\n\tNumber of unique transcripts before processing:{sorted(df["transcript_id"].drop_duplicates())}')
-
 
     # Calculate the length of each feature
     df["length"] = abs(df["end"] - df["start"]) + 1
@@ -266,52 +272,48 @@ def truncate_gtf(input_file, feature = "exon", percentiles = [0,100]):
     def adjust_coordinates(df, percentiles):
         adjusted_rows = []
 
-        for transcript_id, group in df.groupby('transcript_id'):
-            total_length = group['total_length'].iloc[0]
+        for transcript_id, group in df.groupby("transcript_id"):
+            total_length = group["total_length"].iloc[0]
             start_int = int(round((percentiles[0] / 100) * total_length))
             end_int = int(round((percentiles[1] / 100) * total_length))
 
-            strand = group['strand'].iloc[0]
-            if strand == '+':
+            strand = group["strand"].iloc[0]
+            if strand == "+":
                 for _, row in group.iterrows():
-                    exon_start = row['cumulative_length'] - row['length']
-                    exon_end = row['cumulative_length']
+                    exon_start = row["cumulative_length"] - row["length"]
+                    exon_end = row["cumulative_length"]
 
                     if exon_end > start_int and exon_start < end_int:
-                        new_start = max(row['start'], start_int - exon_start + row['start'])
-                        new_end = min(row['end'], end_int - exon_start + row['start'])
+                        new_start = max(row["start"], start_int - exon_start + row["start"])
+                        new_end = min(row["end"], end_int - exon_start + row["start"])
                         adjusted_row = row.copy()
-                        adjusted_row['start'] = new_start
-                        adjusted_row['end'] = new_end
+                        adjusted_row["start"] = new_start
+                        adjusted_row["end"] = new_end
                         adjusted_rows.append(adjusted_row)
             else:
                 for _, row in group.iterrows():
-                    exon_start = row['cumulative_length'] - row['length']
-                    exon_end = row['cumulative_length']
+                    exon_start = row["cumulative_length"] - row["length"]
+                    exon_end = row["cumulative_length"]
 
                     if exon_end > start_int and exon_start < end_int:
-                        new_start = max(row['start'], exon_end - end_int + row['start'])
-                        new_end = min(row['end'], exon_end - start_int + row['start'])
+                        new_start = max(row["start"], exon_end - end_int + row["start"])
+                        new_end = min(row["end"], exon_end - start_int + row["start"])
                         adjusted_row = row.copy()
-                        adjusted_row['start'] = new_start
-                        adjusted_row['end'] = new_end
+                        adjusted_row["start"] = new_start
+                        adjusted_row["end"] = new_end
                         adjusted_rows.append(adjusted_row)
 
         return pd.DataFrame(adjusted_rows)
 
-
-
-
-    pd.set_option('display.max_columns', None)
+    pd.set_option("display.max_columns", None)
     df = adjust_coordinates(df, percentiles)
 
-    print(f'\n\tNumber of {feature} entries after processing: {df.shape[0]}')
+    print(f"\n\tNumber of {feature} entries after processing: {df.shape[0]}")
     # # TODO check this
     # #print(f'\n\tNumber of unique transcripts after processing:{sorted(df["transcript_id"].drop_duplicates())}')
 
     # # Drop the extra columns
     df = df[["chrom", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]]
-
 
     df = df.sort_values(["chrom", "start"])
 
@@ -324,34 +326,33 @@ def parse_gtf_for_cds_extremes(gtf_file):
     Returns DataFrames for both longest and shortest CDS transcripts without creating incorrect entries.
     """
     # Load GTF file
-    cols = ['seqname', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes']
-    df = pd.read_csv(gtf_file, sep='\t', comment='#', names=cols, usecols=range(9))
+    cols = ["seqname", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]
+    df = pd.read_csv(gtf_file, sep="\t", comment="#", names=cols, usecols=range(9))
 
     df[["transcript_id", "gene_id"]] = df["attributes"].apply(extract_ids).apply(pd.Series)
 
     # Filter for CDS entries
-    df_cds = df[df['feature'] == 'CDS'].copy()
+    df_cds = df[df["feature"] == "CDS"].copy()
 
     # Extract gene_id and transcript_id
     # df_cds['gene_id'] = df_cds['attributes'].str.extract('gene_id "([^"]+)"')
     # df_cds['transcript_id'] = df_cds['attributes'].str.extract('transcript_id "([^"]+)"')
 
-
     # Calculate CDS length and sum it per transcript
-    df_cds['cds_length'] = df_cds['end'] - df_cds['start'] + 1
-    cds_length_per_transcript = df_cds.groupby(['gene_id', 'transcript_id'])['cds_length'].sum().reset_index()
+    df_cds["cds_length"] = df_cds["end"] - df_cds["start"] + 1
+    cds_length_per_transcript = df_cds.groupby(["gene_id", "transcript_id"])["cds_length"].sum().reset_index()
 
     # Identify longest and shortest CDS transcripts for each gene
-    longest_cds_idx = cds_length_per_transcript.groupby('gene_id')['cds_length'].idxmax()
-    shortest_cds_idx = cds_length_per_transcript.groupby('gene_id')['cds_length'].idxmin()
+    longest_cds_idx = cds_length_per_transcript.groupby("gene_id")["cds_length"].idxmax()
+    shortest_cds_idx = cds_length_per_transcript.groupby("gene_id")["cds_length"].idxmin()
 
-    longest_transcripts = cds_length_per_transcript.loc[longest_cds_idx, 'transcript_id']
-    shortest_transcripts = cds_length_per_transcript.loc[shortest_cds_idx, 'transcript_id']
+    longest_transcripts = cds_length_per_transcript.loc[longest_cds_idx, "transcript_id"]
+    shortest_transcripts = cds_length_per_transcript.loc[shortest_cds_idx, "transcript_id"]
 
-    #print(longest_transcripts.to_list())
+    # print(longest_transcripts.to_list())
     # Filter original CDS entries for longest and shortest transcripts
-    df_longest_cds = df[df['transcript_id'].isin(longest_transcripts)]
-    df_shortest_cds = df[df['transcript_id'].isin(shortest_transcripts)]
+    df_longest_cds = df[df["transcript_id"].isin(longest_transcripts)]
+    df_shortest_cds = df[df["transcript_id"].isin(shortest_transcripts)]
 
     return df_longest_cds.iloc[:, :9], df_shortest_cds.iloc[:, :9]
 
@@ -372,20 +373,20 @@ def gtf_to_tss_tes_bed(input_gtf, tss_upstream=0, tss_downstream=0, tes_upstream
     tss_entries = []
     tes_entries = []
 
-    with open(input_gtf, 'r') as gtf:
+    with open(input_gtf, "r") as gtf:
         for line in gtf:
             if not line.startswith("#"):  # skip header lines
                 fields, attributes = parse_line(line)
 
-                if fields[2] == 'transcript':
+                if fields[2] == "transcript":
                     chrom = fields[0]
-                    start = int(fields[3]) # 0-based start for BED format
+                    start = int(fields[3])  # 0-based start for BED format
                     end = int(fields[4])  # 1-based end for BED format
                     strand = fields[6]
 
-                    tss_start,tss_end,tes_start,tes_end = 0,0,0,0
+                    tss_start, tss_end, tes_start, tes_end = 0, 0, 0, 0
                     # Determine TSS and create a window around it based on strand orientation
-                    if strand == '+':
+                    if strand == "+":
                         tss_start = start - tss_upstream - 1
                         tss_end = start + tss_downstream
                         tes_start = end - tes_upstream
@@ -397,22 +398,43 @@ def gtf_to_tss_tes_bed(input_gtf, tss_upstream=0, tss_downstream=0, tes_upstream
                         tes_end = start + tes_upstream - 1
 
                     # Create BED entry
-                    tss_entry = [chrom, str(max(0,tss_start)), str(max(0,tss_end)), 'TSS_' + attributes['transcript_id'], '0', strand]
-                    tes_entry = [chrom, str(max(0,tes_start)), str(max(0,tes_end)), 'TES_' + attributes['transcript_id'], '0', strand]
+                    tss_entry = [
+                        chrom,
+                        str(max(0, tss_start)),
+                        str(max(0, tss_end)),
+                        "TSS_" + attributes["transcript_id"],
+                        "0",
+                        strand,
+                    ]
+                    tes_entry = [
+                        chrom,
+                        str(max(0, tes_start)),
+                        str(max(0, tes_end)),
+                        "TES_" + attributes["transcript_id"],
+                        "0",
+                        strand,
+                    ]
 
-                    tss_entries.append('\t'.join(tss_entry))
-                    tes_entries.append('\t'.join(tes_entry))
+                    tss_entries.append("\t".join(tss_entry))
+                    tes_entries.append("\t".join(tes_entry))
 
     if not tss_entries:
-        print('\tTSS could not be inferred.\n\tCheck that ' + input_gtf + ' has \'transcript\' attributes in the third column.')
+        print(
+            "\tTSS could not be inferred.\n\tCheck that "
+            + input_gtf
+            + " has 'transcript' attributes in the third column."
+        )
     if not tes_entries:
-        print('\tTES could not be inferred.\n\tCheck that ' + input_gtf + ' has \'transcript\' attributes in the third column.')
+        print(
+            "\tTES could not be inferred.\n\tCheck that "
+            + input_gtf
+            + " has 'transcript' attributes in the third column."
+        )
 
     return tss_entries, tes_entries
 
 
-
-def adjust_interval_coordinates(interval, subtract_amount, add_amount, chrom_length=float('inf')):
+def adjust_interval_coordinates(interval, subtract_amount, add_amount, chrom_length=float("inf")):
     """
     Adjusts the start and end coordinates of an interval.
 
@@ -433,7 +455,8 @@ def adjust_interval_coordinates(interval, subtract_amount, add_amount, chrom_len
     interval.end = min(interval.end + add_amount, chrom_length)
     return interval
 
-def merge_targets(files, gtf_feature="exon", operation="intersect", window = [0,0]):
+
+def merge_targets(files, gtf_feature="exon", operation="intersect", window=[0, 0]):
     """
     Intersect or merge an arbitrary number of GTF/GFF/BED files using pybedtools.
 
@@ -463,8 +486,7 @@ def merge_targets(files, gtf_feature="exon", operation="intersect", window = [0,
             raise ValueError("Invalid operation. operation should be either 'merge' or 'intersect'.")
 
     if window[0] != 0 or window[1] != 0:
-        result = result.each(adjust_interval_coordinates,
-                    subtract_amount=window[0], add_amount=window[1])
+        result = result.each(adjust_interval_coordinates, subtract_amount=window[0], add_amount=window[1])
 
     result = result.merge()
     result = result.sort()
@@ -472,24 +494,16 @@ def merge_targets(files, gtf_feature="exon", operation="intersect", window = [0,
     return result
 
 
-
 def get_tscript_geneid_gtf(input_file):
-    df = pd.read_csv(input_file, sep='\t', header=None, comment='#')
+    df = pd.read_csv(input_file, sep="\t", header=None, comment="#")
     df.columns = ["chrom", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]
     df[["transcript_id", "gene_id"]] = df["attributes"].apply(extract_ids).apply(pd.Series)
 
     return set(df["transcript_id"]), set(df["gene_id"])
 
 
+# TODO CLEANUP create_constitutive_model & create_metagene_model functions. Messy and redundant currently
 
-
-
-
-
-
-
-
-#TODO CLEANUP create_constitutive_model & create_metagene_model functions. Messy and redundant currently
 
 def create_constitutive_model(input_file):
     """
@@ -520,33 +534,33 @@ def create_constitutive_model(input_file):
     consensus_CDS = {}
 
     for gene_id, data in genes.items():
-        #cds_transcripts = get_transcripts_with_cds(data['CDS'])
-        cds_transcripts = set(data['CDS'])
-        all_transcripts = set(data['exons'].keys())
+        # cds_transcripts = get_transcripts_with_cds(data['CDS'])
+        cds_transcripts = set(data["CDS"])
+        all_transcripts = set(data["exons"].keys())
 
         if not cds_transcripts:  # If no transcripts have CDS, continue to next gene
-            for transcript, exons in data['exons'].items():
+            for transcript, exons in data["exons"].items():
                 for exon in exons:
-                    consensus = overlapping_regions_for_transcripts(exon, all_transcripts, data['exons'])
-                    #print(consensus)
+                    consensus = overlapping_regions_for_transcripts(exon, all_transcripts, data["exons"])
+                    # print(consensus)
                     if consensus:
                         consensus_exons[gene_id] = consensus_exons.get(gene_id, set())
                         consensus_exons[gene_id].add(consensus)
 
         # Process exons
         else:
-            for transcript, exons in data['exons'].items():
+            for transcript, exons in data["exons"].items():
                 for exon in exons:
-                    consensus = overlapping_regions_for_transcripts(exon, cds_transcripts, data['exons'])
-                    #print(consensus)
+                    consensus = overlapping_regions_for_transcripts(exon, cds_transcripts, data["exons"])
+                    # print(consensus)
                     if consensus:
                         consensus_exons[gene_id] = consensus_exons.get(gene_id, set())
                         consensus_exons[gene_id].add(consensus)
 
             # Process CDS
-            for transcript, cds_coords in data['CDS_coords'].items():
+            for transcript, cds_coords in data["CDS_coords"].items():
                 for cds in cds_coords:
-                    cds_consensus = overlapping_regions_for_transcripts(cds, cds_transcripts, data['CDS_coords'])
+                    cds_consensus = overlapping_regions_for_transcripts(cds, cds_transcripts, data["CDS_coords"])
                     if cds_consensus:
                         consensus_CDS[gene_id] = consensus_CDS.get(gene_id, set())
                         consensus_CDS[gene_id].add(cds_consensus)
@@ -555,6 +569,7 @@ def create_constitutive_model(input_file):
     genes_without_consensus = set(genes.keys()) - set(consensus_exons.keys())
 
     return output_str, genes_without_consensus
+
 
 def create_metagene_model(input_file):
     """
@@ -587,11 +602,10 @@ def create_metagene_model(input_file):
     metagene_CDS = {}
 
     for gene_id, data in genes.items():
+        # cds_transcripts = get_transcripts_with_cds(data['CDS'])
+        cds_transcripts = set(data["CDS"])
 
-        #cds_transcripts = get_transcripts_with_cds(data['CDS'])
-        cds_transcripts = set(data['CDS'])
-
-        all_transcripts = set(data['exons'].keys())
+        all_transcripts = set(data["exons"].keys())
 
         if len(all_transcripts) == 0:
             print("\t\tWARNING:\tNo exon found for " + gene_id + ", skipping this gene. Check GTF.")
@@ -602,7 +616,7 @@ def create_metagene_model(input_file):
         combined_exons = []
 
         for transcript in use_transcripts:
-            combined_exons.extend(data['exons'][transcript])
+            combined_exons.extend(data["exons"][transcript])
 
         combined_exons.sort(key=lambda x: x[0])
 
@@ -623,7 +637,7 @@ def create_metagene_model(input_file):
         if cds_transcripts:
             combined_cds = []
             for transcript in cds_transcripts:
-                combined_cds.extend(data['CDS_coords'][transcript])
+                combined_cds.extend(data["CDS_coords"][transcript])
             combined_cds.sort(key=lambda x: x[0])
 
             merged_cds = []
@@ -638,7 +652,7 @@ def create_metagene_model(input_file):
             metagene_CDS[gene_id] = merged_cds
 
     # Phase 3: save output (remains mostly unchanged, but work with `metagene_exons` and `metagene_CDS` dicts)
-    output_str = generate_output_str(genes, metagene_exons, metagene_CDS, label='metagene')
+    output_str = generate_output_str(genes, metagene_exons, metagene_CDS, label="metagene")
 
     return output_str
 
@@ -721,38 +735,39 @@ def write_utr(exon, start, end, cds_start, cds_end, strand, attributes):
     before the CDS start as 3'UTR.
     """
     utr_str = ""
-    if strand == '+':
+    if strand == "+":
         if start < cds_start:
             utr5_fields = exon.copy()
-            utr5_fields[2] = '5UTR'
+            utr5_fields[2] = "5UTR"
             utr5_fields[4] = str(min(end, cds_start - 1))
             utr5_fields[8] = attributes
             utr_str += "\t".join(utr5_fields) + "\n"
 
         if end > cds_end:
             utr3_fields = exon.copy()
-            utr3_fields[2] = '3UTR'
+            utr3_fields[2] = "3UTR"
             utr3_fields[3] = str(max(start, cds_end + 1))
             utr3_fields[8] = attributes
             utr_str += "\t".join(utr3_fields) + "\n"
     else:
         if end > cds_end:
             utr5_fields = exon.copy()
-            utr5_fields[2] = '5UTR'
+            utr5_fields[2] = "5UTR"
             utr5_fields[3] = str(max(start, cds_end + 1))
             utr5_fields[8] = attributes
             utr_str += "\t".join(utr5_fields) + "\n"
 
         if start < cds_start:
             utr3_fields = exon.copy()
-            utr3_fields[2] = '3UTR'
+            utr3_fields[2] = "3UTR"
             utr3_fields[4] = str(min(end, cds_start - 1))
             utr3_fields[8] = attributes
             utr_str += "\t".join(utr3_fields) + "\n"
 
     return utr_str
 
-def generate_output_str(genes, consensus_exons, consensus_CDS, label = "consensus" ):
+
+def generate_output_str(genes, consensus_exons, consensus_CDS, label="consensus"):
     """
     Generates a string representation of consensus gene models in GTF format.
     Called by create_constitutive_model and create_metagene_model
@@ -771,7 +786,7 @@ def generate_output_str(genes, consensus_exons, consensus_CDS, label = "consensu
            transcript, exon, and CDS, with UTRs included if consensus CDS data is available.
     """
 
-    output_str = ''
+    output_str = ""
 
     for gene_id, exons in consensus_exons.items():
         # Define CDS bounds based on consensus_CDS
@@ -787,32 +802,52 @@ def generate_output_str(genes, consensus_exons, consensus_CDS, label = "consensu
             transcript_start = exons[0][0]
             transcript_end = exons[-1][1]
             transcript_line = [
-                genes[gene_id]['chromosome'], label, 'transcript', str(transcript_start), str(transcript_end), '.',
-                genes[gene_id]['strand'], '.', f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
+                genes[gene_id]["chromosome"],
+                label,
+                "transcript",
+                str(transcript_start),
+                str(transcript_end),
+                ".",
+                genes[gene_id]["strand"],
+                ".",
+                f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"',
             ]
             output_str += "\t".join(transcript_line) + "\n"
 
         for exon_tuple in exons:
             start, end = exon_tuple
             exon_line = [
-                genes[gene_id]['chromosome'], label, 'exon', str(start), str(end), '.',
-                genes[gene_id]['strand'], '.', f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
+                genes[gene_id]["chromosome"],
+                label,
+                "exon",
+                str(start),
+                str(end),
+                ".",
+                genes[gene_id]["strand"],
+                ".",
+                f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"',
             ]
             output_str += "\t".join(exon_line) + "\n"
             if cds_start and cds_end:  # Only write UTRs if there is a consensus CDS
                 attributes = f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
-                output_str += write_utr(exon_line, start, end, cds_start, cds_end, genes[gene_id]['strand'], attributes)
+                output_str += write_utr(exon_line, start, end, cds_start, cds_end, genes[gene_id]["strand"], attributes)
 
         for cds_tuple in consensus_CDS.get(gene_id, []):
             start, end = cds_tuple
             cds_line = [
-                genes[gene_id]['chromosome'], label, 'CDS', str(start), str(end), '.',
-                genes[gene_id]['strand'], '.', f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"'
+                genes[gene_id]["chromosome"],
+                label,
+                "CDS",
+                str(start),
+                str(end),
+                ".",
+                genes[gene_id]["strand"],
+                ".",
+                f'gene_id "{gene_id}"; transcript_id "{gene_id}.{label}"',
             ]
             output_str += "\t".join(cds_line) + "\n"
 
     return output_str.strip()
-
 
 
 def is_inside(region1, region2):
@@ -823,40 +858,40 @@ def is_inside(region1, region2):
 
 
 def check_gtf_or_gff(file_path):
-    
-    with open(file_path, 'r') as file:
+
+    with open(file_path, "r") as file:
         lines = file.readlines()
-        
+
         # Skip comment lines at the beginning of the file
         i = 0
-        while i < len(lines) and lines[i].startswith('#'):
+        while i < len(lines) and lines[i].startswith("#"):
             i += 1
-        
+
         # Check the first 100 non-comment lines
         gff_count = 0
         gtf_count = 0
         max_lines = min(i + 100, len(lines))
-        
+
         while i < max_lines:
             line = lines[i].strip()
-            fields = line.split('\t')
-            
+            fields = line.split("\t")
+
             if len(fields) >= 9:
                 attributes = fields[8]
-                if '=' in attributes:
+                if "=" in attributes:
                     gff_count += 1
-                if 'gene_id' in attributes:
+                if "gene_id" in attributes:
                     gtf_count += 1
-            
+
             i += 1
-        
+
         if gff_count > 0 and gtf_count == 0:
-            return 'GFF'
+            return "GFF"
         elif gtf_count > 0 and gff_count == 0:
-            return 'GTF'
+            return "GTF"
         else:
-            raise ValueError('The file format is ambiguous or not well-defined.')
-        
+            raise ValueError("The file format is ambiguous or not well-defined.")
+
 
 def convert_gff3_to_gtf(input_file):
     """
@@ -880,11 +915,11 @@ def convert_gff3_to_gtf(input_file):
     # Get the absolute path, extract the basename, and change the extension to .gtf
     abs_path = abspath(input_file)
     base_name = basename(abs_path)
-    output_file = splitext(base_name)[0] + '.gtf'
-    
+    output_file = splitext(base_name)[0] + ".gtf"
+
     try:
         command = f"gffread {abs_path} -T -o {output_file}"
-        result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+        subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
         print(f"Conversion successful. GTF file saved as {output_file}")
         return output_file
     except subprocess.CalledProcessError as e:

@@ -1,5 +1,8 @@
 # CRISPRware
 
+[![Tests](https://github.com/ericmalekos/crisprware/actions/workflows/tests.yml/badge.svg)](https://github.com/ericmalekos/crisprware/actions/workflows/tests.yml)
+[![Lint](https://github.com/ericmalekos/crisprware/actions/workflows/lint.yml/badge.svg)](https://github.com/ericmalekos/crisprware/actions/workflows/lint.yml)
+
 CRISPRware is a comprehensive toolkit designed to preprocess NGS data and identify, score, and rank guide RNAs (gRNAs) for CRISPR experiments. It supports RNASeq, RiboSeq, ATACSeq, DNASESeq, ChIPSeq, and other genomic preprocessing techniques.
 
 ## Table of Contents

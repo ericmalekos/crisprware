@@ -1,10 +1,12 @@
 from os.path import basename, splitext, join, exists
 from os import getcwd, makedirs, remove
-import gzip 
+import gzip
+
+
 def create_output(file_path, outdir=None, extension="", stripped="", tmp=False):
     """
     Creates an output directory based on the given output prefix and base directory.
-    
+
     Parameters:
     - file_path: Path of the input file.
     - extension: Suffix to append to the directory and file name.
@@ -46,6 +48,7 @@ def create_output(file_path, outdir=None, extension="", stripped="", tmp=False):
         full_path = join(new_directory, f"{base_name}")
     return full_path, tmp_dir
 
+
 def decompress_gzip_if_needed(file_path):
     """
     Decompresses a gzip file if needed and returns the path to the decompressed file.
@@ -58,17 +61,18 @@ def decompress_gzip_if_needed(file_path):
             - str: The path to the decompressed file (or original file if not gzipped).
             - bool: True if the file was gzipped and decompressed, False otherwise.
     """
-    if file_path.endswith('.gz'):
+    if file_path.endswith(".gz"):
         print(f"\tUnzipping {file_path}")
         decompressed_path = file_path[:-3]  # Remove .gz extension
-        with gzip.open(file_path, 'rb') as f_in:
-            with open(decompressed_path, 'wb') as f_out:
+        with gzip.open(file_path, "rb") as f_in:
+            with open(decompressed_path, "wb") as f_out:
                 f_out.write(f_in.read())
         print(f"\tUnzipped file saved as {decompressed_path}")
         return decompressed_path, True
     else:
         return file_path, False
-    
+
+
 def remove_file(file_path):
     if exists(file_path):
         print(f"\tRemoving file: {file_path}")

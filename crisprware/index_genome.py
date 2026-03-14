@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
-'''
-    This is a wrapper script for generating Guidescan2 indices
+"""
+This is a wrapper script for generating Guidescan2 indices
 
-    index_genome -f ./test_data/test.fasta
-'''
+index_genome -f ./test_data/test.fasta
+"""
+
 import argparse
 import subprocess
 from crisprware.utils.gtf_bed_processing_functions import merge_targets
@@ -15,14 +16,12 @@ from crisprware.utils.utility_functions import create_output, decompress_gzip_if
 def add_arguments(parser):
     """Add index_genome arguments to the given parser."""
     parser.add_argument(
-        "-f", "--fasta",
-        type=str,
-        help="FASTA file to use as a reference for index creation.",
-        required=True
+        "-f", "--fasta", type=str, help="FASTA file to use as a reference for index creation.", required=True
     )
 
     parser.add_argument(
-        "-k", "--locations_to_keep",
+        "-k",
+        "--locations_to_keep",
         help="List of BED/GTF files with coordinates to use \
         for index creation. These locations will be used for \
         off-target scoring. If multiple files are passed, coordinates \
@@ -30,7 +29,7 @@ def add_arguments(parser):
         Leave empty to use entire fasta.",
         type=str,
         default="",
-        nargs='*'
+        nargs="*",
     )
 
     parser.add_argument(
@@ -40,11 +39,12 @@ def add_arguments(parser):
             feature will be used for determining appropriate sgRNA. \
             The feature should match an entry in the third column of \
             the GTF/GFF. [default: 'transcript']",
-        default="transcript"
+        default="transcript",
     )
 
     parser.add_argument(
-        "-w", "--context_window",
+        "-w",
+        "--context_window",
         nargs=2,
         type=int,
         help="Pass two, space-separated, integers to specifiy the \
@@ -54,22 +54,19 @@ def add_arguments(parser):
             '-w 1000 1500' expands chr1 2000 3500 -> chr1 1000 5000\n \
             Good for CRISPRi/a \
             [default: 20 20]",
-        default=[20,20]
+        default=[20, 20],
     )
 
     parser.add_argument(
-        "-o", "--output_directory",
-        help="Path to output. [default: current directory]",
-        type=str,
-        default=""
+        "-o", "--output_directory", help="Path to output. [default: current directory]", type=str, default=""
     )
 
+
 def parse_arguments():
-    parser = argparse.ArgumentParser(
-        description="Builds Guidescan2 Index."
-    )
+    parser = argparse.ArgumentParser(description="Builds Guidescan2 Index.")
     add_arguments(parser)
     return parser.parse_args()
+
 
 def guideScanIndex(fasta, output):
     """
@@ -83,18 +80,11 @@ def guideScanIndex(fasta, output):
         int: A success code (1) indicating that the index was generated successfully.
     """
 
-    cmd = [
-        'guidescan',
-        'index',
-        '--index',
-        output,
-        fasta
-    ]
+    cmd = ["guidescan", "index", "--index", output, fasta]
 
     subprocess.run(cmd, check=True)
 
     return 1
-
 
 
 def main(args=None):
@@ -103,46 +93,44 @@ def main(args=None):
         args = parse_arguments()
 
     # Decompress the file if it's gzipped
-    #original_fasta = args.fasta
+    # original_fasta = args.fasta
     args.fasta, was_gzipped = decompress_gzip_if_needed(args.fasta)
-
 
     index_output_path, _ = create_output(args.fasta, outdir=args.output_directory, extension="gscan2")
 
     if not args.locations_to_keep:
         guideScanIndex(args.fasta, index_output_path)
     else:
-    
         bed_output_path, _ = create_output(args.fasta, extension="gscan2", tmp=False)
         bed_output_path += "_merged.bed"
 
-        locs_to_keep = merge_targets(args.locations_to_keep, gtf_feature=args.feature,
-                                     operation="merge", window=args.context_window)
+        locs_to_keep = merge_targets(
+            args.locations_to_keep, gtf_feature=args.feature, operation="merge", window=args.context_window
+        )
 
         print(f"\n\tSaving merged interval bed to {bed_output_path}")
 
-        locs_to_keep.saveas(bed_output_path)    
+        locs_to_keep.saveas(bed_output_path)
 
         fasta_output_path, _ = create_output(args.fasta, extension="gscan2", tmp=False)
         fasta_output_path += "_subset.fasta"
 
         print(f"\n\tSaving subset fasta to {fasta_output_path}")
 
-        subset_fasta_with_bed(fasta_path=args.fasta,
-                              bed_path=bed_output_path,
-                              output_fasta_path=fasta_output_path)
+        subset_fasta_with_bed(fasta_path=args.fasta, bed_path=bed_output_path, output_fasta_path=fasta_output_path)
 
         print("\tBuilding Index from " + fasta_output_path)
         print("\tSaving Index to " + index_output_path)
         guideScanIndex(fasta_output_path, index_output_path.strip("_"))
 
         args.fasta = fasta_output_path
-    
+
     remove_file(f"{args.fasta}.forward.dna")
     remove_file(f"{args.fasta}.reverse.dna")
 
     if was_gzipped:
         remove_file(args.fasta)
+
 
 if __name__ == "__main__":
     main()

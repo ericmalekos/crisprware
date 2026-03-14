@@ -3,14 +3,23 @@ import pandas as pd
 from pybedtools import BedTool
 from itertools import product
 from Bio import SeqIO
+from crisprware.utils.gtf_bed_processing_functions import adjust_interval_coordinates
 
 # Constants
 NTS = list("ACTG")
 NT_MAP = {"A": "T", "T": "A", "C": "G", "G": "C"}
 AMBIGUITY_CODES = {
-    "R": "AG", "Y": "CT", "K": "GT", "M": "AC", 
-    "S": "GC", "W": "AT", "B": "CGT", "D": "AGT", 
-    "H": "ACT", "V": "ACG", "N": "ACGT"
+    "R": "AG",
+    "Y": "CT",
+    "K": "GT",
+    "M": "AC",
+    "S": "GC",
+    "W": "AT",
+    "B": "CGT",
+    "D": "AGT",
+    "H": "ACT",
+    "V": "ACG",
+    "N": "ACGT",
 }
 
 
@@ -29,7 +38,7 @@ def map_ambiguous_sequence(sequence):
     possible_nucleotides = [[nt] if nt not in AMBIGUITY_CODES else list(AMBIGUITY_CODES[nt]) for nt in sequence.upper()]
 
     # Get all possible sequences by calculating the cartesian product of the lists of possible nucleotides
-    possible_sequences = [''.join(seq) for seq in product(*possible_nucleotides)]
+    possible_sequences = ["".join(seq) for seq in product(*possible_nucleotides)]
 
     return possible_sequences
 
@@ -37,17 +46,19 @@ def map_ambiguous_sequence(sequence):
 def revcom(dna):
     return "".join(list(map(lambda n: NT_MAP[n], list(dna)))[::-1])
 
+
 def preprocess_file(file, gtf_feature="exon"):
-    extensions = ['.gtf', '.gff', '.gff2', '.gff3']
+    extensions = [".gtf", ".gff", ".gff2", ".gff3"]
     extension = Path(file).suffix.lower()
     if extension in extensions:
-        df = pd.read_csv(file, sep='\t', header=None, comment='#', quoting=3)
+        df = pd.read_csv(file, sep="\t", header=None, comment="#", quoting=3)
         df = df[df[2] == gtf_feature]
-        return BedTool.from_dataframe(df,na_rep=".",quoting=3)
+        return BedTool.from_dataframe(df, na_rep=".", quoting=3)
     else:
         return BedTool(file)
 
-def merge_targets(files, gtf_feature="exon", operation="intersect", window = [0,0]):
+
+def merge_targets(files, gtf_feature="exon", operation="intersect", window=[0, 0]):
     """
     Intersect or merge an arbitrary number of GTF/GFF/BED files using pybedtools.
 
@@ -76,8 +87,7 @@ def merge_targets(files, gtf_feature="exon", operation="intersect", window = [0,
             raise ValueError("Invalid operation. operation should be either 'merge' or 'intersect'.")
 
     if window[0] != 0 or window[1] != 0:
-        result = result.each(adjust_interval_coordinates, 
-                    subtract_amount=window[0], add_amount=window[1])
+        result = result.each(adjust_interval_coordinates, subtract_amount=window[0], add_amount=window[1])
 
     result = result.sort()
     result = result.merge()
@@ -102,23 +112,25 @@ def subset_fasta_with_bed(fasta_path, bed_path, output_fasta_path):
     bed = BedTool(bed_path)
 
     # Read the FASTA file
-    fasta_sequences = SeqIO.to_dict(SeqIO.parse(fasta_path, 'fasta'))
+    fasta_sequences = SeqIO.to_dict(SeqIO.parse(fasta_path, "fasta"))
 
     # Create a new FASTA file for output
 
-    with open(output_fasta_path, 'w') as output_fasta:
+    with open(output_fasta_path, "w") as output_fasta:
         for interval in bed:
             seq_id = interval.chrom
             start = int(interval.start)
             end = int(interval.end)
-            
+
             # Check if the sequence ID is in the FASTA file
             if seq_id in fasta_sequences:
                 seq_length = len(fasta_sequences[seq_id].seq)
 
                 # Adjust the end position if it is beyond the sequence length
                 if end > seq_length:
-                    print(f"\n\tEnd coordinate for interval {seq_id} {start} {end}\n\tis beyond sequence length of {seq_length}\n\tReducing end coordinate")
+                    print(
+                        f"\n\tEnd coordinate for interval {seq_id} {start} {end}\n\tis beyond sequence length of {seq_length}\n\tReducing end coordinate"
+                    )
                     end = seq_length
 
                 # Extract the sequence from the FASTA
@@ -131,6 +143,7 @@ def subset_fasta_with_bed(fasta_path, bed_path, output_fasta_path):
             else:
                 print(f"\n\tWarning: Chromosome {seq_id} not found in the FASTA file.\n")
 
+
 def remove_restricted(sgRNA, patterns, flank_5, flank_3):
     """Calculate the GC content of a nucleotide sequence."""
     context = flank_5 + sgRNA + flank_3
@@ -140,22 +153,24 @@ def remove_restricted(sgRNA, patterns, flank_5, flank_3):
 
     return False
 
+
 def calculate_gc_content(sequence):
     """Calculate the GC content of a nucleotide sequence."""
-    
-    gc_count = sequence.count('G') + sequence.count('C')
-    
+
+    gc_count = sequence.count("G") + sequence.count("C")
+
     total_count = len(sequence)
-    
+
     # Calculate the GC content
     gc_content = (gc_count / total_count) * 100
-    
+
     return gc_content
+
 
 def include_sgRNA(args, sgRNA):
     """
     TODO: pass arguments individually instead of as "args"
-    
+
     Determines whether a given sgRNA sequence should be included based on GC content,
     presence of poly-T sequences, and restriction patterns.
 
@@ -186,16 +201,17 @@ def include_sgRNA(args, sgRNA):
 
     if args.discard_poly_T and "TTTT" in sgRNA["sequence"]:
         return False
-    
+
     if args.discard_poly_G and "GGGGG" in sgRNA["sequence"]:
         return False
 
-    if len(args.restriction_patterns) > 0 and \
-        remove_restricted(sgRNA["sequence"], args.restriction_patterns, \
-                            args.flank_5, args.flank_3):
-        return False    
-    
+    if len(args.restriction_patterns) > 0 and remove_restricted(
+        sgRNA["sequence"], args.restriction_patterns, args.flank_5, args.flank_3
+    ):
+        return False
+
     return True
+
 
 def get_chromosome_boundaries(bed_obj):
     """x
@@ -207,7 +223,7 @@ def get_chromosome_boundaries(bed_obj):
     Returns:
     - dict: Chromosomes as keys and boundaries as values.
     """
-    
+
     # Sort the BedTool object
     sorted_bed = bed_obj.sort()
 
@@ -243,6 +259,7 @@ def get_chromosome_boundaries(bed_obj):
 
     return boundaries
 
+
 def unique_chromosomes(input):
     """
     Return a set of unique chromosome IDs from a BED, GTF, or GFF file.
@@ -253,13 +270,13 @@ def unique_chromosomes(input):
     if isinstance(input, BedTool):
         chroms = {interval.chrom for interval in input}
     else:
-        with open(input, 'r') as file:
+        with open(input, "r") as file:
             for line in file:
                 # Skip comments, especially relevant for GTF and GFF
                 if line.startswith("#"):
                     continue
 
-                fields = line.strip().split('\t')
+                fields = line.strip().split("\t")
                 chroms.add(fields[0])
 
     return chroms

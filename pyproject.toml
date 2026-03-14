@@ -51,3 +51,22 @@ script-files = [
     "scripts/gtf_from_price.py",
     "scripts/replace_snps.py",
 ]
+
+[tool.ruff]
+line-length = 120
+exclude = [
+    "OldStuff",
+    "pipeline_testing",
+    "colab_notebooks",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # line too long — handled by formatter where possible
+    "E701",  # multiple statements on one line — common in compact bioinformatics code
+    "E702",  # semicolon-separated statements
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["F401", "F841"]  # utility scripts may have intentional unused imports/vars
