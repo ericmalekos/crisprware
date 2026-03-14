@@ -1,8 +1,12 @@
+from typing import List, Optional, Set, Tuple
+
 import pandas as pd
 from pybedtools import BedTool
 
 
-def create_combined_weighted_column(df, column_names, weights=None, normalize_columns=True):
+def create_combined_weighted_column(
+    df: pd.DataFrame, column_names: List[str], weights: Optional[List[float]] = None, normalize_columns: bool = True
+) -> pd.DataFrame:
     # Check if weights are provided, else set to 1 for each column
     if weights is None or not weights:
         weights = [1] * len(column_names)
@@ -27,13 +31,13 @@ def create_combined_weighted_column(df, column_names, weights=None, normalize_co
     return df
 
 
-def filter_df_by_column(df, column, min_value):
+def filter_df_by_column(df: pd.DataFrame, column: str, min_value: float) -> pd.DataFrame:
     print(f"\tFiltering by {column}, cut-off:   {min_value}")
     df = df[df[column] >= min_value]
     return df
 
 
-def group_and_minimize(df, rank_column, num_to_keep):
+def group_and_minimize(df: pd.DataFrame, rank_column: str, num_to_keep: int) -> pd.DataFrame:
     df = df.sort_values(by=["target_id", rank_column], ascending=[True, False])
     if num_to_keep == -1:
         print("\t--num_to_keep=-1, all gRNAs returned")
@@ -45,7 +49,7 @@ def group_and_minimize(df, rank_column, num_to_keep):
     return df
 
 
-def select_guides(df, rank_column, min_spacing):
+def select_guides(df: pd.DataFrame, rank_column: str, min_spacing: int) -> pd.DataFrame:
     df = df.sort_values(by=["target_id", rank_column], ascending=[True, False])
 
     if min_spacing == 0:
@@ -91,13 +95,13 @@ def select_guides(df, rank_column, min_spacing):
 #     return df.groupby('target_id', group_keys=False).apply(select_from_group)
 
 
-def df_to_pybed(df):
+def df_to_pybed(df: pd.DataFrame) -> Tuple[BedTool, List[str]]:
     header = df.columns.tolist()
     bed_df = BedTool.from_dataframe(df)
     return bed_df, header
 
 
-def validate_and_modify_bed(file_path):
+def validate_and_modify_bed(file_path: str) -> Tuple[pd.DataFrame, Set[str]]:
     # Read the bed file, ignoring lines that start with "#"
     df = pd.read_csv(file_path, sep="\t", comment="#", header=None)
 
@@ -129,7 +133,9 @@ def validate_and_modify_bed(file_path):
     return df, target_ids
 
 
-def gRNA_to_bed(gRNAs, targets, header, target_header):
+def gRNA_to_bed(
+    gRNAs: BedTool, targets: BedTool, header: List[str], target_header: List[str]
+) -> Tuple[pd.DataFrame, Set[str]]:
 
     df = pd.read_table(BedTool(gRNAs).intersect(targets, wo=True).fn, sep="\t", header=None)
 
@@ -157,7 +163,7 @@ def gRNA_to_bed(gRNAs, targets, header, target_header):
     return df, target_ids
 
 
-def gRNA_to_tscript(gRNAs, mode, targets, header):
+def gRNA_to_tscript(gRNAs: BedTool, mode: str, targets: BedTool, header: List[str]) -> Tuple[pd.DataFrame, Set[str]]:
 
     df = pd.read_table(BedTool(gRNAs).intersect(targets, wo=True).fn, sep="\t", header=None)
     df.columns = header + df.columns[len(header) :].tolist()
@@ -183,7 +189,7 @@ def gRNA_to_tscript(gRNAs, mode, targets, header):
     return df, target_ids
 
 
-def analyze_target_ids(df, no_gRNASet):
+def analyze_target_ids(df: pd.DataFrame, no_gRNASet: Set[str]) -> pd.Series:
     """
     Analyzes the distribution of gRNAs across target IDs in a DataFrame and provides statistics.
 

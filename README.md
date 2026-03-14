@@ -45,7 +45,7 @@ and run commands:
 ```
 docker pull ericmalekos/crisprware:latest
 
-docker run crisprware crisprware preprocess_annotation -h
+docker run crisprware -h
 ```
 
 ## Tutorials

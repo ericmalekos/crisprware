@@ -1,9 +1,10 @@
-from pathlib import Path
-import pandas as pd
+import argparse
+from typing import Dict, List, Optional, Set, Tuple, Union
+
 from pybedtools import BedTool
 from itertools import product
 from Bio import SeqIO
-from crisprware.utils.gtf_bed_processing_functions import adjust_interval_coordinates
+from crisprware.utils.gtf_bed_processing_functions import adjust_interval_coordinates, preprocess_file
 
 # Constants
 NTS = list("ACTG")
@@ -23,7 +24,7 @@ AMBIGUITY_CODES = {
 }
 
 
-def map_ambiguous_sequence(sequence):
+def map_ambiguous_sequence(sequence: str) -> List[str]:
     """
     Map an ambiguous DNA sequence to all possible non-ambiguous sequences.
 
@@ -43,22 +44,13 @@ def map_ambiguous_sequence(sequence):
     return possible_sequences
 
 
-def revcom(dna):
+def revcom(dna: str) -> str:
     return "".join(list(map(lambda n: NT_MAP[n], list(dna)))[::-1])
 
 
-def preprocess_file(file, gtf_feature="exon"):
-    extensions = [".gtf", ".gff", ".gff2", ".gff3"]
-    extension = Path(file).suffix.lower()
-    if extension in extensions:
-        df = pd.read_csv(file, sep="\t", header=None, comment="#", quoting=3)
-        df = df[df[2] == gtf_feature]
-        return BedTool.from_dataframe(df, na_rep=".", quoting=3)
-    else:
-        return BedTool(file)
-
-
-def merge_targets(files, gtf_feature="exon", operation="intersect", window=[0, 0]):
+def merge_targets(
+    files: List[str], gtf_feature: str = "exon", operation: str = "intersect", window: List[int] = [0, 0]
+) -> Optional[BedTool]:
     """
     Intersect or merge an arbitrary number of GTF/GFF/BED files using pybedtools.
 
@@ -95,7 +87,7 @@ def merge_targets(files, gtf_feature="exon", operation="intersect", window=[0, 0
     return result
 
 
-def subset_fasta_with_bed(fasta_path, bed_path, output_fasta_path):
+def subset_fasta_with_bed(fasta_path: str, bed_path: str, output_fasta_path: str) -> None:
     """
     Subsets a FASTA file using regions specified in a BED file.
     Handles cases where the BED file has chromosomes not in the FASTA,
@@ -144,7 +136,7 @@ def subset_fasta_with_bed(fasta_path, bed_path, output_fasta_path):
                 print(f"\n\tWarning: Chromosome {seq_id} not found in the FASTA file.\n")
 
 
-def remove_restricted(sgRNA, patterns, flank_5, flank_3):
+def remove_restricted(sgRNA: str, patterns: List[str], flank_5: str, flank_3: str) -> bool:
     """Calculate the GC content of a nucleotide sequence."""
     context = flank_5 + sgRNA + flank_3
     for pattern in patterns:
@@ -154,7 +146,7 @@ def remove_restricted(sgRNA, patterns, flank_5, flank_3):
     return False
 
 
-def calculate_gc_content(sequence):
+def calculate_gc_content(sequence: str) -> float:
     """Calculate the GC content of a nucleotide sequence."""
 
     gc_count = sequence.count("G") + sequence.count("C")
@@ -167,7 +159,7 @@ def calculate_gc_content(sequence):
     return gc_content
 
 
-def include_sgRNA(args, sgRNA):
+def include_sgRNA(args: argparse.Namespace, sgRNA: Dict[str, Union[str, int]]) -> bool:
     """
     TODO: pass arguments individually instead of as "args"
 
@@ -213,7 +205,7 @@ def include_sgRNA(args, sgRNA):
     return True
 
 
-def get_chromosome_boundaries(bed_obj):
+def get_chromosome_boundaries(bed_obj: BedTool) -> Dict[str, Tuple[int, int]]:
     """x
     Returns a dictionary with chromosomes as keys and a tuple (smallest_start, largest_end) as values.
 
@@ -260,7 +252,7 @@ def get_chromosome_boundaries(bed_obj):
     return boundaries
 
 
-def unique_chromosomes(input):
+def unique_chromosomes(input: Union[BedTool, str]) -> Set[str]:
     """
     Return a set of unique chromosome IDs from a BED, GTF, or GFF file.
     """

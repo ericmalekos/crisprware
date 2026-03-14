@@ -11,7 +11,10 @@ EX Usage:
 
 """
 
+from typing import Dict, Generator, List, Optional, Tuple, Union
+
 from Bio import SeqIO
+from Bio.SeqRecord import SeqRecord
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 from pybedtools import BedTool
@@ -26,7 +29,7 @@ from crisprware.utils.dna_sequence_functions import (
 from crisprware.utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
 
 
-def add_arguments(parser):
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     """Add generate_guides arguments to the given parser."""
     parser.add_argument(
         "-f", "--fasta", type=str, help="FASTA file to use as a reference for sgRNA generation.", required=True
@@ -212,7 +215,7 @@ def add_arguments(parser):
     )
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generates a set of sgRNA matching user specifications. "
         "Default settings are for active SpCas9 [--pam=NGG --active_site_offset_5=-4 --active_site_offset_3=-3 --sgRNA_length=20]"
@@ -221,7 +224,9 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def find_sgRNA(args, pam, chrm, start, end, forward=True):
+def find_sgRNA(
+    args: argparse.Namespace, pam: str, chrm: str, start: int, end: int, forward: bool = True
+) -> Generator[Tuple[str, int, str], None, None]:
     """
     Generator function to find sgRNA sequences within a specified genomic region.
 
@@ -283,7 +288,7 @@ def find_sgRNA(args, pam, chrm, start, end, forward=True):
         yield sgRNA.upper(), position, context.upper()
 
 
-def output_bed_line(args, chrm_name, sgRNA):
+def output_bed_line(args: argparse.Namespace, chrm_name: str, sgRNA: Dict[str, Union[str, int]]) -> str:
     """
     Formats sgRNA information into a BED line for downstream analysis or visualization.
 
@@ -330,7 +335,15 @@ def output_bed_line(args, chrm_name, sgRNA):
     return "\t".join(bedLine)
 
 
-def process_pam(args, pam, record, start, end, pam_set, rev_pam_set):
+def process_pam(
+    args: argparse.Namespace,
+    pam: str,
+    record: SeqRecord,
+    start: int,
+    end: int,
+    pam_set: List[str],
+    rev_pam_set: List[str],
+) -> List[str]:
     """
     Processes PAM sequences within a specified genomic region and generates results
     for sgRNA candidates that meet the defined criteria.
@@ -438,7 +451,7 @@ def process_pam(args, pam, record, start, end, pam_set, rev_pam_set):
     return results
 
 
-def reverse_cut_site_offset(bedline, args):
+def reverse_cut_site_offset(bedline: str, args: argparse.Namespace) -> str:
     """
     Given a line in bed format, reverse the calculatations that have
     gone into calculating the cut_site
@@ -474,7 +487,7 @@ def reverse_cut_site_offset(bedline, args):
     return "\t".join(bedlist)
 
 
-def write_results(final_targets, gRNA_output_path, args):
+def write_results(final_targets: List[str], gRNA_output_path: str, args: argparse.Namespace) -> None:
     """
     Writes the processed sgRNA target results to a specified output file.
     """
@@ -486,7 +499,7 @@ def write_results(final_targets, gRNA_output_path, args):
                 k.write(line)
 
 
-def check_files(locations_to_keep, locations_to_discard):
+def check_files(locations_to_keep: Optional[List[str]], locations_to_discard: Optional[List[str]]) -> bool:
     if not locations_to_keep:
         locations_to_keep = []
     if not locations_to_discard:
@@ -505,7 +518,7 @@ def check_files(locations_to_keep, locations_to_discard):
     return found_gtf
 
 
-def main(args=None):
+def main(args: Optional[argparse.Namespace] = None) -> None:
     if args is None:
         args = parse_arguments()
 

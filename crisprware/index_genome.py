@@ -6,6 +6,8 @@ This is a wrapper script for generating Guidescan2 indices
 index_genome -f ./test_data/test.fasta
 """
 
+from typing import Optional
+
 import argparse
 import subprocess
 from crisprware.utils.gtf_bed_processing_functions import merge_targets
@@ -13,7 +15,7 @@ from crisprware.utils.dna_sequence_functions import subset_fasta_with_bed
 from crisprware.utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
 
 
-def add_arguments(parser):
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     """Add index_genome arguments to the given parser."""
     parser.add_argument(
         "-f", "--fasta", type=str, help="FASTA file to use as a reference for index creation.", required=True
@@ -62,13 +64,13 @@ def add_arguments(parser):
     )
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Builds Guidescan2 Index.")
     add_arguments(parser)
     return parser.parse_args()
 
 
-def guideScanIndex(fasta, output):
+def guideScanIndex(fasta: str, output: str) -> int:
     """
     This function generates a Guidescan index for a given fasta file.
 
@@ -87,7 +89,7 @@ def guideScanIndex(fasta, output):
     return 1
 
 
-def main(args=None):
+def main(args: Optional[argparse.Namespace] = None) -> None:
 
     if args is None:
         args = parse_arguments()

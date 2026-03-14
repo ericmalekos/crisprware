@@ -2,6 +2,8 @@
 
 """ """
 
+from typing import Optional
+
 import argparse
 from crisprware.utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
 from crisprware.utils.gtf_bed_processing_functions import (
@@ -17,7 +19,7 @@ from crisprware.utils.gtf_bed_processing_functions import (
 from crisprware.utils.quantified_rna_functions import add_gene_ids_and_subset, filter_dataframe, process_files
 
 
-def add_arguments(parser):
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     """Add preprocess_annotation arguments to the given parser."""
     parser.add_argument("-g", "--gtf", type=str, help="GTF/GFF file to use for isoform filtering.", required=True)
 
@@ -155,7 +157,7 @@ def add_arguments(parser):
     )
 
 
-def validate_args(args):
+def validate_args(args: argparse.Namespace) -> None:
     """Validate preprocess_annotation arguments."""
     print("\n")
     tpm_defaults = {"mean": 0.0, "median": 0.0, "min": 0.0, "max": 0.0, "top_n": -1, "top_n_column": "median"}
@@ -165,7 +167,7 @@ def validate_args(args):
                 print(f"\t\tWarning: Argument --{arg} is provided without --tpm_files. This will be ignored.")
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Preprocess GTF for improved sgRNA selection.")
     add_arguments(parser)
     args = parser.parse_args()
@@ -173,7 +175,7 @@ def parse_arguments():
     return args
 
 
-def save_tss_tes_bed(args, GTF_path, GTF_file):
+def save_tss_tes_bed(args: argparse.Namespace, GTF_path: str, GTF_file: str) -> None:
     """
     Generates and saves a BED file with Transcription Start Sites (TSS) from a GTF file.
 
@@ -223,7 +225,7 @@ def save_tss_tes_bed(args, GTF_path, GTF_file):
                 f.write(entry + "\n")
 
 
-def main(args=None):
+def main(args: Optional[argparse.Namespace] = None) -> None:
 
     if args is None:
         args = parse_arguments()

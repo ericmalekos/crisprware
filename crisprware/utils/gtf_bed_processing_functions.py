@@ -1,11 +1,14 @@
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
 import pandas as pd
 from pybedtools import BedTool
+from pybedtools import Interval
 import re
 from os.path import abspath, basename, splitext
 import subprocess
 
 
-def preprocess_file(file, gtf_feature="exon"):
+def preprocess_file(file: str, gtf_feature: str = "exon") -> BedTool:
     """
     Preprocesses a file and converts it to a sorted BedTool object.
 
@@ -32,7 +35,7 @@ def preprocess_file(file, gtf_feature="exon"):
         return BedTool(file).sort()
 
 
-def filter_gtf_by_transcript_ids(input_file, transcript_ids):
+def filter_gtf_by_transcript_ids(input_file: str, transcript_ids: Set[str]) -> List[str]:
     """
     Filters the GTF/GFF file based on the provided set of transcript IDs.
 
@@ -59,7 +62,7 @@ def filter_gtf_by_transcript_ids(input_file, transcript_ids):
     return filtered_lines
 
 
-def parse_input(input_file):
+def parse_input(input_file: str) -> Dict[str, Dict[str, Any]]:
     """
     Parses a genomic data file and extracts gene-related information.
 
@@ -117,7 +120,7 @@ def parse_input(input_file):
     return genes
 
 
-def parse_line(line):
+def parse_line(line: str) -> Tuple[List[str], Dict[str, str]]:
     """
     Parses a single line from a GTF/GFF file and extracts its fields and attributes.
     The function differentiates between GTF and GFF formats by checking for space (' ') or equal sign ('=')
@@ -153,7 +156,7 @@ def parse_line(line):
     return fields, attributes
 
 
-def extract_transcript_gene_relationship(input_file):
+def extract_transcript_gene_relationship(input_file: str) -> Dict[str, str]:
     """
     Extracts a mapping between transcript_ids and gene_ids from the GTF/GFF file.
 
@@ -177,7 +180,7 @@ def extract_transcript_gene_relationship(input_file):
     return relationship
 
 
-def extract_ids(attributes):
+def extract_ids(attributes: str) -> Tuple[Optional[str], Optional[str]]:
 
     # print(attributes)
 
@@ -194,7 +197,9 @@ def extract_ids(attributes):
     return transcript_id, gene_id
 
 
-def truncate_gtf(input_file, feature="exon", percentiles=[0, 100]):
+def truncate_gtf(
+    input_file: str, feature: str = "exon", percentiles: List[int] = [0, 100]
+) -> Tuple[pd.DataFrame, Set[str], Set[str]]:
     """
     Processes a GTF/GFF file to extract and truncate specified features based on percentiles.
 
@@ -320,7 +325,7 @@ def truncate_gtf(input_file, feature="exon", percentiles=[0, 100]):
     return df, unique_transcript_ids, unique_gene_ids
 
 
-def parse_gtf_for_cds_extremes(gtf_file):
+def parse_gtf_for_cds_extremes(gtf_file: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Parses a GTF file and identifies the transcripts with the longest and shortest CDS per gene.
     Returns DataFrames for both longest and shortest CDS transcripts without creating incorrect entries.
@@ -357,7 +362,9 @@ def parse_gtf_for_cds_extremes(gtf_file):
     return df_longest_cds.iloc[:, :9], df_shortest_cds.iloc[:, :9]
 
 
-def gtf_to_tss_tes_bed(input_gtf, tss_upstream=0, tss_downstream=0, tes_upstream=0, tes_downstream=0):
+def gtf_to_tss_tes_bed(
+    input_gtf: str, tss_upstream: int = 0, tss_downstream: int = 0, tes_upstream: int = 0, tes_downstream: int = 0
+) -> Tuple[List[str], List[str]]:
     """
     Converts GTF file to a BED file with TSS positions for each transcript.
 
@@ -434,7 +441,9 @@ def gtf_to_tss_tes_bed(input_gtf, tss_upstream=0, tss_downstream=0, tes_upstream
     return tss_entries, tes_entries
 
 
-def adjust_interval_coordinates(interval, subtract_amount, add_amount, chrom_length=float("inf")):
+def adjust_interval_coordinates(
+    interval: Interval, subtract_amount: int, add_amount: int, chrom_length: float = float("inf")
+) -> Interval:
     """
     Adjusts the start and end coordinates of an interval.
 
@@ -456,7 +465,9 @@ def adjust_interval_coordinates(interval, subtract_amount, add_amount, chrom_len
     return interval
 
 
-def merge_targets(files, gtf_feature="exon", operation="intersect", window=[0, 0]):
+def merge_targets(
+    files: List[str], gtf_feature: str = "exon", operation: str = "intersect", window: List[int] = [0, 0]
+) -> Optional[BedTool]:
     """
     Intersect or merge an arbitrary number of GTF/GFF/BED files using pybedtools.
 
@@ -494,7 +505,7 @@ def merge_targets(files, gtf_feature="exon", operation="intersect", window=[0, 0
     return result
 
 
-def get_tscript_geneid_gtf(input_file):
+def get_tscript_geneid_gtf(input_file: str) -> Tuple[Set[str], Set[str]]:
     df = pd.read_csv(input_file, sep="\t", header=None, comment="#")
     df.columns = ["chrom", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]
     df[["transcript_id", "gene_id"]] = df["attributes"].apply(extract_ids).apply(pd.Series)
@@ -505,7 +516,7 @@ def get_tscript_geneid_gtf(input_file):
 # TODO CLEANUP create_constitutive_model & create_metagene_model functions. Messy and redundant currently
 
 
-def create_constitutive_model(input_file):
+def create_constitutive_model(input_file: str) -> Tuple[str, Set[str]]:
     """
     Generates a constitutive model of gene expression from a GTF file.
 
@@ -571,7 +582,7 @@ def create_constitutive_model(input_file):
     return output_str, genes_without_consensus
 
 
-def create_metagene_model(input_file):
+def create_metagene_model(input_file: str) -> str:
     """
     Generates a metagene model from gene annotations in a GTF file.
 
@@ -657,7 +668,9 @@ def create_metagene_model(input_file):
     return output_str
 
 
-def overlapping_regions_for_transcripts(region, transcripts, all_regions):
+def overlapping_regions_for_transcripts(
+    region: Tuple[int, int], transcripts: Iterable[str], all_regions: Dict[str, List[Tuple[int, int]]]
+) -> Optional[Tuple[int, int]]:
     """
     Identifies the common overlapping region across specified transcripts.
     Helper function for create_constitutive_model.
@@ -687,7 +700,7 @@ def overlapping_regions_for_transcripts(region, transcripts, all_regions):
     return get_max_start_min_end(overlapping_regions)
 
 
-def get_max_start_min_end(regions):
+def get_max_start_min_end(regions: List[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
     """
     Determines the common overlapping region across a list of regions.
 
@@ -710,7 +723,7 @@ def get_max_start_min_end(regions):
     return (max_start, min_end)
 
 
-def write_utr(exon, start, end, cds_start, cds_end, strand, attributes):
+def write_utr(exon: List[str], start: int, end: int, cds_start: int, cds_end: int, strand: str, attributes: str) -> str:
     """
     Generates UTR (Untranslated Region) entries for a given exon based on the CDS (Coding Sequence) coordinates.
 
@@ -767,7 +780,12 @@ def write_utr(exon, start, end, cds_start, cds_end, strand, attributes):
     return utr_str
 
 
-def generate_output_str(genes, consensus_exons, consensus_CDS, label="consensus"):
+def generate_output_str(
+    genes: Dict[str, Dict[str, Any]],
+    consensus_exons: Dict[str, Set[Tuple[int, int]]],
+    consensus_CDS: Dict[str, Set[Tuple[int, int]]],
+    label: str = "consensus",
+) -> str:
     """
     Generates a string representation of consensus gene models in GTF format.
     Called by create_constitutive_model and create_metagene_model
@@ -850,14 +868,14 @@ def generate_output_str(genes, consensus_exons, consensus_CDS, label="consensus"
     return output_str.strip()
 
 
-def is_inside(region1, region2):
+def is_inside(region1: Tuple[int, int], region2: Tuple[int, int]) -> bool:
     """
     Check if region1 is inside region2.
     """
     return region2[0] <= region1[0] and region2[1] >= region1[1]
 
 
-def check_gtf_or_gff(file_path):
+def check_gtf_or_gff(file_path: str) -> str:
 
     with open(file_path, "r") as file:
         lines = file.readlines()
@@ -893,7 +911,7 @@ def check_gtf_or_gff(file_path):
             raise ValueError("The file format is ambiguous or not well-defined.")
 
 
-def convert_gff3_to_gtf(input_file):
+def convert_gff3_to_gtf(input_file: str) -> Optional[str]:
     """
     Convert a GFF3 file to GTF format using gffread.
 

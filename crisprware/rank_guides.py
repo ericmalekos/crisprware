@@ -5,6 +5,8 @@ This script takes the output from score_guides and ranks them according to
 user defined criteria
 """
 
+from typing import List, Optional, Set, Union
+
 import pandas as pd
 import argparse
 import pybedtools as pyb
@@ -25,14 +27,14 @@ from crisprware.utils.gtf_bed_processing_functions import truncate_gtf, check_gt
 from crisprware.utils.utility_functions import create_output, decompress_gzip_if_needed
 
 
-def restricted_int(x):
+def restricted_int(x: Union[str, int]) -> int:
     x = int(x)
     if x < 0 or x > 100:
         raise argparse.ArgumentTypeError(f"{x} not in range [0.0, 1.0]")
     return x
 
 
-def add_arguments(parser):
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     """Add rank_guides arguments to the given parser."""
     parser.add_argument(
         "-k", "--scored_guides", type=str, help="<score_guides_output>.bed output from score_guides.", required=True
@@ -166,13 +168,13 @@ def add_arguments(parser):
     )
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rank gRNA output from score_guides.")
     add_arguments(parser)
     return parser.parse_args()
 
 
-def validate_scored_gRNA_columns(header, columns):
+def validate_scored_gRNA_columns(header: List[str], columns: List[str]) -> None:
     required_columns = ["#chr", "start", "stop", "strand"]
     # Check the fixed columns
     for column in columns:
@@ -184,13 +186,18 @@ def validate_scored_gRNA_columns(header, columns):
             raise ValueError("\t" + column + "not present, check input")
 
 
-def update_no_targets(original_target_ids, target_df):
+def update_no_targets(original_target_ids: Set[str], target_df: pd.DataFrame) -> Set[str]:
     updated_target_ids = set(target_df["target_id"].unique())
     removed_target_ids = original_target_ids - updated_target_ids
     return removed_target_ids
 
 
-def create_histogram(df, output_pdf_path, target_type="Target ID", targetsWith0Guides=""):
+def create_histogram(
+    df: pd.DataFrame,
+    output_pdf_path: str,
+    target_type: str = "Target ID",
+    targetsWith0Guides: Union[Set[str], str] = "",
+) -> None:
     """
     Creates and saves a histogram that shows the frequency of gRNAs per target ID,
     including targets with zero gRNAs, to a PDF file.
@@ -234,7 +241,7 @@ def create_histogram(df, output_pdf_path, target_type="Target ID", targetsWith0G
     plt.close()
 
 
-def save_notarget_set(noSgRNATargetSet, filename):
+def save_notarget_set(noSgRNATargetSet: Set[str], filename: str) -> None:
 
     sorted_strings = sorted(noSgRNATargetSet)
     with open(filename, "w+") as file:
@@ -242,7 +249,7 @@ def save_notarget_set(noSgRNATargetSet, filename):
             file.write(item + "\n")
 
 
-def filter_df_by_cutoff(df, column_name, cutoff_value):
+def filter_df_by_cutoff(df: pd.DataFrame, column_name: str, cutoff_value: float) -> pd.DataFrame:
     """
     Parameters:
     df (pd.DataFrame): The DataFrame to filter.
@@ -259,7 +266,9 @@ def filter_df_by_cutoff(df, column_name, cutoff_value):
     return df
 
 
-def save_output(args, finalgRNAs, out_path, initial_target_ids):
+def save_output(
+    args: argparse.Namespace, finalgRNAs: pd.DataFrame, out_path: str, initial_target_ids: Set[str]
+) -> None:
 
     targetsWithoutgRNAs = update_no_targets(initial_target_ids, finalgRNAs)
 
@@ -271,7 +280,7 @@ def save_output(args, finalgRNAs, out_path, initial_target_ids):
         create_histogram(finalgRNAs, out_path[:-3] + "pdf", args.target_mode, targetsWithoutgRNAs)
 
 
-def main(args=None):
+def main(args: Optional[argparse.Namespace] = None) -> None:
 
     pd.set_option("display.max_columns", None)
     if args is None:

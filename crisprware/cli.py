@@ -32,7 +32,7 @@ SUBCOMMANDS = {
 }
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         prog="crisprware",
         description="CRISPRware: Tools for CRISPR-based genome editing analysis.",

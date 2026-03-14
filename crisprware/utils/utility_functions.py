@@ -1,9 +1,12 @@
 from os.path import basename, splitext, join, exists
 from os import getcwd, makedirs, remove
 import gzip
+from typing import Optional, Tuple
 
 
-def create_output(file_path, outdir=None, extension="", stripped="", tmp=False):
+def create_output(
+    file_path: str, outdir: Optional[str] = None, extension: str = "", stripped: str = "", tmp: bool = False
+) -> Tuple[str, str]:
     """
     Creates an output directory based on the given output prefix and base directory.
 
@@ -49,7 +52,7 @@ def create_output(file_path, outdir=None, extension="", stripped="", tmp=False):
     return full_path, tmp_dir
 
 
-def decompress_gzip_if_needed(file_path):
+def decompress_gzip_if_needed(file_path: str) -> Tuple[str, bool]:
     """
     Decompresses a gzip file if needed and returns the path to the decompressed file.
 
@@ -73,7 +76,7 @@ def decompress_gzip_if_needed(file_path):
         return file_path, False
 
 
-def remove_file(file_path):
+def remove_file(file_path: str) -> None:
     if exists(file_path):
         print(f"\tRemoving file: {file_path}")
         remove(file_path)

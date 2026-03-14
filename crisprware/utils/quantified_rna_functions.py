@@ -1,8 +1,10 @@
+from typing import Dict, List, Optional, Union
+
 import pandas as pd
 import os
 
 
-def calculate_statistics(df):
+def calculate_statistics(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculates statistical metrics for transcript expression levels in a DataFrame.
     Parameters:
@@ -23,7 +25,7 @@ def calculate_statistics(df):
     return df.round(3)
 
 
-def process_dataframes(dfs):
+def process_dataframes(dfs: List[pd.DataFrame]) -> pd.DataFrame:
     """
     Merges multiple DataFrames and calculates statistical metrics on the merged data.
 
@@ -43,7 +45,7 @@ def process_dataframes(dfs):
     return calculate_statistics(merged_df)
 
 
-def process_kallisto(files):
+def process_kallisto(files: List[str]) -> pd.DataFrame:
     """
     Processes Kallisto quantification files and aggregates or analyzes their data.
 
@@ -69,7 +71,7 @@ def process_kallisto(files):
         return calculate_statistics(dfs[0])
 
 
-def process_salmon(files):
+def process_salmon(files: List[str]) -> pd.DataFrame:
     """
     Similar to process_kallisto(files)
     """
@@ -86,7 +88,7 @@ def process_salmon(files):
         return calculate_statistics(dfs[0])
 
 
-def process_flair(files):
+def process_flair(files: List[str]) -> pd.DataFrame:
     """
     Similar to process_kallisto(files)
     """
@@ -106,7 +108,7 @@ def process_flair(files):
         return calculate_statistics(dfs[0])
 
 
-def process_mandalorian(files):
+def process_mandalorian(files: List[str]) -> pd.DataFrame:
     """
     Similar to process_kallisto(files)
     """
@@ -124,7 +126,7 @@ def process_mandalorian(files):
         return calculate_statistics(dfs[0])
 
 
-def infer_file_type_from_first_line(path):
+def infer_file_type_from_first_line(path: str) -> Optional[str]:
     """
     Infers the file type of a given file based on its first line.
 
@@ -167,7 +169,7 @@ def infer_file_type_from_first_line(path):
         return None
 
 
-def process_files(paths, filetype="infer"):
+def process_files(paths: Union[List[str], str], filetype: str = "infer") -> pd.DataFrame:
     """
     Processes files based on their type, handling different genomic data formats.
 
@@ -232,7 +234,7 @@ def process_files(paths, filetype="infer"):
         raise ValueError("No valid files found.")
 
 
-def filter_dataframe(df, strip_tx_id=False, **filters):
+def filter_dataframe(df: pd.DataFrame, strip_tx_id: bool = False, **filters: float) -> pd.DataFrame:
     """
     Filters a DataFrame based on specified column thresholds.
 
@@ -265,7 +267,9 @@ def filter_dataframe(df, strip_tx_id=False, **filters):
     return df
 
 
-def add_gene_ids_and_subset(df, relationship, col="median", n=-1):
+def add_gene_ids_and_subset(
+    df: pd.DataFrame, relationship: Dict[str, str], col: str = "median", n: int = -1
+) -> pd.DataFrame:
     """
     Maps transcript IDs to gene IDs, filters, and subsets the DataFrame based on specified criteria.
 

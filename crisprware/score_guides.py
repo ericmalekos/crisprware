@@ -10,6 +10,8 @@
 
 """
 
+from typing import List, Optional, Union
+
 import pandas as pd
 import subprocess
 import argparse
@@ -22,14 +24,14 @@ from crisprware.utils.utility_functions import create_output
 from crisprware.utils.dna_sequence_functions import map_ambiguous_sequence
 
 
-def restricted_float(x):
+def restricted_float(x: Union[str, float]) -> float:
     x = float(x)
     if x < 0.0 or x > 1.0:
         raise argparse.ArgumentTypeError(f"{x} not in range [0.0, 1.0]")
     return x
 
 
-def add_arguments(parser):
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     """Add score_guides arguments to the given parser."""
     parser.add_argument("-b", "--grna_bed", type=str, help="grnas.bed ouput of generate_guides.", required=True)
 
@@ -143,25 +145,25 @@ def add_arguments(parser):
     )
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scores gRNAs from generate_guides.")
     add_arguments(parser)
     return parser.parse_args()
 
 
 def gscan_scoring(
-    guideCSV,
-    output,
-    guideIndex,
-    threads=2,
-    mismatches=3,
-    rna_bulges=0,
-    dna_bulges=0,
-    threshold=2,
-    mode="succinct",
-    alt_pam="",
-    keep_gscan=False,
-):
+    guideCSV: str,
+    output: str,
+    guideIndex: str,
+    threads: int = 2,
+    mismatches: int = 3,
+    rna_bulges: int = 0,
+    dna_bulges: int = 0,
+    threshold: int = 2,
+    mode: str = "succinct",
+    alt_pam: str = "",
+    keep_gscan: bool = False,
+) -> pd.DataFrame:
     """
     Executes GuideScan's enumerate command with specified parameters and processes the output.
 
@@ -235,7 +237,7 @@ def gscan_scoring(
     return gscanDF
 
 
-def compute_rs3_scores(gRNAlist, tracr, threads, chunk_size):
+def compute_rs3_scores(gRNAlist: List[str], tracr: str, threads: int, chunk_size: int) -> List[float]:
     """
     Compute RS3 scores for a list of gRNAs with the specified tracrRNA sequence.
 
@@ -259,7 +261,9 @@ def compute_rs3_scores(gRNAlist, tracr, threads, chunk_size):
     return gRNAScores
 
 
-def cleavage_scoring(gRNADF, tracr, threads=2, chunk_size=200000, minStdDev=float("-inf")):
+def cleavage_scoring(
+    gRNADF: pd.DataFrame, tracr: str, threads: int = 2, chunk_size: int = 200000, minStdDev: float = float("-inf")
+) -> pd.DataFrame:
     """
     Computes RS3 cleavage scores for gRNAs using the specified tracrRNA sequence and filters based on minimum standard deviation.
 
@@ -307,7 +311,7 @@ def cleavage_scoring(gRNADF, tracr, threads=2, chunk_size=200000, minStdDev=floa
     return gRNADF
 
 
-def check_files_exist(index):
+def check_files_exist(index: str) -> None:
     """Check the existence of the three required files for a given index."""
 
     files = [f"{index}.reverse", f"{index}.forward", f"{index}.gs"]
@@ -319,7 +323,7 @@ def check_files_exist(index):
             )
 
 
-def get_alt_pams(pams):
+def get_alt_pams(pams: List[str]) -> str:
     """
     Generates a string of alternative PAM sequences by expanding each ambiguous PAM sequence in the input list.
 
@@ -338,7 +342,7 @@ def get_alt_pams(pams):
     return pamstr
 
 
-def main(args=None):
+def main(args: Optional[argparse.Namespace] = None) -> None:
 
     if args is None:
         args = parse_arguments()
