@@ -1,10 +1,10 @@
 name: crisprware
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
   - nodefaults
 dependencies:
-  - python>=3.8
+  - python=3.11
   - biopython>=1.8
   - guidescan>=2.2
   - pybedtools>=0.9
@@ -14,4 +14,4 @@ dependencies:
   - pip
   - pip:
     - lightgbm==3.3.5
-    - rs3>=0.0.15
+    - rs3==0.0.15
