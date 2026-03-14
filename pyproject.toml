@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crisprware"
+dynamic = ["version"]
+description = "Tools for CRISPR-based genome editing analysis."
+readme = "README.md"
+license = {text = "UC Santa Cruz Noncommercial License"}
+requires-python = ">=3.8"
+authors = [
+    {name = "Eric Malekos", email = "ericmalekos@gmail.com"},
+]
+keywords = ["genome editing", "CRISPR", "bioinformatics"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "pybedtools>=0.9",
+    "rs3>=0.0.15",
+    "biopython>=1.8",
+    "lightgbm==3.3.5",
+    "pybigwig",
+    "pandas",
+    "numpy",
+]
+
+[project.urls]
+Homepage = "https://github.com/ericmalekos/crisprware"
+
+[project.scripts]
+crisprware = "crisprware.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "crisprware.version.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["crisprware*"]
+
+[tool.setuptools]
+script-files = [
+    "scripts/allele_specific_guides.py",
+    "scripts/bigwig_to_signalwindow.py",
+    "scripts/crisprscore.R",
+    "scripts/crisprscore_multi.R",
+    "scripts/gtf_from_ribotish.py",
+    "scripts/gtf_from_price.py",
+    "scripts/replace_snps.py",
+]

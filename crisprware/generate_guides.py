@@ -14,16 +14,12 @@ from Bio import SeqIO
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 from pybedtools import BedTool
-from utils.dna_sequence_functions import NTS, map_ambiguous_sequence, \
+from crisprware.utils.dna_sequence_functions import NTS, map_ambiguous_sequence, \
     revcom, merge_targets, include_sgRNA, get_chromosome_boundaries
-from utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
+from crisprware.utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(
-        description="Generates a set of sgRNA matching user specifications. \
-            Default settings are for active SpCas9 [--pam=NGG --active_site_offset_5=-4 --active_site_offset_3=-3 --sgRNA_length=20]"
-    )
-
+def add_arguments(parser):
+    """Add generate_guides arguments to the given parser."""
     parser.add_argument(
         "-f", "--fasta",
         type=str,
@@ -219,6 +215,12 @@ def parse_arguments():
         default=""
     )
 
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Generates a set of sgRNA matching user specifications. "
+        "Default settings are for active SpCas9 [--pam=NGG --active_site_offset_5=-4 --active_site_offset_3=-3 --sgRNA_length=20]"
+    )
+    add_arguments(parser)
     return parser.parse_args()
 
 def find_sgRNA(args, pam, chrm, start, end, forward=True):
@@ -459,8 +461,9 @@ def check_files(locations_to_keep, locations_to_discard):
 
 
 
-def main():
-    args = parse_arguments()
+def main(args=None):
+    if args is None:
+        args = parse_arguments()
 
 
     args.fasta, was_gzipped = decompress_gzip_if_needed(args.fasta)

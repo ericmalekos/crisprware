@@ -17,8 +17,8 @@ from rs3.seq import predict_seq
 #from scipy.stats import norm
 from pathlib import Path
 from os import remove
-from utils.utility_functions import create_output
-from utils.dna_sequence_functions import map_ambiguous_sequence
+from crisprware.utils.utility_functions import create_output
+from crisprware.utils.dna_sequence_functions import map_ambiguous_sequence
 
 def restricted_float(x):
     x = float(x)
@@ -26,11 +26,8 @@ def restricted_float(x):
         raise argparse.ArgumentTypeError(f"{x} not in range [0.0, 1.0]")
     return x
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(
-        description="Scores gRNAs from generate_guides."
-    )
-
+def add_arguments(parser):
+    """Add score_guides arguments to the given parser."""
     parser.add_argument(
         "-b", "--grna_bed",
         type=str,
@@ -167,9 +164,12 @@ def parse_arguments():
         default=""
     )
 
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Scores gRNAs from generate_guides."
+    )
+    add_arguments(parser)
     return parser.parse_args()
-
-
 
 
 def gscan_scoring(guideCSV, output, guideIndex, \
@@ -344,9 +344,10 @@ def get_alt_pams(pams):
     pamstr = " ".join(set(pamlist))
     return pamstr
 
-def main():
+def main(args=None):
 
-    args = parse_arguments()
+    if args is None:
+        args = parse_arguments()
 
     #print("ALT PAMS" + args.alt_pams)
     if not args.skip_gs2:

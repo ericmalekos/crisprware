@@ -1,7 +1,7 @@
 import unittest
 from itertools import product
 import os
-from utils.dna_sequence_functions import map_ambiguous_sequence,subset_fasta_with_bed
+from crisprware.utils.dna_sequence_functions import map_ambiguous_sequence,subset_fasta_with_bed
 
 
 class TestIUPAC(unittest.TestCase):

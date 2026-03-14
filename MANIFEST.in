@@ -1,0 +1,6 @@
+include README.md
+include license.txt
+include environment.yml
+
+recursive-include scripts *.py *.R
+recursive-include crisprware *.py

@@ -3,8 +3,8 @@ from argparse import Namespace
 from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
 from unittest.mock import patch
-from src.generate_guides import parse_arguments, find_sgRNA, output_bed_line, process_pam, reverse_cut_site_offset
-from utils.dna_sequence_functions import revcom
+from crisprware.generate_guides import parse_arguments, find_sgRNA, output_bed_line, process_pam, reverse_cut_site_offset
+from crisprware.utils.dna_sequence_functions import revcom
 
 class TestGenerateGuides(unittest.TestCase):
 

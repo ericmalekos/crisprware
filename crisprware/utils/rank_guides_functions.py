@@ -1,7 +1,7 @@
 import pandas as pd
 from pybedtools import BedTool
 
-from utils.gtf_bed_processing_functions import extract_ids
+from crisprware.utils.gtf_bed_processing_functions import extract_ids
 
 def create_combined_weighted_column(df, column_names, weights=None, normalize_columns = True):
     # Check if weights are provided, else set to 1 for each column

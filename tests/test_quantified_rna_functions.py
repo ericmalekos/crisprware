@@ -1,7 +1,7 @@
 import unittest
 import pandas as pd
 
-from utils.quantified_rna_functions import calculate_statistics,process_kallisto,\
+from crisprware.utils.quantified_rna_functions import calculate_statistics,process_kallisto,\
 process_salmon,process_flair,process_mandalorian,process_dataframes,infer_file_type_from_first_line,\
 process_files,filter_dataframe,add_gene_ids_and_subset
 

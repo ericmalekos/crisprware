@@ -4,19 +4,16 @@
 
 '''
 import argparse
-from utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
-from utils.gtf_bed_processing_functions import create_metagene_model,\
+from crisprware.utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
+from crisprware.utils.gtf_bed_processing_functions import create_metagene_model,\
     create_constitutive_model,filter_gtf_by_transcript_ids, parse_gtf_for_cds_extremes,\
     extract_transcript_gene_relationship, gtf_to_tss_tes_bed,\
     convert_gff3_to_gtf,check_gtf_or_gff
-from utils.quantified_rna_functions import add_gene_ids_and_subset,\
+from crisprware.utils.quantified_rna_functions import add_gene_ids_and_subset,\
     filter_dataframe,process_files
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(
-        description="Preprocess GTF for improved sgRNA selection."
-    )
-
+def add_arguments(parser):
+    """Add preprocess_annotation arguments to the given parser."""
     parser.add_argument(
         "-g", "--gtf",
         type=str,
@@ -152,19 +149,22 @@ def parse_arguments():
         default=""
     )
 
-    args = parser.parse_args()
+def validate_args(args):
+    """Validate preprocess_annotation arguments."""
     print('\n')
-
-        # List of arguments to check if they are provided without '--tpm_files'
-    tpm_dependent_args = ['mean', 'median', 'min', 'max', 'top_n', 'top_n_column']
-
-    # Check if any tpm_dependent_args are set without '--tpm_files'
+    tpm_defaults = {'mean': 0.0, 'median': 0.0, 'min': 0.0, 'max': 0.0, 'top_n': -1, 'top_n_column': 'median'}
     if not args.tpm_files:
-        for arg in tpm_dependent_args:
-            # Check if the argument is not its default value
-            if getattr(args, arg) != parser.get_default(arg):
+        for arg, default in tpm_defaults.items():
+            if getattr(args, arg) != default:
                 print(f"\t\tWarning: Argument --{arg} is provided without --tpm_files. This will be ignored.")
 
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Preprocess GTF for improved sgRNA selection."
+    )
+    add_arguments(parser)
+    args = parser.parse_args()
+    validate_args(args)
     return args
 
 def save_tss_tes_bed(args, GTF_path, GTF_file):
@@ -214,9 +214,12 @@ def save_tss_tes_bed(args, GTF_path, GTF_file):
             for entry in tes_bed:
                 f.write(entry + '\n')
 
-def main():
+def main(args=None):
 
-    args = parse_arguments()
+    if args is None:
+        args = parse_arguments()
+    else:
+        validate_args(args)
 
     args.gtf, was_gzipped = decompress_gzip_if_needed(args.gtf)
 

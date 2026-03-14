@@ -9,12 +9,12 @@ import pandas as pd
 import argparse
 import pybedtools as pyb
 import matplotlib.pyplot as plt
-#from utils.utility_functions import create_output_directory
-from utils.rank_guides_functions import create_combined_weighted_column,\
+#from crisprware.utils.utility_functions import create_output_directory
+from crisprware.utils.rank_guides_functions import create_combined_weighted_column,\
     validate_and_modify_bed,df_to_pybed,gRNA_to_bed,select_guides,\
         gRNA_to_tscript,group_and_minimize,analyze_target_ids
-from utils.gtf_bed_processing_functions import truncate_gtf, check_gtf_or_gff, convert_gff3_to_gtf
-from utils.utility_functions import create_output, decompress_gzip_if_needed
+from crisprware.utils.gtf_bed_processing_functions import truncate_gtf, check_gtf_or_gff, convert_gff3_to_gtf
+from crisprware.utils.utility_functions import create_output, decompress_gzip_if_needed
 
 
 def restricted_int(x):
@@ -23,11 +23,8 @@ def restricted_int(x):
         raise argparse.ArgumentTypeError(f"{x} not in range [0.0, 1.0]")
     return x
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(
-        description="Rank gRNA output from score_guides."
-    )
-
+def add_arguments(parser):
+    """Add rank_guides arguments to the given parser."""
     parser.add_argument(
         "-k", "--scored_guides",
         type=str,
@@ -157,6 +154,11 @@ def parse_arguments():
         default=""
     )
 
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Rank gRNA output from score_guides."
+    )
+    add_arguments(parser)
     return parser.parse_args()
 
 
@@ -254,10 +256,11 @@ def save_output(args,finalgRNAs,out_path,initial_target_ids):
     if args.output_all: finalgRNAs.to_csv(out_path, sep='\t', index=False)
     if args.plot_histogram: create_histogram(finalgRNAs, out_path[:-3] + "pdf", args.target_mode, targetsWithoutgRNAs)
 
-def main():
+def main(args=None):
 
     pd.set_option('display.max_columns', None)
-    args = parse_arguments()
+    if args is None:
+        args = parse_arguments()
 
     if args.ranking_columns and not args.column_weights:
         print(f"\n\n\tColumn weights not set, setting weights to 1")

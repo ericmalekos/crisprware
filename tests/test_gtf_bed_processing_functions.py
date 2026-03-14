@@ -1,5 +1,5 @@
 import unittest
-from utils.gtf_bed_processing_functions import preprocess_file,merge_targets,\
+from crisprware.utils.gtf_bed_processing_functions import preprocess_file,merge_targets,\
     gtf_to_tss_tes_bed,parse_line, extract_transcript_gene_relationship, parse_input,\
         create_metagene_model,create_constitutive_model, truncate_gtf
 import pandas as pd

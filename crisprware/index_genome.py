@@ -7,16 +7,13 @@
 '''
 import argparse
 import subprocess
-from utils.gtf_bed_processing_functions import merge_targets
-from utils.dna_sequence_functions import subset_fasta_with_bed
-from utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
+from crisprware.utils.gtf_bed_processing_functions import merge_targets
+from crisprware.utils.dna_sequence_functions import subset_fasta_with_bed
+from crisprware.utils.utility_functions import create_output, decompress_gzip_if_needed, remove_file
 
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(
-        description="Builds Guidescan2 Index."
-    )
-
+def add_arguments(parser):
+    """Add index_genome arguments to the given parser."""
     parser.add_argument(
         "-f", "--fasta",
         type=str,
@@ -67,6 +64,11 @@ def parse_arguments():
         default=""
     )
 
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Builds Guidescan2 Index."
+    )
+    add_arguments(parser)
     return parser.parse_args()
 
 def guideScanIndex(fasta, output):
@@ -95,9 +97,10 @@ def guideScanIndex(fasta, output):
 
 
 
-def main():
+def main(args=None):
 
-    args = parse_arguments()
+    if args is None:
+        args = parse_arguments()
 
     # Decompress the file if it's gzipped
     #original_fasta = args.fasta

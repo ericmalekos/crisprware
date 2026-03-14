@@ -42,7 +42,7 @@ and run commands:
 ```
 docker pull ericmalekos/crisprware:latest
 
-docker run crisprware preprocess_gtf -h
+docker run crisprware crisprware preprocess_annotation -h
 ```
 
 ## Tutorials
@@ -70,20 +70,20 @@ We demonstrate usage with ce11 chromosome III fasta and NCBI GTF, included in th
 Note the example off-target index is limited to chrIII, not the full ce11 genome
 
 ```
-index_genome -f tests/test_data/ce11/chrIII_sequence.fasta
+crisprware index_genome -f tests/test_data/ce11/chrIII_sequence.fasta
 ```
 
 We can build gene models from NCBI GTF,
 
 ```
-preprocess_annotation -g tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
+crisprware preprocess_annotation -g tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
 -m metagene consensus longest shortest
 ```
 
 Default settings generate NGG protospacer guides
 
 ```
-generate_guides -f tests/test_data/ce11/chrIII_sequence.fasta \
+crisprware generate_guides -f tests/test_data/ce11/chrIII_sequence.fasta \
 -k tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
 --feature CDS
 ```
@@ -92,7 +92,7 @@ Scoring will take ~5 minutes and uses 8 threads by default.
 Change this with `--threads` <int>. `--tracr` is either `Chen2013`,`Hsu2013`, os `both`, see [RuleSet3](https://github.com/gpp-rnd/rs3) scoring for details
 
 ```
-score_guides -b chrIII_sequence_gRNA/chrIII_sequence_gRNA.bed \
+crisprware score_guides -b chrIII_sequence_gRNA/chrIII_sequence_gRNA.bed \
 -i chrIII_sequence_gscan2/chrIII_sequence_gscan2 --tracr Chen2013 --threads 8
 ```
 
@@ -102,7 +102,7 @@ Ranking is done based on scoring columns
 `--output_all` outputs TSV and histograms for each stage of filtering in addition to the final output.
 
 ```
-rank_guides \
+crisprware rank_guides \
 -k chrIII_sequence_scoredgRNA/chrIII_sequence_scoredgRNA.bed \
 -t tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
 -f CDS \
@@ -128,7 +128,7 @@ The module `preprocess_annotation` takes processed RNASeq TPMs from Kallisto, Sa
 There are also `--tss_window` and `--tes_window` options, which produce BED for dCas target choices. User can use these GTFs/BEDs in the `generate_guides` step and the `rank_guides` step. 
 
 ```
-preprocess_annotation -g test_data/chr19_ucsc_mm39.ncbiRefSeq.gtf \
+crisprware preprocess_annotation -g test_data/chr19_ucsc_mm39.ncbiRefSeq.gtf \
 -t quant1.sf quant2.sf quant3.sf \
 --type infer \
 --median 5 \
@@ -201,10 +201,10 @@ options:
 
 ## Alternate PAMs and scoring methods
 
-Default `generate_guides` settings are equivalent to
+Default `crisprware generate_guides` settings are equivalent to
 
 ```
-generate_guides \
+crisprware generate_guides \
 -f <fasta> \
 --pam [-p] NGG
 --sgRNA_length [-l] 20
@@ -219,10 +219,10 @@ generate_guides \
 All [IUPAC ambiguity codes](https://genome.ucsc.edu/goldenPath/help/iupac.html) are allowed and will be automically expanded, e.g. NGG -> AGG, TGG, CGG, GGG. Note that `context_window[0]` extends the sequence in the 5' direction, `context_window[1]` in the 3' direction. `active_site_offset`s are calculated relative to PAM-protospacer position, and should be passed in quotes if they are negative.
 
 
-For Cas12A guide selection change `generate_guides` settings to
+For Cas12A guide selection change `crisprware generate_guides` settings to
 
 ```
-generate_guides \
+crisprware generate_guides \
 -f <fasta> \
 --pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 8 3
 ```
@@ -245,7 +245,7 @@ awk 'BEGIN{FS=OFS="\t"} $0!~/^#/ && $3=="exon" && $9~/gene_name "(ITGA2B|ITGB3)"
 
 # generate guide RNAs with a 13-bp 5' flank and 32-bp 3' flank which includes the NGG PAM. 
 
-generate_guides -f GRCh38.primary_assembly.genome.fa \
+crisprware generate_guides -f GRCh38.primary_assembly.genome.fa \
 -k itga2b_itgb3_exons_50bpBuffer.merged.bed \
 --coords_as_active_site \
 --context_window 13 32
@@ -255,9 +255,9 @@ generate_guides -f GRCh38.primary_assembly.genome.fa \
 crisprscore_multi.R sgRNAs/sgRNAs.bed 1,2,3,4,5,6,7,8,9,10,11,12,13,14 sgRNAs_scored.bed Cas9 13 29
 
 # Perform off-target scoring and formatting of bed for rank_guides
-# turn off --drop_duplicates and set --threshol=-1 to retain all gRNAs
+# turn off --drop_duplicates and set --threshold=-1 to retain all gRNAs
 
-score_guides -b sgRNAs_scored.bed \
+crisprware score_guides -b sgRNAs_scored.bed \
 -i Hg38_Index/Hg38_index \
 --skip_rs3 \
 --drop_duplicates \
@@ -269,7 +269,7 @@ Example usage for Cas12a
 ```
 # generate Cas12a guides
 
-generate_guides \
+crisprware generate_guides \
 -f GRCh38.primary_assembly.genome.fa \
 -k itga2b_itgb3_exons_50bpBuffer.merged.bed \
 --pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 8 3 \
@@ -282,7 +282,7 @@ crisprscore_multi.R  Cas12asgRNAs/Cas12asgRNAs.bed 15,16,17 scored_Cas12asgRNAs.
 
 # format for rank_guides
 
-score_guides -b scored_Cas12asgRNAs.bed --skip_rs3 --skip_gs2
+crisprware score_guides -b scored_Cas12asgRNAs.bed --skip_rs3 --skip_gs2
 ```
 
 Guidescan2 is not compatible with PAMs 5' to protospacers, for off-target scoring in these cases I suggest [FlashFry](https://github.com/mckennalab/FlashFry?tab=readme-ov-file). I am working on a tutorial for FlashFry off-target scoring.
@@ -290,7 +290,7 @@ Guidescan2 is not compatible with PAMs 5' to protospacers, for off-target scorin
 
 ## Full Commands
 ```
-preprocess_annotation
+crisprware preprocess_annotation
 
 options:
   -h, --help            show this help message and exit
@@ -363,7 +363,7 @@ options:
 ```
 
 ```
-index_genome
+crisprware index_genome
 
 options:
   -h, --help            show this help message and exit
@@ -390,7 +390,7 @@ options:
                         Good for CRISPRi/a [default: 20 20]
 ```
 ```
-generate_guides
+crisprware generate_guides
 
 options:
   -h, --help            show this help message and exit
@@ -475,7 +475,7 @@ options:
                         Number of threads. [default: 4]
 ```
 ```
-score_guides
+crisprware score_guides
 
 options:
   -h, --help            show this help message and exit
@@ -535,7 +535,7 @@ options:
                         Number of threads [default: 8]
 ```
 ```
-rank_guides
+crisprware rank_guides
 
 options:
   -h, --help            show this help message and exit

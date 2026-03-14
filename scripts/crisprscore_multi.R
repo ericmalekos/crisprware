@@ -232,9 +232,22 @@ if (length(unique_lengths) > 1) {
   cat("WARNING: Multiple context lengths found:", paste(unique_lengths, collapse = ", "), "\n")
 }
 
+# Check for empty or NA contexts
+empty_contexts <- which(is.na(df$context) | nchar(as.character(df$context)) == 0)
+if (length(empty_contexts) > 0) {
+  cat("WARNING: Found", length(empty_contexts), "empty or NA context sequences at rows:", 
+      paste(head(empty_contexts, 10), collapse = ", "), 
+      if(length(empty_contexts) > 10) "..." else "", "\n")
+  cat("         These will receive NA scores for all methods\n")
+}
+
+# Filter to only non-empty contexts for validation
+valid_context_lengths <- context_lengths[context_lengths > 0]
+unique_valid_lengths <- unique(valid_context_lengths)
+
 # Check if contexts match expected length for the specified enzyme
-if (!any(unique_lengths == expected_context_length)) {
-  cat("\n\t\tERROR: Context lengths in file (", paste(unique_lengths, collapse = ", "), 
+if (length(unique_valid_lengths) > 0 && !any(unique_valid_lengths == expected_context_length)) {
+  cat("\n\t\tERROR: Context lengths in file (", paste(unique_valid_lengths, collapse = ", "), 
       " nt) don't match expected length\n", sep="")
   if (enzyme == "cas9") {
     cat("\t\tFor Cas9: ", flank_5prime, " + 20 + 3 + ", flank_3prime, " = ", 
@@ -249,6 +262,15 @@ if (!any(unique_lengths == expected_context_length)) {
 # Function to trim context to required length for a specific method
 trim_context <- function(context, method_info, user_flank_5prime, user_flank_3prime, debug = FALSE) {
   context_str <- as.character(context)
+  
+  # Handle NA or empty contexts
+  if (is.na(context_str) || nchar(context_str) == 0) {
+    if (debug) {
+      cat("    Empty or NA context - returning NA\n")
+    }
+    return(NA)
+  }
+  
   context_length <- nchar(context_str)
   
   # Special handling for CRISPRater - only wants the 20nt spacer
@@ -386,8 +408,14 @@ for (method_num in method_numbers) {
     cat("\n  Testing method", method_num, ":", method_info$name, "\n")
   }
   
-  # Test trim on first few contexts
-  test_contexts <- head(df$context, min(10, nrow(df)))
+  # Test trim on first few non-empty contexts
+  test_contexts <- head(df$context[nchar(as.character(df$context)) > 0], min(10, sum(nchar(as.character(df$context)) > 0)))
+  
+  if (length(test_contexts) == 0) {
+    cat("\n\t\tERROR: No valid contexts found in input file\n")
+    quit(status = 1)
+  }
+  
   trimmed_test <- sapply(test_contexts, function(ctx) {
     trim_context(ctx, method_info, flank_5prime, flank_3prime, debug = debug_mode && which(test_contexts == ctx)[1] == 1)
   })
@@ -434,13 +462,20 @@ apply_single_score <- function(chunk_df, method_num, debug = FALSE) {
     trim_context(ctx, method_info, flank_5prime, flank_3prime, debug = show_debug)
   })
   
-  # Check if any contexts couldn't be trimmed
-  if (any(is.na(trimmed_contexts))) {
-    warning(paste("Some contexts could not be trimmed for method", method_info$name, 
-                  "- these will have NA scores"))
-    # Replace NA with empty string for scoring functions
-    trimmed_contexts[is.na(trimmed_contexts)] <- ""
+  # Identify which contexts are valid (not NA)
+  valid_indices <- which(!is.na(trimmed_contexts))
+  
+  # If no valid contexts, return all NAs
+  if (length(valid_indices) == 0) {
+    warning(paste("No valid contexts for method", method_info$name, "- all scores will be NA"))
+    return(rep(NA, nrow(chunk_df)))
   }
+  
+  # Initialize scores with NA
+  scores <- rep(NA, nrow(chunk_df))
+  
+  # Only score the valid contexts
+  valid_contexts <- trimmed_contexts[valid_indices]
   
   # Apply the scoring function with appropriate parameters
   score_func <- method_info$func
@@ -449,14 +484,22 @@ apply_single_score <- function(chunk_df, method_num, debug = FALSE) {
   tryCatch({
     if (length(params) == 0) {
       # No additional parameters
-      scores <- score_func(trimmed_contexts)$score
+      valid_scores <- score_func(valid_contexts)$score
     } else {
       # Call with additional parameters
-      scores <- do.call(score_func, c(list(trimmed_contexts), params))$score
+      valid_scores <- do.call(score_func, c(list(valid_contexts), params))$score
     }
     
-    # Set NA for contexts that couldn't be trimmed
-    scores[trimmed_contexts == ""] <- NA
+    # Assign scores to valid indices
+    scores[valid_indices] <- valid_scores
+    
+    # Report if some contexts couldn't be scored
+    if (length(valid_indices) < nrow(chunk_df)) {
+      num_invalid <- nrow(chunk_df) - length(valid_indices)
+      if (!debug) {
+        cat("    Note:", num_invalid, "sequences could not be scored (empty/invalid contexts)\n")
+      }
+    }
     
     return(scores)
   }, error = function(e) {
