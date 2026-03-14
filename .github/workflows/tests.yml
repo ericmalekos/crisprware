@@ -18,7 +18,7 @@ jobs:
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
-          environment-file: environment.yml
+          environment-file: .github/workflows/environment-ci.yml
           activate-environment: crisprware
           miniforge-version: latest
 
