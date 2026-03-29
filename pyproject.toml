@@ -39,7 +39,7 @@ crisprware = "crisprware.cli:main"
 version = {attr = "crisprware.version.__version__"}
 
 [tool.setuptools.packages.find]
-include = ["crisprware*"]
+include = ["crisprware*", "parasol_scripts*"]
 
 [tool.setuptools]
 script-files = [
@@ -55,9 +55,9 @@ script-files = [
 [tool.ruff]
 line-length = 120
 exclude = [
-    "OldStuff",
     "pipeline_testing",
     "colab_notebooks",
+    "bigbed_fulltracks",
 ]
 
 [tool.ruff.lint]
@@ -70,3 +70,4 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/*" = ["F401", "F841"]  # utility scripts may have intentional unused imports/vars
+"parasol_scripts/DeepCpf1_seq.py" = ["E741"]  # third-party adapted code

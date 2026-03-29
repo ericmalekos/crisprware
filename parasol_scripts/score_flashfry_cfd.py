@@ -5,7 +5,6 @@ import pandas as pd
 import re
 from typing import List, Dict, Tuple
 from Bio import SeqIO
-from Bio.Seq import Seq
 import gzip
 
 
