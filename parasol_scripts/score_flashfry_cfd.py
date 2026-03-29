@@ -375,6 +375,12 @@ def main():
     )
     ap.add_argument("-o", "--output", required=True, help="Output TSV path with appended score columns.")
     ap.add_argument("-g", "--genome", required=True, help="Reference genome in FASTA or FASTA.gz")
+    ap.add_argument(
+        "--no-gzip",
+        action="store_true",
+        default=False,
+        help="Write the slim output as plain TSV instead of gzip-compressed.",
+    )
     args = ap.parse_args()
 
     # ---- Load & validate input ----
@@ -568,16 +574,27 @@ def main():
     df.to_csv(args.output, sep="\t", index=False)
 
     # ---- Write a slim copy dropping large columns + stripping sequences from mismatch entries ----
-    from parasol_scripts.slim_offtarget_tsv import _strip_sequences_from_mismatch, _MISMATCH_COLS
-
     drop_cols = {"offTargets_loci", "offTargets_loci_seq", "otCount"}
+    mm_strip_cols = {"0-mismatch", "1-mismatch", "2-mismatch", "3-mismatch", "4-mismatch"}
     slim_cols = [c for c in df.columns if c not in drop_cols]
     slim_df = df[slim_cols].copy()
-    for col in _MISMATCH_COLS:
+    for col in mm_strip_cols:
         if col in slim_df.columns:
-            slim_df[col] = slim_df[col].fillna("").apply(_strip_sequences_from_mismatch)
-    slim_path = args.output + ".slim.tsv.gz"
-    slim_df.to_csv(slim_path, sep="\t", index=False, compression="gzip")
+            slim_df[col] = (
+                slim_df[col]
+                .fillna("")
+                .apply(
+                    lambda cell: ",".join(
+                        e.rsplit("_", 1)[1] if "_" in e else e for e in (s.strip() for s in cell.split(",")) if e
+                    )
+                )
+            )
+    if args.no_gzip:
+        slim_path = args.output + ".slim"
+        slim_df.to_csv(slim_path, sep="\t", index=False)
+    else:
+        slim_path = args.output + ".slim.gz"
+        slim_df.to_csv(slim_path, sep="\t", index=False, compression="gzip")
     print(f"Wrote slim off-target file: {slim_path}")
 
 
