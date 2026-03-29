@@ -130,10 +130,10 @@ def score_file(
 
     # Attach and write
     df[out_col] = scores
-    
-	# Round to 8 decimal places
+
+    # Round to 8 decimal places
     df[out_col] = [round(float(s), 8) for s in scores]
-    
+
     df.to_csv(output_path, sep="\t", index=False)
 
 
@@ -151,20 +151,14 @@ def parse_args() -> argparse.Namespace:
         - out_col (str): Name of the output score column.
         - batch_size (int): Batch size for scoring.
     """
-    parser = argparse.ArgumentParser(
-        description="Score sgRNA context sequences with EnPAM_GB and append results."
-    )
+    parser = argparse.ArgumentParser(description="Score sgRNA context sequences with EnPAM_GB and append results.")
     parser.add_argument("-i", "--input", required=True, help="Input TSV path")
     parser.add_argument("-o", "--output", required=True, help="Output TSV path")
-    parser.add_argument(
-        "--seq-col", default="context", help="Column with sequences to score (default: context)"
-    )
+    parser.add_argument("--seq-col", default="context", help="Column with sequences to score (default: context)")
     parser.add_argument(
         "--out-col", default="enpam_gb_score", help="Name of output score column (default: enpam_gb_score)"
     )
-    parser.add_argument(
-        "--batch-size", type=int, default=4096, help="Batch size for scoring (default: 4096)"
-    )
+    parser.add_argument("--batch-size", type=int, default=4096, help="Batch size for scoring (default: 4096)")
     return parser.parse_args()
 
 

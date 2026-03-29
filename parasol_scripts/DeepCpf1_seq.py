@@ -151,8 +151,12 @@ def score_file(input_path, output_path, seq_col="context", out_col="deepcpf1_sco
     valid_mask = seq_series.apply(is_valid_seq)
     invalid_n = (~valid_mask).sum()
     if invalid_n:
-        print("[DeepCpf1] Warning: {} rows have invalid sequences (not 34-nt A/C/G/T) — setting score to NaN."
-              .format(int(invalid_n)), file=sys.stderr)
+        print(
+            "[DeepCpf1] Warning: {} rows have invalid sequences (not 34-nt A/C/G/T) — setting score to NaN.".format(
+                int(invalid_n)
+            ),
+            file=sys.stderr,
+        )
 
     # Prepare model once
     set_keras_backend("theano")
@@ -160,7 +164,7 @@ def score_file(input_path, output_path, seq_col="context", out_col="deepcpf1_sco
 
     # Predict in batches for valid sequences
     scores = np.full(len(df), np.nan, dtype=float)
-    valid_idx = np.flatnonzero(valid_mask.values)              # integer positions of valid rows
+    valid_idx = np.flatnonzero(valid_mask.values)  # integer positions of valid rows
     valid_seqs = seq_series.iloc[valid_idx].tolist()
 
     for i in range(0, len(valid_seqs), batch_size):
@@ -168,7 +172,7 @@ def score_file(input_path, output_path, seq_col="context", out_col="deepcpf1_sco
         batch = valid_seqs[j0:j1]
         X = preprocess_sequences(batch)
         y = model.predict([X], batch_size=min(batch_size, len(batch)), verbose=0).ravel()
-        scores[valid_idx[j0:j1]] = y  
+        scores[valid_idx[j0:j1]] = y
 
     # Round to 8 decimal places
     df[out_col] = [None if np.isnan(x) else round(float(x), 8) for x in scores]

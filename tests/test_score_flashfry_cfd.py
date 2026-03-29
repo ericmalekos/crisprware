@@ -36,9 +36,9 @@ from parasol_scripts.score_flashfry_cfd import (
 
 CHRIII_FASTA = "./tests/test_data/ce11/chrIII_sequence.fasta"
 MATRIX_CSV = "./parasol_scripts/off_targ_enCas12a.csv"
-FLASHFRY_INPUT = "./tests/test_data/flashfry/ce11_full.part_001.fa.output"
-FLASHFRY_REDUCED = "./tests/test_data/flashfry/ce11_full.part_001.fa.output.reduced"
-UNIQUENESS_INPUT = "./tests/test_data/flashfry/chrIII_uniqueness_test.fa.output"
+FLASHFRY_INPUT = "./tests/test_data/flashfry/ce11_full.part_001.fa.output.tsv"
+FLASHFRY_REDUCED = "./tests/test_data/flashfry/ce11_full.part_001.fa.output.reduced.tsv"
+UNIQUENESS_INPUT = "./tests/test_data/flashfry/chrIII_uniqueness_test.fa.output.tsv"
 
 
 def _write_tiny_fasta(path, records: dict[str, str]):
@@ -50,10 +50,7 @@ def _write_tiny_fasta(path, records: dict[str, str]):
 
 def _make_genome_dict(records: dict[str, str]):
     """Return a Biopython SeqIO dict-like from {chrom: seq}."""
-    return {
-        name: SeqRecord(Seq(seq), id=name, name=name, description="")
-        for name, seq in records.items()
-    }
+    return {name: SeqRecord(Seq(seq), id=name, name=name, description="") for name, seq in records.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -85,9 +82,9 @@ class TestSplitZeroMismatchCell(unittest.TestCase):
 
 class TestHasTtTV(unittest.TestCase):
     def test_tttv_variants(self):
-        self.assertTrue(_has_ttTV(["TTTAGCG"]))   # TTTA
-        self.assertTrue(_has_ttTV(["TTTCACG"]))   # TTTC
-        self.assertTrue(_has_ttTV(["TTTGACG"]))   # TTTG
+        self.assertTrue(_has_ttTV(["TTTAGCG"]))  # TTTA
+        self.assertTrue(_has_ttTV(["TTTCACG"]))  # TTTC
+        self.assertTrue(_has_ttTV(["TTTGACG"]))  # TTTG
 
     def test_tttt_not_tttv(self):
         self.assertFalse(_has_ttTV(["TTTTACG"]))
@@ -191,7 +188,7 @@ class TestBucketOfftargetsByMismatch(unittest.TestCase):
 
     def test_known_bucketing(self):
         target = "TTTTACGTACGTACGTACGTACGTAC"  # 25 bases
-        same   = "TTTTACGTACGTACGTACGTACGTAC"  # 0 mismatches
+        same = "TTTTACGTACGTACGTACGTACGTAC"  # 0 mismatches
         # Mismatch at position 0 after trim (A→G): within cap_len=20
         one_mm = "TTTTGCGTACGTACGTACGTACGTAC"
 
@@ -258,12 +255,14 @@ class TestParseOfftargets(unittest.TestCase):
 
 class TestBuildScoreLookup(unittest.TestCase):
     def test_basic(self):
-        df = pd.DataFrame({
-            "RDA": ["enCas12a", "enCas12a"],
-            "Pos": [1, 2],
-            "MM": ["rA:dC", "rG:dT"],
-            "avg_percent_active": [0.5, 0.3],
-        })
+        df = pd.DataFrame(
+            {
+                "RDA": ["enCas12a", "enCas12a"],
+                "Pos": [1, 2],
+                "MM": ["rA:dC", "rG:dT"],
+                "avg_percent_active": [0.5, 0.3],
+            }
+        )
         name, lookup = build_score_lookup(df)
         self.assertEqual(name, "enCas12a")
         self.assertAlmostEqual(lookup[(1, "rA:dC")], 0.5)
@@ -293,7 +292,7 @@ class TestCfdScorePair(unittest.TestCase):
         self.assertAlmostEqual(cfd_score_pair(seq, seq, lookup), 1.0)
 
     def test_single_mismatch(self):
-        target  = "TTTTACGTACGTACGTACGTACGTAC"
+        target = "TTTTACGTACGTACGTACGTACGTAC"
         offtarg = "TTTTCCGTACGTACGTACGTACGTAC"
         # Position 1 after trim4: target A vs offtarget C => rA:dC
         lookup = {(1, "rA:dC"): 0.5}
@@ -301,7 +300,7 @@ class TestCfdScorePair(unittest.TestCase):
         self.assertAlmostEqual(result, 0.5)
 
     def test_two_mismatches_multiply(self):
-        target  = "TTTTACGTACGTACGTACGTACGTAC"
+        target = "TTTTACGTACGTACGTACGTACGTAC"
         offtarg = "TTTTCCCTACGTACGTACGTACGTAC"
         # After trim4: pos 1: A→C = rA:dC, pos 3: G→C = rG:dC
         lookup = {(1, "rA:dC"): 0.5, (3, "rG:dC"): 0.4}
@@ -309,7 +308,7 @@ class TestCfdScorePair(unittest.TestCase):
         self.assertAlmostEqual(result, 0.2)
 
     def test_missing_lookup_defaults_to_1(self):
-        target  = "TTTTACGTACGTACGTACGTACGTAC"
+        target = "TTTTACGTACGTACGTACGTACGTAC"
         offtarg = "TTTTCCGTACGTACGTACGTACGTAC"
         lookup = {}  # no entry for this mismatch
         result = cfd_score_pair(target, offtarg, lookup)
@@ -372,10 +371,12 @@ class TestLoadGenomeBiopython(unittest.TestCase):
 class TestFetch27mer(unittest.TestCase):
     def setUp(self):
         # 40-base sequence for easy testing (1-based positions 1-40)
-        self.genome = _make_genome_dict({
-            "chrT": "AAAA" + "ACGTACGTACGTACGTACGTACGTACG" + "TTTTTTTTT"
-            #        1234   5                            31  32-40
-        })
+        self.genome = _make_genome_dict(
+            {
+                "chrT": "AAAA" + "ACGTACGTACGTACGTACGTACGTACG" + "TTTTTTTTT"
+                #        1234   5                            31  32-40
+            }
+        )
 
     def test_plus_strand(self):
         # pos_1based=4, strand='+': start=5, end=31 => 27 bases
@@ -402,9 +403,7 @@ class TestFetch27mer(unittest.TestCase):
 class TestExpandTargetFromContig(unittest.TestCase):
     def setUp(self):
         # 60-base sequence
-        self.genome = _make_genome_dict({
-            "chrT": "N" * 5 + "ACGTACGTACGTACGTACGTACGTACG" + "N" * 28
-        })
+        self.genome = _make_genome_dict({"chrT": "N" * 5 + "ACGTACGTACGTACGTACGTACGTACG" + "N" * 28})
 
     def test_plus_strand(self):
         # contig 'chrT:6:+' => pos=6, strand='+' => pos-=1 => pos=5 => fetch_27mer(chrT,5,+)
@@ -505,9 +504,11 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         rows = [
             {
                 "contig": "chrIII:147715:-",
-                "start": "0", "stop": "24",
+                "start": "0",
+                "stop": "24",
                 "target": "TTTTATGAAGCTTCAATATATTTT",
-                "context": "NONE", "overflow": "OK",
+                "context": "NONE",
+                "overflow": "OK",
                 "orientation": "RVS",
                 "otCount": "0",
                 "offTargets": "",
@@ -534,9 +535,11 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         rows = [
             {
                 "contig": "chrIII:147715:-",
-                "start": "1", "stop": "25",
+                "start": "1",
+                "stop": "25",
                 "target": "TTTTATGAAGCTTCAATATATTTT",
-                "context": "NONE", "overflow": "OK",
+                "context": "NONE",
+                "overflow": "OK",
                 "orientation": "FWD",
                 "otCount": "0",
                 "offTargets": "",
@@ -563,9 +566,11 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         rows = [
             {
                 "contig": "chrIII:147715:-",
-                "start": "0", "stop": "24",
+                "start": "0",
+                "stop": "24",
                 "target": "TTTTATGAAGCTTCAATATATTTT",
-                "context": "NONE", "overflow": "OK",
+                "context": "NONE",
+                "overflow": "OK",
                 "orientation": "FWD",
                 "otCount": "1",
                 "offTargets": "TTTTATGAAGCTTCAATATATTTT_1_0<chrIII:147715^R>",
@@ -581,15 +586,26 @@ class TestMainPipelineSynthetic(unittest.TestCase):
             df = pd.read_csv(out, sep="\t")
 
             expected_cols = {
-                "contig", "target", "otCount",
-                "offTargets_loci", "offTargets_loci_seq",
-                "0-mismatch", "1-mismatch", "2-mismatch", "3-mismatch", "4-mismatch",
-                "TTTN_enCas12a", "TTTV_enCas12a",
-                "TTTN_enCas12a_aggregated_score", "TTTV_enCas12a_aggregated_score",
-                "unique-TTTV", "unique-TTTN",
+                "contig",
+                "target",
+                "otCount",
+                "offTargets_loci",
+                "offTargets_loci_seq",
+                "0-mismatch",
+                "1-mismatch",
+                "2-mismatch",
+                "3-mismatch",
+                "4-mismatch",
+                "TTTN_enCas12a",
+                "TTTV_enCas12a",
+                "TTTN_enCas12a_aggregated_score",
+                "TTTV_enCas12a_aggregated_score",
+                "unique-TTTV",
+                "unique-TTTN",
             }
-            self.assertTrue(expected_cols.issubset(set(df.columns)),
-                            f"Missing columns: {expected_cols - set(df.columns)}")
+            self.assertTrue(
+                expected_cols.issubset(set(df.columns)), f"Missing columns: {expected_cols - set(df.columns)}"
+            )
             self.assertNotIn("offTargets", df.columns)
             self.assertNotIn("start", df.columns)
             self.assertNotIn("stop", df.columns)
@@ -607,9 +623,11 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         rows = [
             {
                 "contig": "chrIII:147715:-",
-                "start": "0", "stop": "24",
+                "start": "0",
+                "stop": "24",
                 "target": "TTTTATGAAGCTTCAATATATTTT",
-                "context": "NONE", "overflow": "OK",
+                "context": "NONE",
+                "overflow": "OK",
                 "orientation": "FWD",
                 "otCount": "1",
                 "offTargets": "TTTTATGAAGCTTCAATATATTTT_1_0<chrIII:147715^R>",
@@ -627,7 +645,7 @@ class TestMainPipelineSynthetic(unittest.TestCase):
             # After removing canonical self-match, should be empty
             self.assertTrue(
                 pd.isna(zero_mm) or str(zero_mm).strip() == "",
-                f"Expected empty 0-mismatch after self-removal, got: {zero_mm}"
+                f"Expected empty 0-mismatch after self-removal, got: {zero_mm}",
             )
         finally:
             os.unlink(inp)
@@ -641,9 +659,11 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         rows = [
             {
                 "contig": "chrIII:147715:-",
-                "start": "0", "stop": "24",
+                "start": "0",
+                "stop": "24",
                 "target": "TTTTATGAAGCTTCAATATATTTT",
-                "context": "NONE", "overflow": "OK",
+                "context": "NONE",
+                "overflow": "OK",
                 "orientation": "FWD",
                 "otCount": "1",
                 # Only off-target is itself (will be removed)
@@ -673,14 +693,15 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         rows = [
             {
                 "contig": "chrIII:147715:-",
-                "start": "0", "stop": "24",
+                "start": "0",
+                "stop": "24",
                 "target": "TTTTATGAAGCTTCAATATATTTT",
-                "context": "NONE", "overflow": "OK",
+                "context": "NONE",
+                "overflow": "OK",
                 "orientation": "FWD",
                 "otCount": "2",
                 "offTargets": (
-                    "TTTTATGAAGCTTCAATATATTTT_1_0<chrIII:147715^R>,"
-                    "TTTAATAATTTTTTGAATATTGGAAAA_1_4<chrIII:13211459^R>"
+                    "TTTTATGAAGCTTCAATATATTTT_1_0<chrIII:147715^R>,TTTAATAATTTTTTGAATATTGGAAAA_1_4<chrIII:13211459^R>"
                 ),
             },
         ]
@@ -751,16 +772,16 @@ class TestCfdScorePairWithRealMatrix(unittest.TestCase):
         self.assertAlmostEqual(cfd_score_pair(seq, seq, self.lookup), 1.0)
 
     def test_score_between_zero_and_one(self):
-        target  = "TTTTACGTACGTACGTACGTACGTACG"
+        target = "TTTTACGTACGTACGTACGTACGTACG"
         offtarg = "TTTTCCGTACGTACGTACGTACGTACG"
         score = cfd_score_pair(target, offtarg, self.lookup)
         self.assertGreater(score, 0.0)
         self.assertLess(score, 1.0)
 
     def test_more_mismatches_lower_or_equal_score(self):
-        target   = "TTTTACGTACGTACGTACGTACGTACG"
-        one_mm   = "TTTTCCGTACGTACGTACGTACGTACG"   # 1 mismatch at pos 1
-        two_mm   = "TTTTCCGTACGTACGTACGTACGTTCG"   # 2 mismatches at pos 1 and 20
+        target = "TTTTACGTACGTACGTACGTACGTACG"
+        one_mm = "TTTTCCGTACGTACGTACGTACGTACG"  # 1 mismatch at pos 1
+        two_mm = "TTTTCCGTACGTACGTACGTACGTTCG"  # 2 mismatches at pos 1 and 20
         score_1 = cfd_score_pair(target, one_mm, self.lookup)
         score_2 = cfd_score_pair(target, two_mm, self.lookup)
         # More mismatches should yield a lower or equal score
@@ -776,9 +797,7 @@ class TestCfdScorePairWithRealMatrix(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.path.exists(CHRIII_FASTA)
-    and os.path.exists(MATRIX_CSV)
-    and os.path.exists(UNIQUENESS_INPUT),
+    os.path.exists(CHRIII_FASTA) and os.path.exists(MATRIX_CSV) and os.path.exists(UNIQUENESS_INPUT),
     "chrIII FASTA, scoring matrix, or uniqueness test input not found",
 )
 class TestUniquenessThroughMain(unittest.TestCase):
@@ -798,10 +817,15 @@ class TestUniquenessThroughMain(unittest.TestCase):
         try:
             old_argv = sys.argv
             sys.argv = [
-                "prog", "-i", UNIQUENESS_INPUT,
-                "-m", MATRIX_CSV,
-                "-o", out,
-                "-g", CHRIII_FASTA,
+                "prog",
+                "-i",
+                UNIQUENESS_INPUT,
+                "-m",
+                MATRIX_CSV,
+                "-o",
+                out,
+                "-g",
+                CHRIII_FASTA,
             ]
             main()
             sys.argv = old_argv
@@ -836,10 +860,15 @@ class TestUniquenessThroughMain(unittest.TestCase):
         try:
             old_argv = sys.argv
             sys.argv = [
-                "prog", "-i", UNIQUENESS_INPUT,
-                "-m", MATRIX_CSV,
-                "-o", out,
-                "-g", CHRIII_FASTA,
+                "prog",
+                "-i",
+                UNIQUENESS_INPUT,
+                "-m",
+                MATRIX_CSV,
+                "-o",
+                out,
+                "-g",
+                CHRIII_FASTA,
             ]
             main()
             sys.argv = old_argv
@@ -848,8 +877,9 @@ class TestUniquenessThroughMain(unittest.TestCase):
 
             # Row 0: had 2 loci, self removed => 1 remaining 0-mismatch entry
             zero_mm_0 = str(df["0-mismatch"].iloc[0]).strip()
-            self.assertTrue(len(zero_mm_0) > 0 and zero_mm_0 != "nan",
-                            f"Expected non-empty 0-mismatch for row 0, got: {zero_mm_0}")
+            self.assertTrue(
+                len(zero_mm_0) > 0 and zero_mm_0 != "nan", f"Expected non-empty 0-mismatch for row 0, got: {zero_mm_0}"
+            )
             self.assertIn("chrIII:3066215:+", zero_mm_0)
             # Self-match at 17625 should be removed
             self.assertNotIn("17625", zero_mm_0)
@@ -862,7 +892,7 @@ class TestUniquenessThroughMain(unittest.TestCase):
             zero_mm_2 = df["0-mismatch"].iloc[2]
             self.assertTrue(
                 pd.isna(zero_mm_2) or str(zero_mm_2).strip() == "",
-                f"Expected empty 0-mismatch for row 2, got: {zero_mm_2}"
+                f"Expected empty 0-mismatch for row 2, got: {zero_mm_2}",
             )
         finally:
             os.unlink(out)
@@ -879,10 +909,15 @@ class TestUniquenessThroughMain(unittest.TestCase):
         try:
             old_argv = sys.argv
             sys.argv = [
-                "prog", "-i", UNIQUENESS_INPUT,
-                "-m", MATRIX_CSV,
-                "-o", out,
-                "-g", CHRIII_FASTA,
+                "prog",
+                "-i",
+                UNIQUENESS_INPUT,
+                "-m",
+                MATRIX_CSV,
+                "-o",
+                out,
+                "-g",
+                CHRIII_FASTA,
             ]
             main()
             sys.argv = old_argv
@@ -893,8 +928,7 @@ class TestUniquenessThroughMain(unittest.TestCase):
             # Weighted score should be 1.0 * 2 = 2.0
             tttn_scores = df["TTTN_enCas12a"].iloc[0]
             score_val = float(tttn_scores)
-            self.assertAlmostEqual(score_val, 2.0,
-                                   msg=f"Expected 2.0 (CFD=1.0 * q_i=2), got {score_val}")
+            self.assertAlmostEqual(score_val, 2.0, msg=f"Expected 2.0 (CFD=1.0 * q_i=2), got {score_val}")
 
             # Aggregated: 1 / 2.0 = 0.5
             agg = float(df["TTTN_enCas12a_aggregated_score"].iloc[0])
@@ -939,10 +973,15 @@ class TestEndToEndChrIIIOnly(unittest.TestCase):
         try:
             old_argv = sys.argv
             sys.argv = [
-                "prog", "-i", FLASHFRY_INPUT,
-                "-m", MATRIX_CSV,
-                "-o", out,
-                "-g", CHRIII_FASTA,
+                "prog",
+                "-i",
+                FLASHFRY_INPUT,
+                "-m",
+                MATRIX_CSV,
+                "-o",
+                out,
+                "-g",
+                CHRIII_FASTA,
             ]
             main()
             sys.argv = old_argv
@@ -958,20 +997,16 @@ class TestEndToEndChrIIIOnly(unittest.TestCase):
 
             # Contig column should match exactly
             self.assertTrue(
-                (df_out["contig"] == df_ref["contig"]).all(),
-                "Contig columns differ between output and reference"
+                (df_out["contig"] == df_ref["contig"]).all(), "Contig columns differ between output and reference"
             )
 
             # otCount should match
-            self.assertTrue(
-                (df_out["otCount"] == df_ref["otCount"]).all(),
-                "otCount columns differ"
-            )
+            self.assertTrue((df_out["otCount"] == df_ref["otCount"]).all(), "otCount columns differ")
 
             # offTargets_loci should match (parsing is genome-independent)
             self.assertTrue(
                 (df_out["offTargets_loci"].fillna("") == df_ref["offTargets_loci"].fillna("")).all(),
-                "offTargets_loci columns differ"
+                "offTargets_loci columns differ",
             )
         finally:
             os.unlink(out)

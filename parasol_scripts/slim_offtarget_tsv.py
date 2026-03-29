@@ -16,6 +16,7 @@ Usable as:
         from parasol_scripts.slim_offtarget_tsv import slim_offtarget_tsv
         slim_offtarget_tsv("big.reduced", "slim.tsv.gz")
 """
+
 from __future__ import annotations
 
 import argparse
@@ -110,10 +111,7 @@ def slim_offtarget_tsv(
     header_set = set(header)
     keep_present = [c for c in keep_cols if c in header_set]
     if not keep_present:
-        raise ValueError(
-            f"None of the requested columns found in {input_path}. "
-            f"File columns: {header}"
-        )
+        raise ValueError(f"None of the requested columns found in {input_path}. File columns: {header}")
 
     col_indices = [header.index(c) for c in keep_present]
     slim_header = "\t".join(keep_present) + "\n"
@@ -140,25 +138,31 @@ def slim_offtarget_tsv(
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        description="Slim a scored off-target TSV to only the columns needed for merging."
-    )
+    ap = argparse.ArgumentParser(description="Slim a scored off-target TSV to only the columns needed for merging.")
     ap.add_argument(
-        "-i", "--input", required=True,
+        "-i",
+        "--input",
+        required=True,
         help="Input scored off-target TSV (from score_flashfry_cfd.py).",
     )
     ap.add_argument(
-        "-o", "--output", required=True,
+        "-o",
+        "--output",
+        required=True,
         help="Output path. '.gz' is appended automatically unless --no-gzip.",
     )
     ap.add_argument(
-        "--no-gzip", action="store_true", default=False,
+        "--no-gzip",
+        action="store_true",
+        default=False,
         help="Write plain text instead of gzip-compressed output.",
     )
     ap.add_argument(
-        "--keep-cols", nargs="+", default=None,
+        "--keep-cols",
+        nargs="+",
+        default=None,
         help="Override which columns to keep (space-separated). "
-             "Defaults to the standard set needed by combine_on_off_tsvs.py.",
+        "Defaults to the standard set needed by combine_on_off_tsvs.py.",
     )
     args = ap.parse_args()
 

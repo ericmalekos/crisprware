@@ -7,6 +7,7 @@ import tempfile
 import pandas as pd
 import numpy as np
 
+
 def _fmt_pct_raw(raw_s: pd.Series, pct_s: pd.Series) -> pd.Series:
     """
     Return strings like: '92% (0.6782)' — percentile rounded to nearest integer.
@@ -21,16 +22,19 @@ def _fmt_pct_raw(raw_s: pd.Series, pct_s: pd.Series) -> pd.Series:
             out.append(str(raw))
     return pd.Series(out, index=raw_s.index, dtype="object")
 
+
 def _fmt_mouseover(row) -> str:
     """
     'EnCas12A Spec: #, DeepCPF1: #, EnCas12a: #'
     where # are percentile integers (no % sign).
     """
+
     def gi(col):
         try:
             return str(int(round(float(row.get(col, "nan")))))
         except Exception:
             return ""
+
     return (
         f"EnCas12A Spec: {gi('TTTV_enCas12a_aggregated_score_pct')}, "
         f"DeepCpf1: {gi('deepcpf1_score_pct')}, "
@@ -44,11 +48,13 @@ def _has_any_entries(cell: str) -> bool:
     toks = [t.strip() for t in str(cell).split(",")]
     return any(t for t in toks)
 
+
 def _to_float(val):
     try:
         return float(val)
     except Exception:
         return float("nan")
+
 
 def choose_itemRgb(row) -> str:
     """
@@ -88,6 +94,7 @@ def _to_numeric_series(s: pd.Series) -> pd.Series:
     """Coerce to float; treat 'Null'/'', etc. as NaN."""
     return pd.to_numeric(s.replace({"Null": np.nan, "": np.nan}), errors="coerce")
 
+
 def add_percentile_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     """Add <col>_pct columns (0–100). Higher value => higher percentile."""
     for c in cols:
@@ -96,13 +103,15 @@ def add_percentile_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
             df[c + "_pct"] = (x.rank(pct=True, method="average") * 100).round(2)
     return df
 
+
 def plot_hist_ecdf(series: pd.Series, title: str, out_png: str):
     """Save a histogram with ECDF overlay (PNG). Skips if series is all NaN."""
     x = _to_numeric_series(series).dropna()
     if x.empty:
         return
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(6,4))
+
+    fig, ax = plt.subplots(figsize=(6, 4))
     # histogram
     ax.hist(x.values, bins=50, density=True, alpha=0.6)
     ax.set_xlabel(title)
@@ -117,12 +126,14 @@ def plot_hist_ecdf(series: pd.Series, title: str, out_png: str):
     fig.savefig(out_png, dpi=150)
     plt.close(fig)
 
+
 def load_tsv(path: str) -> pd.DataFrame:
     try:
         return pd.read_csv(path, sep="\t", dtype=str)
     except Exception as e:
         print(f"ERROR: failed to read {path}: {e}", file=sys.stderr)
         sys.exit(1)
+
 
 def pick_series(df: pd.DataFrame, name: str, fallback: str = "") -> pd.Series:
     """Return df[name] if present, else a Series of fallback strings of appropriate length."""
@@ -136,8 +147,16 @@ def pick_series(df: pd.DataFrame, name: str, fallback: str = "") -> pd.Series:
 # --------------------------------------------------------------------------
 
 REQUIRED_ON = {"chr", "start", "stop", "strand", "enpam_gb_score", "deepcpf1_score"}
-REQUIRED_OFF = {"contig", "unique-TTTV", "unique-TTTN",
-                "0-mismatch", "1-mismatch", "2-mismatch", "3-mismatch", "4-mismatch"}
+REQUIRED_OFF = {
+    "contig",
+    "unique-TTTV",
+    "unique-TTTN",
+    "0-mismatch",
+    "1-mismatch",
+    "2-mismatch",
+    "3-mismatch",
+    "4-mismatch",
+}
 
 
 def parse_on_target(on_df: pd.DataFrame) -> pd.DataFrame:
@@ -149,26 +168,26 @@ def parse_on_target(on_df: pd.DataFrame) -> pd.DataFrame:
     meta = on_df.iloc[:, 3].astype(str)
     parts = meta.str.split(",", n=5, expand=True)
     if parts.shape[1] != 6:
-        print("ERROR: 4th column of on-target TSV must split into 6 items: "
-              "id,sequence,pam,chromosome,position,sense", file=sys.stderr)
+        print(
+            "ERROR: 4th column of on-target TSV must split into 6 items: id,sequence,pam,chromosome,position,sense",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    on_df["contig"]   = parts[0].str.strip()
+    on_df["contig"] = parts[0].str.strip()
     on_df["guideSeq"] = parts[1].str.strip()
-    on_df["pam"]      = parts[2].str.strip()
+    on_df["pam"] = parts[2].str.strip()
     return on_df
 
 
 def validate_columns(df: pd.DataFrame, required: set[str], label: str):
     missing = required.difference(df.columns)
     if missing:
-        print(f"ERROR: {label} TSV missing required columns: "
-              f"{', '.join(sorted(missing))}", file=sys.stderr)
+        print(f"ERROR: {label} TSV missing required columns: {', '.join(sorted(missing))}", file=sys.stderr)
         sys.exit(1)
 
 
-def validate_contigs(on_df: pd.DataFrame, off_df: pd.DataFrame,
-                     on_path: str, off_path: str):
+def validate_contigs(on_df: pd.DataFrame, off_df: pd.DataFrame, on_path: str, off_path: str):
     """Verify that on-target and off-target contig sets match exactly."""
     on_contigs = set(on_df["contig"].dropna().unique())
     off_contigs = set(off_df["contig"].dropna().unique())
@@ -182,17 +201,16 @@ def validate_contigs(on_df: pd.DataFrame, off_df: pd.DataFrame,
     msgs = []
     if only_on:
         examples = sorted(only_on)[:5]
-        msgs.append(f"  {len(only_on)} contigs only in on-target: {', '.join(examples)}{'...' if len(only_on) > 5 else ''}")
+        msgs.append(
+            f"  {len(only_on)} contigs only in on-target: {', '.join(examples)}{'...' if len(only_on) > 5 else ''}"
+        )
     if only_off:
         examples = sorted(only_off)[:5]
-        msgs.append(f"  {len(only_off)} contigs only in off-target: {', '.join(examples)}{'...' if len(only_off) > 5 else ''}")
+        msgs.append(
+            f"  {len(only_off)} contigs only in off-target: {', '.join(examples)}{'...' if len(only_off) > 5 else ''}"
+        )
 
-    raise ValueError(
-        f"Contig mismatch between\n"
-        f"  on-target:  {on_path}\n"
-        f"  off-target: {off_path}\n" +
-        "\n".join(msgs)
-    )
+    raise ValueError(f"Contig mismatch between\n  on-target:  {on_path}\n  off-target: {off_path}\n" + "\n".join(msgs))
 
 
 def merge_pair(on_df: pd.DataFrame, off_df: pd.DataFrame) -> pd.DataFrame:
@@ -203,6 +221,7 @@ def merge_pair(on_df: pd.DataFrame, off_df: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 # Completed-log helpers
 # --------------------------------------------------------------------------
+
 
 def load_completed_pairs(log_path: str | None) -> set[tuple[str, str]]:
     """Load set of (on_path, off_path) pairs already completed."""
@@ -229,6 +248,7 @@ def append_completed(log_path: str, on_path: str, off_path: str):
 # --------------------------------------------------------------------------
 # Pass-2: read the intermediate, compute percentiles, build BED + mismatch
 # --------------------------------------------------------------------------
+
 
 def build_outputs(merged: pd.DataFrame, args):
     """From the complete merged DataFrame, compute percentiles and write outputs."""
@@ -259,30 +279,28 @@ def build_outputs(merged: pd.DataFrame, args):
     TTTN_enCas12a_spec = np.where(TTTN_enCas12a_spec == "", pick_series(merged, "TTTN_enCas12a"), TTTN_enCas12a_spec)
 
     _disp_deepcpf1 = _fmt_pct_raw(merged["deepcpf1_score"], merged["deepcpf1_score_pct"])
-    _disp_enpam    = _fmt_pct_raw(merged["enpam_gb_score"],  merged["enpam_gb_score_pct"])
+    _disp_enpam = _fmt_pct_raw(merged["enpam_gb_score"], merged["enpam_gb_score_pct"])
 
     _disp_TTTV_enc = _fmt_pct_raw(
-        pd.Series(TTTV_enCas12a_spec, index=merged.index),
-        merged.get("TTTV_enCas12a_aggregated_score_pct")
+        pd.Series(TTTV_enCas12a_spec, index=merged.index), merged.get("TTTV_enCas12a_aggregated_score_pct")
     )
     _disp_TTTN_enc = _fmt_pct_raw(
-        pd.Series(TTTN_enCas12a_spec, index=merged.index),
-        merged.get("TTTN_enCas12a_aggregated_score_pct")
+        pd.Series(TTTN_enCas12a_spec, index=merged.index), merged.get("TTTN_enCas12a_aggregated_score_pct")
     )
 
     _mouseOver = merged.apply(_fmt_mouseover, axis=1)
 
     # --- Adjust start/stop by strand
     start_raw = pd.to_numeric(merged["start"], errors="coerce").fillna(0).astype(int)
-    stop_raw  = pd.to_numeric(merged["stop"],  errors="coerce").fillna(0).astype(int)
-    strand    = merged["strand"].astype(str)
+    stop_raw = pd.to_numeric(merged["stop"], errors="coerce").fillna(0).astype(int)
+    strand = merged["strand"].astype(str)
 
     start_adj = np.where(strand == "+", start_raw - 4, start_raw)
     start_adj = np.maximum(start_adj, 0)
-    stop_adj  = np.where(strand == "-", stop_raw + 4, stop_raw)
+    stop_adj = np.where(strand == "-", stop_raw + 4, stop_raw)
 
     thick_start = np.where(strand == "+", start_adj + 4, start_adj)
-    thick_end   = np.where(strand == "+", stop_adj,      stop_adj - 4)
+    thick_end = np.where(strand == "+", stop_adj, stop_adj - 4)
 
     # --- Mismatch TSV (compact: counts + coordinates) ---
     # Written first so we can capture byte offsets for the BED file.
@@ -325,33 +343,36 @@ def build_outputs(merged: pd.DataFrame, args):
             fh.write(f"{counts_str}\t{coords_str}\n")
 
     # --- BED9+ output ---
-    bed_df = pd.DataFrame({
-        "chr":            merged["chr"],
-        "start":          start_adj.astype(int),
-        "stop":           stop_adj.astype(int),
-        "name":           " ",
-        "score":          0,
-        "strand":         strand,
-        "thickStart":     thick_start.astype(int),
-        "thickEnd":       thick_end.astype(int),
-        "itemRgb":        itemRgb_series,
-        "guideSeq":       merged["guideSeq"],
-        "pam":            pam_from_off,
-        "deepcpf1_score": _disp_deepcpf1,
-        "enpam_gb_score": _disp_enpam,
-        "TTTV_enCas12a_specificity": _disp_TTTV_enc,
-        "TTTN_enCas12a_specificity": _disp_TTTN_enc,
-        "unique-TTTV":    merged["unique-TTTV"],
-        "unique-TTTN":    merged["unique-TTTN"],
-        "_mouseOver":     _mouseOver,
-        "_offset":        offsets,
-    })
+    bed_df = pd.DataFrame(
+        {
+            "chr": merged["chr"],
+            "start": start_adj.astype(int),
+            "stop": stop_adj.astype(int),
+            "name": " ",
+            "score": 0,
+            "strand": strand,
+            "thickStart": thick_start.astype(int),
+            "thickEnd": thick_end.astype(int),
+            "itemRgb": itemRgb_series,
+            "guideSeq": merged["guideSeq"],
+            "pam": pam_from_off,
+            "deepcpf1_score": _disp_deepcpf1,
+            "enpam_gb_score": _disp_enpam,
+            "TTTV_enCas12a_specificity": _disp_TTTV_enc,
+            "TTTN_enCas12a_specificity": _disp_TTTN_enc,
+            "unique-TTTV": merged["unique-TTTV"],
+            "unique-TTTN": merged["unique-TTTN"],
+            "_mouseOver": _mouseOver,
+            "_offset": offsets,
+        }
+    )
 
     bed_df = bed_df.rename(columns={"chr": "#chr"})
     bed_df.to_csv(args.bed_out, sep="\t", index=False)
 
     if args.minbed:
         from os.path import splitext
+
         root, ext = splitext(args.bed_out)
         min_path = f"{root}.bed9{ext or '.tsv'}"
         bed9_df = bed_df.iloc[:, :9]
@@ -360,29 +381,41 @@ def build_outputs(merged: pd.DataFrame, args):
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        description="Merge off-target and on-target TSVs; output BED9+ and a mismatch TSV."
-    )
+    ap = argparse.ArgumentParser(description="Merge off-target and on-target TSVs; output BED9+ and a mismatch TSV.")
     inp = ap.add_mutually_exclusive_group(required=True)
-    inp.add_argument("--file-pairs", "-f",
-                     help="Two-column TSV (no header) with on-target path in column 1 "
-                          "and off-target path in column 2, one pair per line.")
-    inp.add_argument("--offtargets", "-x",
-                     help="Off-target TSV(s) from score_flashfry_cfd.py "
-                          "(comma-separated for multiple files, matched 1:1 with --ontargets)")
-    ap.add_argument("--ontargets", "-y",
-                    help="On-target TSV(s) (comma-separated for multiple files, "
-                         "matched 1:1 with --offtargets). Required when using -x.")
+    inp.add_argument(
+        "--file-pairs",
+        "-f",
+        help="Two-column TSV (no header) with on-target path in column 1 "
+        "and off-target path in column 2, one pair per line.",
+    )
+    inp.add_argument(
+        "--offtargets",
+        "-x",
+        help="Off-target TSV(s) from score_flashfry_cfd.py "
+        "(comma-separated for multiple files, matched 1:1 with --ontargets)",
+    )
+    ap.add_argument(
+        "--ontargets",
+        "-y",
+        help="On-target TSV(s) (comma-separated for multiple files, "
+        "matched 1:1 with --offtargets). Required when using -x.",
+    )
     ap.add_argument("--bed-out", "-b", required=True, help="Output BED9+ TSV path")
     ap.add_argument("--mismatch-out", "-m", required=True, help="Output mismatch TSV path")
-    ap.add_argument("--minbed", action="store_true",
-                help="Also write a minimal BED (first 9 columns) to a separate file.")
-    ap.add_argument("--plot-dists", action="store_true",
-                help="If set, save a histogram + CDF PNG for each score column.")
-    ap.add_argument("--completed-log", "-c",
-                    help="Path to a TSV log that tracks successfully merged pairs. "
-                         "On resume, pairs already in this log are skipped. "
-                         "Created automatically if it does not exist.")
+    ap.add_argument(
+        "--minbed", action="store_true", help="Also write a minimal BED (first 9 columns) to a separate file."
+    )
+    ap.add_argument(
+        "--plot-dists", action="store_true", help="If set, save a histogram + CDF PNG for each score column."
+    )
+    ap.add_argument(
+        "--completed-log",
+        "-c",
+        help="Path to a TSV log that tracks successfully merged pairs. "
+        "On resume, pairs already in this log are skipped. "
+        "Created automatically if it does not exist.",
+    )
 
     args = ap.parse_args()
 
@@ -397,23 +430,27 @@ def main():
                     continue
                 parts = line.split("\t")
                 if len(parts) != 2:
-                    print(f"ERROR: {args.file_pairs} line {lineno}: expected 2 tab-separated "
-                          f"columns, got {len(parts)}", file=sys.stderr)
+                    print(
+                        f"ERROR: {args.file_pairs} line {lineno}: expected 2 tab-separated columns, got {len(parts)}",
+                        file=sys.stderr,
+                    )
                     sys.exit(1)
                 on_paths.append(parts[0].strip())
                 off_paths.append(parts[1].strip())
     else:
         if not args.ontargets:
-            print("ERROR: --ontargets/-y is required when using --offtargets/-x.",
-                  file=sys.stderr)
+            print("ERROR: --ontargets/-y is required when using --offtargets/-x.", file=sys.stderr)
             sys.exit(1)
         off_paths = [p.strip() for p in args.offtargets.split(",") if p.strip()]
-        on_paths  = [p.strip() for p in args.ontargets.split(",") if p.strip()]
+        on_paths = [p.strip() for p in args.ontargets.split(",") if p.strip()]
 
     if len(off_paths) != len(on_paths):
-        print(f"ERROR: number of off-target files ({len(off_paths)}) does not match "
-              f"number of on-target files ({len(on_paths)}). "
-              f"Files must be provided in matched pairs.", file=sys.stderr)
+        print(
+            f"ERROR: number of off-target files ({len(off_paths)}) does not match "
+            f"number of on-target files ({len(on_paths)}). "
+            f"Files must be provided in matched pairs.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if not off_paths:
@@ -435,7 +472,7 @@ def main():
             print(f"Pair already completed, skipping: {off_path} + {on_path}")
         else:
             off_df = load_tsv(off_path)
-            on_df  = parse_on_target(load_tsv(on_path))
+            on_df = parse_on_target(load_tsv(on_path))
 
             validate_columns(on_df, REQUIRED_ON | {"contig", "guideSeq", "pam"}, "on-target")
             validate_columns(off_df, REQUIRED_OFF, "off-target")
@@ -474,14 +511,13 @@ def main():
     try:
         for i, (off_path, on_path) in enumerate(zip(off_paths, on_paths)):
             if (on_path, off_path) in completed:
-                print(f"Pair {i+1}/{len(off_paths)} already completed, skipping: "
-                      f"{off_path} + {on_path}")
+                print(f"Pair {i + 1}/{len(off_paths)} already completed, skipping: {off_path} + {on_path}")
                 continue
 
-            print(f"Processing pair {i+1}/{len(off_paths)}: {off_path} + {on_path}")
+            print(f"Processing pair {i + 1}/{len(off_paths)}: {off_path} + {on_path}")
 
             off_df = load_tsv(off_path)
-            on_df  = parse_on_target(load_tsv(on_path))
+            on_df = parse_on_target(load_tsv(on_path))
 
             if not header_written:
                 validate_columns(on_df, REQUIRED_ON | {"contig", "guideSeq", "pam"}, "on-target")
@@ -490,12 +526,15 @@ def main():
             try:
                 validate_contigs(on_df, off_df, on_path, off_path)
             except ValueError as e:
-                print(f"\nERROR at pair {i+1}/{len(off_paths)}:\n{e}", file=sys.stderr)
-                print(f"\n{total_merged} rows from {i} pairs were merged successfully "
-                      f"before this error.", file=sys.stderr)
+                print(f"\nERROR at pair {i + 1}/{len(off_paths)}:\n{e}", file=sys.stderr)
+                print(
+                    f"\n{total_merged} rows from {i} pairs were merged successfully before this error.", file=sys.stderr
+                )
                 if args.completed_log:
-                    print(f"Re-run with --completed-log {args.completed_log} to resume "
-                          f"from pair {i+1}.", file=sys.stderr)
+                    print(
+                        f"Re-run with --completed-log {args.completed_log} to resume from pair {i + 1}.",
+                        file=sys.stderr,
+                    )
                 sys.exit(1)
 
             n_on, n_off = len(on_df), len(off_df)
@@ -509,8 +548,7 @@ def main():
             print(f"  on={n_on}, off={n_off}, merged={len(chunk)}")
 
             # Append to intermediate file
-            chunk.to_csv(tmp_path, sep="\t", index=False,
-                         mode="a", header=not header_written)
+            chunk.to_csv(tmp_path, sep="\t", index=False, mode="a", header=not header_written)
             header_written = True
             del chunk
 

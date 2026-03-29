@@ -4,6 +4,7 @@ import argparse
 import os
 import pandas as pd
 
+
 def split_tsv(input_file, n, outdir=None):
     df = pd.read_csv(input_file, sep="\t")
     total_rows = len(df)
@@ -26,7 +27,7 @@ def split_tsv(input_file, n, outdir=None):
         if len(chunk_df) == 0:
             continue  # Skip empty chunks
 
-        output_file = f"{base_prefix}.{i+1}.tsv"
+        output_file = f"{base_prefix}.{i + 1}.tsv"
         chunk_df.to_csv(output_file, sep="\t", index=False)
 
         # Sanity check: remove file if it's empty
@@ -35,15 +36,18 @@ def split_tsv(input_file, n, outdir=None):
         else:
             print(f"Wrote {len(chunk_df)} rows to {output_file}")
 
+
 def main():
     parser = argparse.ArgumentParser(description="Split a TSV file into N parts.")
     parser.add_argument("tsv_file", help="Path to the input TSV file")
     parser.add_argument("-n", "--n", type=int, required=True, help="Number of output files")
-    parser.add_argument("-o", "--outdir", default=None,
-                        help="Directory to write output files (defaults to input file's directory)")
+    parser.add_argument(
+        "-o", "--outdir", default=None, help="Directory to write output files (defaults to input file's directory)"
+    )
     args = parser.parse_args()
 
     split_tsv(args.tsv_file, args.n, args.outdir)
+
 
 if __name__ == "__main__":
     main()
