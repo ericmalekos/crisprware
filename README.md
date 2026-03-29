@@ -29,8 +29,6 @@ With conda installed perform the following commands.
 git clone https://github.com/ericmalekos/crisprware crisprware && cd crisprware
 
 conda env create -f environment.yml && conda activate crisprware
-
-pip install .
 ```
 
 ### MacOs installation and troubleshooting

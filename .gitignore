@@ -1,18 +1,39 @@
-OldStuff/
-commands.md
-ChIP_Methods/
-crisprware.egg-info/
-RNA_Methods/
-annotations/
-.vscode/
-.Rhistory
-.ipynb_checkpoints/
+# 1. Ignore everything in the repository
+*
+
+# Allow
+!.gitignore
+
+!MANIFEST.in
+!README.md
+!environment.yml
+!license.txt
+!pyproject.toml
+
+# Directories: must un-ignore both the dir and its contents
+!.github/
+!.github/**
+!annotations/
+!annotations/**
+!colab_notebooks/
+!colab_notebooks/**
+!crisprware/
+!crisprware/**
+!dist/
+!dist/**
+!docker/
+!docker/**
+!images/
+!images/**
+!parasol_scripts/
+!parasol_scripts/**
+!scripts/
+!scripts/**
+!tests/
+!tests/**
+
+# Re-ignore generated/build artifacts (must come after un-ignore rules)
 __pycache__/
-gscan_test/
-Ribotish/
-all_scores/
-check_r_package.sh
-pipeline_testing/
-track_hubs/
-final_documents_for_submission/
-.claude
+*.pyc
+.ipynb_checkpoints/
+*.egg-info/
