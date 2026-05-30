@@ -32,41 +32,13 @@ DEFAULT_KEEP_COLS = [
     "2-mismatch",
     "3-mismatch",
     "4-mismatch",
-    "TTTN_enCas12a",
-    "TTTV_enCas12a",
     "TTTN_enCas12a_aggregated_score",
     "TTTV_enCas12a_aggregated_score",
-    "TTTN_2xNLS-Cas12a",
-    "TTTV_2xNLS-Cas12a",
     "TTTN_2xNLS-Cas12a_aggregated_score",
     "TTTV_2xNLS-Cas12a_aggregated_score",
     "unique-TTTV",
     "unique-TTTN",
 ]
-
-# Mismatch columns whose entries contain sequences that can be stripped.
-# Format: "SEQUENCE_chrom:pos:strand" -> "chrom:pos:strand"
-_MISMATCH_COLS = {"0-mismatch", "1-mismatch", "2-mismatch", "3-mismatch", "4-mismatch"}
-
-
-def _strip_sequences_from_mismatch(field: str) -> str:
-    """Strip leading sequences from mismatch bucket entries.
-
-    'TTTAGTGAAG_chrI:57761:-,TTTGATGATG_chrX:293146:+'
-    becomes 'chrI:57761:-,chrX:293146:+'
-    """
-    if not field or field == "":
-        return field
-    parts = []
-    for entry in field.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        if "_" in entry:
-            parts.append(entry.rsplit("_", 1)[1])
-        else:
-            parts.append(entry)
-    return ",".join(parts)
 
 
 def slim_offtarget_tsv(
@@ -116,9 +88,6 @@ def slim_offtarget_tsv(
     col_indices = [header.index(c) for c in keep_present]
     slim_header = "\t".join(keep_present) + "\n"
 
-    # -- Identify which output positions are mismatch columns (need sequence stripping) --
-    mismatch_positions = {j for j, name in enumerate(keep_present) if name in _MISMATCH_COLS}
-
     # -- Stream rows, writing only the slim columns --
     opener = gzip.open(output_path, "wt") if gzip_output else open(output_path, "w")
     with opener as dst, open(input_path, "r") as src:
@@ -126,13 +95,7 @@ def slim_offtarget_tsv(
         next(src)  # skip source header
         for line in src:
             fields = line.rstrip("\n").split("\t")
-            out_fields = []
-            for j, i in enumerate(col_indices):
-                val = fields[i] if i < len(fields) else ""
-                if j in mismatch_positions:
-                    val = _strip_sequences_from_mismatch(val)
-                out_fields.append(val)
-            dst.write("\t".join(out_fields) + "\n")
+            dst.write("\t".join(fields[i] if i < len(fields) else "" for i in col_indices) + "\n")
 
     return output_path
 

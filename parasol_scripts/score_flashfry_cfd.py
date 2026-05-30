@@ -72,8 +72,10 @@ def _expected_canonical_coord_from_contig(contig: str) -> str | None:
 
 def _remove_canonical_zero_mismatch(zcell: str, contig: str) -> str:
     """
-    zcell: 'SEQ1_chr:pos:strand,SEQ2_chr:pos:strand,...'
     Remove the entry whose coord matches the expected canonical coord from contig.
+    Supports both formats:
+      - New: 'chrom:pos:strand:score,...'
+      - Legacy: 'SEQ_chrom:pos:strand,...'
     """
     exp = _expected_canonical_coord_from_contig(contig)
     if not exp or pd.isna(zcell) or not str(zcell).strip():
@@ -84,13 +86,14 @@ def _remove_canonical_zero_mismatch(zcell: str, contig: str) -> str:
         tok = tok.strip()
         if not tok:
             continue
-        # coord is everything after the last underscore
+        # Extract coord (chrom:pos:strand) from entry
         if "_" in tok:
+            # Legacy format: SEQ_chrom:pos:strand
             coord = tok.rsplit("_", 1)[1].strip()
         else:
-            # unexpected format; keep as-is
-            keep.append(tok)
-            continue
+            # New format: chrom:pos:strand:score — first 3 colon fields
+            parts = tok.split(":")
+            coord = ":".join(parts[:3]) if len(parts) >= 3 else tok
         if coord != exp:
             keep.append(tok)
     return ",".join(keep)
@@ -111,27 +114,46 @@ def count_mismatches(a: str, b: str, trim5: int = 4, cap_len: int = 20) -> int:
 
 
 def bucket_offtargets_by_mismatch(
-    target_seq: str, loci_seqs_csv: str, loci_csv: str, max_bucket: int = 4
-) -> dict[int, list[str]]:
+    target_seq: str,
+    loci_seqs_csv: str,
+    loci_csv: str,
+    lookup: Dict[Tuple[int, str], float] | None = None,
+    max_bucket: int = 4,
+    cfd_scale: int = 1000,
+) -> Tuple[dict[int, list[str]], float, float]:
     """
     Pair offTargets_loci_seq with offTargets_loci (index-aligned), compare to target_seq,
-    and return buckets {0: [...], 1: [...], 2: [...], 3: [...], 4: [...]} with entries
-    like 'SEQ_COORD' e.g. 'TTTGAAA...CATTA_chrI:1031460:+'.
-    Entries with > max_bucket mismatches are ignored.
+    bucket by mismatch count, and compute per-entry CFD scores.
+
+    Returns:
+        (buckets, tttn_sum, tttv_sum)
+        buckets: {0: [...], 1: [...], ...} with entries like 'chrI:1031460:+:152'
+                 (coord:scaledCFD where scaledCFD = int(CFD * cfd_scale))
+        tttn_sum: sum of all raw CFD scores (for aggregated TTTN specificity)
+        tttv_sum: sum of raw CFD scores excluding TTTT-prefixed entries (for TTTV)
     """
     buckets = {i: [] for i in range(max_bucket + 1)}
+    tttn_sum = 0.0
+    tttv_sum = 0.0
     if not loci_seqs_csv or not loci_csv or not target_seq:
-        return buckets
+        return buckets, tttn_sum, tttv_sum
 
     seqs = [s for s in map(str.strip, str(loci_seqs_csv).split(",")) if s]
     coords = [c for c in map(str.strip, str(loci_csv).split(",")) if c]
 
-    # Align pairs by index; ignore any tail mismatch in lengths
     for s, c in zip(seqs, coords):
         mm = count_mismatches(target_seq, s)
         if 0 <= mm <= max_bucket:
-            buckets[mm].append(f"{s}_{c}")
-    return buckets
+            if lookup is not None:
+                cfd = cfd_score_pair(target_seq, s, lookup)
+                scaled = int(cfd * cfd_scale)
+                buckets[mm].append(f"{c}:{scaled}")
+                tttn_sum += cfd
+                if not s.startswith("TTTT"):
+                    tttv_sum += cfd
+            else:
+                buckets[mm].append(f"{s}_{c}")
+    return buckets, tttn_sum, tttv_sum
 
 
 def expand_target_from_contig(genome, contig_val: str) -> str:
@@ -436,18 +458,30 @@ def main():
     # ---- NEW: expand/replace target from contig 27-mer ----
     df["target"] = df["contig"].apply(lambda s: expand_target_from_contig(genome, s))
 
-    # ---- Pre-parse offTargets sequences (with genomic occurrence counts) for scoring ----
-    off_all_with_counts: List[List[Tuple[str, int]]] = df["offTargets"].apply(parse_offtargets_with_counts).tolist()
+    # ---- Load scoring matrices ----
+    lookups: List[Tuple[str, Dict[Tuple[int, str], float]]] = []
+    for matrix_path in args.matrices:
+        score_df = pd.read_csv(matrix_path)
+        matrix_name, lookup = build_score_lookup(score_df)
+        lookups.append((matrix_name, lookup))
 
-    created_score_cols: List[str] = []
+    primary_lookup = lookups[0][1] if lookups else None
 
-    # --- Bucket off-targets by mismatch count vs new 'target' ---
+    # --- Bucket off-targets by mismatch count, scoring each entry with CFD ---
     zero, one, two, three, four = [], [], [], [], []
+    agg_sums: Dict[str, Tuple[List[float], List[float]]] = {name: ([], []) for name, _ in lookups}
+
     for _, row in df.iterrows():
-        buckets = bucket_offtargets_by_mismatch(
-            target_seq=row.get("target", ""),
-            loci_seqs_csv=row.get("offTargets_loci_seq", ""),
-            loci_csv=row.get("offTargets_loci", ""),
+        target_seq = row.get("target", "")
+        loci_seqs = row.get("offTargets_loci_seq", "")
+        loci_csv = row.get("offTargets_loci", "")
+
+        # Primary bucket + score (first matrix, scores embedded in entries)
+        buckets, _, _ = bucket_offtargets_by_mismatch(
+            target_seq=target_seq,
+            loci_seqs_csv=loci_seqs,
+            loci_csv=loci_csv,
+            lookup=primary_lookup,
             max_bucket=4,
         )
         zero.append(",".join(buckets[0]))
@@ -455,6 +489,18 @@ def main():
         two.append(",".join(buckets[2]))
         three.append(",".join(buckets[3]))
         four.append(",".join(buckets[4]))
+
+        # Compute aggregation sums for ALL matrices
+        for matrix_name, lkp in lookups:
+            _, tttn_sum, tttv_sum = bucket_offtargets_by_mismatch(
+                target_seq=target_seq,
+                loci_seqs_csv=loci_seqs,
+                loci_csv=loci_csv,
+                lookup=lkp,
+                max_bucket=4,
+            )
+            agg_sums[matrix_name][0].append(tttn_sum)
+            agg_sums[matrix_name][1].append(tttv_sum)
 
     df["0-mismatch"] = zero
     df["1-mismatch"] = one
@@ -465,137 +511,78 @@ def main():
     df["0-mismatch"] = df.apply(
         lambda r: _remove_canonical_zero_mismatch(r.get("0-mismatch", ""), r.get("contig", "")), axis=1
     )
-    # ---- Build per-matrix score columns ----
-    for matrix_path in args.matrices:
-        score_df = pd.read_csv(matrix_path)
-        matrix_name, lookup = build_score_lookup(score_df)
 
-        col_all = f"TTTN_{matrix_name}"
-        col_v = f"TTTV_{matrix_name}"
-
-        all_scores_col: List[str] = []
-        v_scores_col: List[str] = []
-
-        for idx, row in df.iterrows():
-            target_seq = str(row["target"]).strip().upper()
-            seq_counts = off_all_with_counts[idx]
-
-            # TTTN: all off-targets, weighted by q_i
-            scores_all = [cfd_score_pair(target_seq, seq, lookup) * qi for seq, qi in seq_counts]
-            # TTTV: exclude TTTT-prefixed sequences
-            scores_v = [
-                cfd_score_pair(target_seq, seq, lookup) * qi for seq, qi in seq_counts if not seq.startswith("TTTT")
-            ]
-
-            all_scores_col.append(format_scores(scores_all))
-            v_scores_col.append(format_scores(scores_v))
-
-        df[col_all] = all_scores_col
-        df[col_v] = v_scores_col
-        created_score_cols.extend([col_all, col_v])
-
-    # ---- Aggregated scores: <col>_aggregated_score = 1 / sum(scores in <col>) ----
-    for col in created_score_cols:
-        agg_col = f"{col}_aggregated_score"
-
-        def compute_agg(cell):
-            s = str(cell).strip() if not pd.isna(cell) else ""
-            if s.lower() == "null":
-                return "Null"
-            vals = parse_score_list(s)
-            if not vals:
-                return ""  # no scores
-            total = sum(vals)
-            if total == 0:
-                return ""
-            return 1.0 / total
-
-        df[agg_col] = df[col].apply(compute_agg)
+    # ---- Aggregated scores: 1 / sum(CFD_i) per matrix ----
+    for matrix_name, _ in lookups:
+        tttn_sums, tttv_sums = agg_sums[matrix_name]
+        df[f"TTTN_{matrix_name}_aggregated_score"] = [f"{1.0 / ts:.6f}" if ts > 0 else "" for ts in tttn_sums]
+        df[f"TTTV_{matrix_name}_aggregated_score"] = [f"{1.0 / vs:.6f}" if vs > 0 else "" for vs in tttv_sums]
 
     # ---- Determine if unique in genome ----
+    # 0-mismatch entries are now coord:score format. We need the original
+    # sequences to determine TTTV/TTTT PAM status, so cross-reference
+    # with offTargets_loci_seq and offTargets_loci.
     uniq_ttTV_vals = []
     uniq_tttn_vals = []
 
-    for cell in df["0-mismatch"].fillna(""):
-        seqs = _split_zero_mismatch_cell(cell)
-
-        # NEW: require at least TWO exact matches to consider non-unique
-        if len(seqs) < 1:
+    for _, row in df.iterrows():
+        cell = row.get("0-mismatch", "")
+        if pd.isna(cell) or not str(cell).strip():
             uniq_ttTV_vals.append(True)
             uniq_tttn_vals.append(True)
             continue
 
-        has_ttTV = _has_ttTV(seqs)  # any seq starts with TTT + (A/C/G)
-        has_tttt = _has_tttt(seqs)  # any seq starts with TTTT
+        entries = [e.strip() for e in str(cell).split(",") if e.strip()]
+        if not entries:
+            uniq_ttTV_vals.append(True)
+            uniq_tttn_vals.append(True)
+            continue
 
-        if has_ttTV:
-            # any TTTV exact match present -> both False
+        # Extract coords from 0-mismatch entries (format: chrom:pos:strand:score)
+        zero_coords = set()
+        for e in entries:
+            parts = e.split(":")
+            if len(parts) >= 3:
+                zero_coords.add(f"{parts[0]}:{parts[1]}:{parts[2]}")
+
+        # Match back to loci sequences to check PAM prefix
+        loci_seqs = [s for s in map(str.strip, str(row.get("offTargets_loci_seq", "")).split(",")) if s]
+        loci_coords = [c for c in map(str.strip, str(row.get("offTargets_loci", "")).split(",")) if c]
+
+        has_tttv = False
+        has_tttt = False
+        for s, c in zip(loci_seqs, loci_coords):
+            if c in zero_coords:
+                if s.startswith("TTTT"):
+                    has_tttt = True
+                elif len(s) >= 4 and s[:3] == "TTT" and s[3] in "ACG":
+                    has_tttv = True
+
+        if has_tttv:
             uniq_ttTV_vals.append(False)
             uniq_tttn_vals.append(False)
         elif has_tttt:
-            # only TTTT exact matches (no TTTV) -> TTTV unique, TTTN not
             uniq_ttTV_vals.append(True)
             uniq_tttn_vals.append(False)
         else:
-            # fallback: some other exact matches -> both False
             uniq_ttTV_vals.append(False)
             uniq_tttn_vals.append(False)
 
     df["unique-TTTV"] = pd.Series(uniq_ttTV_vals, dtype="boolean")
     df["unique-TTTN"] = pd.Series(uniq_tttn_vals, dtype="boolean")
 
-    # ---- Round outputs to 6 decimals where requested ----
-    # Comma-separated list columns:
-    list_cols = [
-        "TTTN_enCas12a",
-        "TTTV_enCas12a",
-        "TTTN_2xNLS-Cas12a",
-        "TTTV_2xNLS-Cas12a",
-    ]
-    for col in list_cols:
-        if col in df.columns:
-            df[col] = df[col].apply(lambda x: _round_csv_list(x, nd=6))
-
-    # Aggregated (scalar) columns:
-    scalar_cols = [
-        "TTTN_enCas12a_aggregated_score",
-        "TTTV_enCas12a_aggregated_score",
-        "TTTN_2xNLS-Cas12a_aggregated_score",
-        "TTTV_2xNLS-Cas12a_aggregated_score",
-    ]
-    for col in scalar_cols:
-        if col in df.columns:
-            df[col] = df[col].apply(lambda x: _round_float_str(x, nd=6))
-
-    # ---- Drop offTargets before saving ----
-    df = df.drop(columns=["offTargets"], errors="ignore")
+    # ---- Drop unneeded columns before saving ----
+    drop_cols = {"offTargets", "offTargets_loci", "offTargets_loci_seq", "otCount"}
+    df = df[[c for c in df.columns if c not in drop_cols]]
 
     # ---- Write output ----
-    df.to_csv(args.output, sep="\t", index=False)
-
-    # ---- Write a slim copy dropping large columns + stripping sequences from mismatch entries ----
-    drop_cols = {"offTargets_loci", "offTargets_loci_seq", "otCount"}
-    mm_strip_cols = {"0-mismatch", "1-mismatch", "2-mismatch", "3-mismatch", "4-mismatch"}
-    slim_cols = [c for c in df.columns if c not in drop_cols]
-    slim_df = df[slim_cols].copy()
-    for col in mm_strip_cols:
-        if col in slim_df.columns:
-            slim_df[col] = (
-                slim_df[col]
-                .fillna("")
-                .apply(
-                    lambda cell: ",".join(
-                        e.rsplit("_", 1)[1] if "_" in e else e for e in (s.strip() for s in cell.split(",")) if e
-                    )
-                )
-            )
     if args.no_gzip:
-        slim_path = args.output + ".slim"
-        slim_df.to_csv(slim_path, sep="\t", index=False)
+        df.to_csv(args.output, sep="\t", index=False)
     else:
-        slim_path = args.output + ".slim.gz"
-        slim_df.to_csv(slim_path, sep="\t", index=False, compression="gzip")
-    print(f"Wrote slim off-target file: {slim_path}")
+        if not args.output.endswith(".gz"):
+            args.output += ".gz"
+        df.to_csv(args.output, sep="\t", index=False, compression="gzip")
+    print(f"Wrote {args.output}")
 
 
 if __name__ == "__main__":

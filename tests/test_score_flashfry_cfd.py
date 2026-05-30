@@ -182,8 +182,10 @@ class TestCountMismatches(unittest.TestCase):
 
 class TestBucketOfftargetsByMismatch(unittest.TestCase):
     def test_empty_inputs(self):
-        result = bucket_offtargets_by_mismatch("", "", "")
-        self.assertEqual(result, {0: [], 1: [], 2: [], 3: [], 4: []})
+        buckets, tttn, tttv = bucket_offtargets_by_mismatch("", "", "")
+        self.assertEqual(buckets, {0: [], 1: [], 2: [], 3: [], 4: []})
+        self.assertEqual(tttn, 0.0)
+        self.assertEqual(tttv, 0.0)
 
     def test_known_bucketing(self):
         target = "TTTTACGTACGTACGTACGTACGTAC"  # 25 bases
@@ -194,18 +196,18 @@ class TestBucketOfftargetsByMismatch(unittest.TestCase):
         loci_seqs = f"{same},{one_mm}"
         loci_coords = "chrI:100:+,chrI:200:+"
 
-        result = bucket_offtargets_by_mismatch(target, loci_seqs, loci_coords)
-        self.assertEqual(len(result[0]), 1)
-        self.assertIn("chrI:100:+", result[0][0])
-        self.assertEqual(len(result[1]), 1)
-        self.assertIn("chrI:200:+", result[1][0])
+        buckets, _, _ = bucket_offtargets_by_mismatch(target, loci_seqs, loci_coords)
+        self.assertEqual(len(buckets[0]), 1)
+        self.assertIn("chrI:100:+", buckets[0][0])
+        self.assertEqual(len(buckets[1]), 1)
+        self.assertIn("chrI:200:+", buckets[1][0])
 
     def test_beyond_max_bucket_ignored(self):
         target = "TTTTACGTACGTACGTACGTACGTAC"
         # 5+ mismatches
         far_off = "TTTTGGGGGGGGGGGGGGGGGGTTTTT"
-        result = bucket_offtargets_by_mismatch(target, far_off, "chrI:100:+")
-        total = sum(len(v) for v in result.values())
+        buckets, _, _ = bucket_offtargets_by_mismatch(target, far_off, "chrI:100:+")
+        total = sum(len(v) for v in buckets.values())
         self.assertEqual(total, 0)
 
 
@@ -517,7 +519,7 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         out = tempfile.NamedTemporaryFile(suffix=".tsv", delete=False).name
         try:
             old_argv = sys.argv
-            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA]
+            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA, "--no-gzip"]
             main()
             sys.argv = old_argv
             df = pd.read_csv(out, sep="\t")
@@ -548,7 +550,7 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         out = tempfile.NamedTemporaryFile(suffix=".tsv", delete=False).name
         try:
             old_argv = sys.argv
-            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA]
+            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA, "--no-gzip"]
             main()
             sys.argv = old_argv
             df = pd.read_csv(out, sep="\t")
@@ -579,7 +581,7 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         out = tempfile.NamedTemporaryFile(suffix=".tsv", delete=False).name
         try:
             old_argv = sys.argv
-            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA]
+            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA, "--no-gzip"]
             main()
             sys.argv = old_argv
             df = pd.read_csv(out, sep="\t")
@@ -587,16 +589,11 @@ class TestMainPipelineSynthetic(unittest.TestCase):
             expected_cols = {
                 "contig",
                 "target",
-                "otCount",
-                "offTargets_loci",
-                "offTargets_loci_seq",
                 "0-mismatch",
                 "1-mismatch",
                 "2-mismatch",
                 "3-mismatch",
                 "4-mismatch",
-                "TTTN_enCas12a",
-                "TTTV_enCas12a",
                 "TTTN_enCas12a_aggregated_score",
                 "TTTV_enCas12a_aggregated_score",
                 "unique-TTTV",
@@ -636,7 +633,7 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         out = tempfile.NamedTemporaryFile(suffix=".tsv", delete=False).name
         try:
             old_argv = sys.argv
-            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA]
+            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA, "--no-gzip"]
             main()
             sys.argv = old_argv
             df = pd.read_csv(out, sep="\t", dtype=str)
@@ -673,7 +670,7 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         out = tempfile.NamedTemporaryFile(suffix=".tsv", delete=False).name
         try:
             old_argv = sys.argv
-            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA]
+            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA, "--no-gzip"]
             main()
             sys.argv = old_argv
             df = pd.read_csv(out, sep="\t")
@@ -708,22 +705,33 @@ class TestMainPipelineSynthetic(unittest.TestCase):
         out = tempfile.NamedTemporaryFile(suffix=".tsv", delete=False).name
         try:
             old_argv = sys.argv
-            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA]
+            sys.argv = ["prog", "-i", inp, "-m", MATRIX_CSV, "-o", out, "-g", CHRIII_FASTA, "--no-gzip"]
             main()
             sys.argv = old_argv
             df = pd.read_csv(out, sep="\t", dtype=str)
 
-            scores_str = df["TTTN_enCas12a"].iloc[0]
             agg_str = df["TTTN_enCas12a_aggregated_score"].iloc[0]
+            self.assertTrue(agg_str and str(agg_str).strip(), "Expected non-empty aggregated score")
 
-            if scores_str and str(scores_str).strip():
-                individual = parse_score_list(scores_str)
-                if individual:
-                    expected_agg = 1.0 / sum(individual)
-                    actual_agg = float(agg_str)
-                    # Aggregated score is computed from the raw (pre-rounded) values,
-                    # then itself rounded to 6 decimals, so allow small tolerance
-                    self.assertAlmostEqual(actual_agg, expected_agg, places=3)
+            # Verify aggregated score by summing scaled CFDs from mismatch entries
+            # Each entry is chrom:pos:strand:scaledCFD
+            total_cfd = 0.0
+            for col in ["0-mismatch", "1-mismatch", "2-mismatch", "3-mismatch", "4-mismatch"]:
+                cell = df[col].iloc[0]
+                if pd.isna(cell) or not str(cell).strip():
+                    continue
+                for entry in str(cell).split(","):
+                    entry = entry.strip()
+                    if not entry:
+                        continue
+                    parts = entry.split(":")
+                    if len(parts) >= 4:
+                        total_cfd += int(parts[3]) / 1000.0
+
+            if total_cfd > 0:
+                expected_agg = 1.0 / total_cfd
+                actual_agg = float(agg_str)
+                self.assertAlmostEqual(actual_agg, expected_agg, places=2)
         finally:
             os.unlink(inp)
             os.unlink(out)
@@ -825,6 +833,7 @@ class TestUniquenessThroughMain(unittest.TestCase):
                 out,
                 "-g",
                 CHRIII_FASTA,
+                "--no-gzip",
             ]
             main()
             sys.argv = old_argv
@@ -844,11 +853,7 @@ class TestUniquenessThroughMain(unittest.TestCase):
             self.assertTrue(df["unique-TTTV"].iloc[2])
             self.assertTrue(df["unique-TTTN"].iloc[2])
         finally:
-            # Clean up both the output and the slim file
             os.unlink(out)
-            slim = out + ".slim.tsv.gz"
-            if os.path.exists(slim):
-                os.unlink(slim)
 
     def test_mismatch_buckets_populated(self):
         """Verify that 0-mismatch entries exist and canonical self-match is removed."""
@@ -868,6 +873,7 @@ class TestUniquenessThroughMain(unittest.TestCase):
                 out,
                 "-g",
                 CHRIII_FASTA,
+                "--no-gzip",
             ]
             main()
             sys.argv = old_argv
@@ -917,26 +923,27 @@ class TestUniquenessThroughMain(unittest.TestCase):
                 out,
                 "-g",
                 CHRIII_FASTA,
+                "--no-gzip",
             ]
             main()
             sys.argv = old_argv
 
             df = pd.read_csv(out, sep="\t", dtype=str)
 
-            # Row 0: single token with count=2, 0 mismatches => CFD=1.0
-            # Weighted score should be 1.0 * 2 = 2.0
-            tttn_scores = df["TTTN_enCas12a"].iloc[0]
-            score_val = float(tttn_scores)
-            self.assertAlmostEqual(score_val, 2.0, msg=f"Expected 2.0 (CFD=1.0 * q_i=2), got {score_val}")
-
-            # Aggregated: 1 / 2.0 = 0.5
+            # Row 0: single token with count=2 at 2 loci, 0 mismatches => each CFD=1.0
+            # Sum of CFDs across both loci = 2.0, so aggregated = 1/2.0 = 0.5
             agg = float(df["TTTN_enCas12a_aggregated_score"].iloc[0])
             self.assertAlmostEqual(agg, 0.5, places=4)
+
+            # Each 0-mismatch entry should have scaledCFD = 1000 (CFD=1.0 * 1000)
+            # (one entry remains after canonical self-removal)
+            zero_mm = str(df["0-mismatch"].iloc[0])
+            entries = [e.strip() for e in zero_mm.split(",") if e.strip()]
+            for entry in entries:
+                parts = entry.split(":")
+                self.assertEqual(parts[3], "1000", f"Expected scaled CFD 1000, got {parts[3]}")
         finally:
             os.unlink(out)
-            slim = out + ".slim.tsv.gz"
-            if os.path.exists(slim):
-                os.unlink(slim)
 
 
 # ---------------------------------------------------------------------------
@@ -981,6 +988,7 @@ class TestEndToEndChrIIIOnly(unittest.TestCase):
                 out,
                 "-g",
                 CHRIII_FASTA,
+                "--no-gzip",
             ]
             main()
             sys.argv = old_argv
@@ -991,21 +999,21 @@ class TestEndToEndChrIIIOnly(unittest.TestCase):
             # Same number of rows (67 FWD start=0 stop=24 rows)
             self.assertEqual(len(df_out), len(df_ref))
 
-            # Same columns
-            self.assertEqual(set(df_out.columns), set(df_ref.columns))
+            # Core columns present (individual score lists removed, large columns dropped)
+            for col in [
+                "contig",
+                "target",
+                "0-mismatch",
+                "TTTN_enCas12a_aggregated_score",
+                "TTTV_enCas12a_aggregated_score",
+                "unique-TTTV",
+                "unique-TTTN",
+            ]:
+                self.assertIn(col, df_out.columns, f"Missing column: {col}")
 
             # Contig column should match exactly
             self.assertTrue(
                 (df_out["contig"] == df_ref["contig"]).all(), "Contig columns differ between output and reference"
-            )
-
-            # otCount should match
-            self.assertTrue((df_out["otCount"] == df_ref["otCount"]).all(), "otCount columns differ")
-
-            # offTargets_loci should match (parsing is genome-independent)
-            self.assertTrue(
-                (df_out["offTargets_loci"].fillna("") == df_ref["offTargets_loci"].fillna("")).all(),
-                "offTargets_loci columns differ",
             )
         finally:
             os.unlink(out)
