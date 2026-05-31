@@ -21,6 +21,8 @@
 !crispr-ots/**
 !crisprware/
 !crisprware/**
+!conda-recipe/
+!conda-recipe/**
 !dist/
 !dist/**
 !docker/
