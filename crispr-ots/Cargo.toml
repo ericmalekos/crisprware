@@ -6,6 +6,7 @@ members = [
     "crates/crispr-scan",
     "crates/crispr-score",
     "crates/crispr-cli",
+    "crates/crispr-scan-gpu",
 ]
 
 [workspace.package]

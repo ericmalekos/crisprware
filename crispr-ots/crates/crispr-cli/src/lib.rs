@@ -13,5 +13,6 @@ pub mod tsv;
 pub use build::{build_table_in_memory, run_build, BuildConfig, BuildError};
 pub use crispr_score::SpecConvention;
 pub use discover::{
-    run_discover, DiscoverConfig, DiscoverError, DiscoverInput, OutputFormat, ScoreMetric,
+    run_discover, run_discover_with, DiscoverConfig, DiscoverError, DiscoverInput, OutputFormat,
+    ScannerKind, ScoreMetric,
 };

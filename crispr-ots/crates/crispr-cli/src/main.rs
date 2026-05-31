@@ -17,8 +17,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crispr_cli::discover::enzyme_from_name;
 use crispr_cli::{
-    run_build, run_discover, BuildConfig, DiscoverConfig, DiscoverInput, OutputFormat,
-    ScoreMetric, SpecConvention,
+    run_build, run_discover_with, BuildConfig, DiscoverConfig, DiscoverInput, OutputFormat,
+    ScannerKind, ScoreMetric, SpecConvention,
 };
 use crispr_db::MmapDb;
 
@@ -118,6 +118,13 @@ struct EnumerateArgs {
     /// logical CPUs).
     #[arg(short, long, default_value_t = 0)]
     threads: usize,
+
+    /// Scan backend. `cpu` (default) is the multithreaded SIMD bin-scanner
+    /// (AVX-512 VPOPCNTDQ where the CPU supports it, otherwise AVX2). `gpu`
+    /// runs the CUDA kernel and requires a binary built with `--features gpu`
+    /// plus an available NVIDIA device.
+    #[arg(long, value_enum, default_value_t = ScannerArg::Cpu)]
+    scanner: ScannerArg,
 
     /// Output format. `csv` emits one row per off-target hit, matching
     /// GuideScan2's enumerate CSV. `tsv` emits one row per guide with
@@ -220,6 +227,21 @@ impl From<SpecConventionArg> for SpecConvention {
         match arg {
             SpecConventionArg::Guidescan => Self::Guidescan,
             SpecConventionArg::Flashfry => Self::Flashfry,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ScannerArg {
+    Cpu,
+    Gpu,
+}
+
+impl From<ScannerArg> for ScannerKind {
+    fn from(arg: ScannerArg) -> Self {
+        match arg {
+            ScannerArg::Cpu => Self::Cpu,
+            ScannerArg::Gpu => Self::Gpu,
         }
     }
 }
@@ -343,7 +365,7 @@ fn run_enumerate_cmd(args: EnumerateArgs) -> Result<()> {
             )
         },
     };
-    run_discover(&mmap, &config).context("enumerate failed")
+    run_discover_with(&mmap, &config, args.scanner.into()).context("enumerate failed")
 }
 
 fn spec_default_for(format: OutputFormat) -> SpecConvention {

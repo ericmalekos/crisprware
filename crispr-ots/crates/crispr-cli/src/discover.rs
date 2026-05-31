@@ -65,6 +65,18 @@ pub enum OutputFormat {
     Both,
 }
 
+/// Which scan backend to run the off-target search on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScannerKind {
+    /// Multithreaded SIMD CPU bin-scanner (AVX-512 VPOPCNTDQ where available,
+    /// otherwise AVX2/scalar via `wide`). The default.
+    #[default]
+    Cpu,
+    /// CUDA GPU kernel (`crispr-scan-gpu`). Requires a binary built with
+    /// `--features gpu` and an available NVIDIA device.
+    Gpu,
+}
+
 /// Input-file shape for `enumerate`.
 #[derive(Debug, Clone)]
 pub enum DiscoverInput {
@@ -109,6 +121,9 @@ pub enum DiscoverError {
     Io(std::io::Error),
     QueryEmpty,
     KmersCsv(kmers_csv::KmerCsvError),
+    /// GPU backend requested but unavailable (binary built without
+    /// `--features gpu`), or a CUDA error occurred during setup or scanning.
+    Gpu(String),
 }
 
 impl std::fmt::Display for DiscoverError {
@@ -117,6 +132,7 @@ impl std::fmt::Display for DiscoverError {
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::QueryEmpty => write!(f, "query FASTA contained no contigs"),
             Self::KmersCsv(e) => write!(f, "{e}"),
+            Self::Gpu(m) => write!(f, "GPU scan error: {m}"),
         }
     }
 }
@@ -125,7 +141,7 @@ impl std::error::Error for DiscoverError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(e) => Some(e),
-            Self::QueryEmpty => None,
+            Self::QueryEmpty | Self::Gpu(_) => None,
             Self::KmersCsv(e) => Some(e),
         }
     }
@@ -153,8 +169,25 @@ impl From<kmers_csv::KmerCsvError> for DiscoverError {
 /// Panics if any `usize` index doesn't fit in `u32` — only possible with
 /// pathologically large inputs (billions of contigs or guides). Treated
 /// as unreachable for realistic genome-scale workloads.
-#[allow(clippy::too_many_lines)]
 pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(), DiscoverError> {
+    run_discover_with(source, config, ScannerKind::Cpu)
+}
+
+/// As [`run_discover`], but with an explicit scan backend ([`ScannerKind`]).
+///
+/// # Errors
+/// As [`run_discover`], plus [`DiscoverError::Gpu`] when the GPU backend is
+/// requested on a binary built without `--features gpu`, or a CUDA error
+/// occurs during GPU setup or scanning.
+///
+/// # Panics
+/// As [`run_discover`].
+#[allow(clippy::too_many_lines)]
+pub fn run_discover_with(
+    source: &dyn BinSource,
+    config: &DiscoverConfig,
+    scanner: ScannerKind,
+) -> Result<(), DiscoverError> {
     let trace = std::env::var("CRISPR_OTS_TRACE").is_ok();
     let t_start = std::time::Instant::now();
 
@@ -180,9 +213,11 @@ pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(
             site: g.site,
         })
         .collect();
-    let scanner = BinScanner::new(source);
     let t_scan = std::time::Instant::now();
-    let hits = scanner.scan(&guides, config.max_mismatches);
+    let hits = match scanner {
+        ScannerKind::Cpu => BinScanner::new(source).scan(&guides, config.max_mismatches),
+        ScannerKind::Gpu => scan_on_gpu(source, &guides, config.max_mismatches)?,
+    };
     if trace {
         eprintln!(
             "[trace] scan {} guides: {:.2}s ({} raw hits)",
@@ -363,6 +398,33 @@ pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(
         eprintln!("[trace] total: {:.2}s", t_start.elapsed().as_secs_f64());
     }
     Ok(())
+}
+
+/// Run the scan on the CUDA backend. Present only when built with
+/// `--features gpu`.
+#[cfg(feature = "gpu")]
+fn scan_on_gpu(
+    source: &dyn BinSource,
+    guides: &[Guide],
+    max_mismatches: u8,
+) -> Result<Vec<Hit>, DiscoverError> {
+    let scanner = crispr_scan_gpu::GpuScanner::new(source)
+        .map_err(|e| DiscoverError::Gpu(e.to_string()))?;
+    Ok(scanner.scan(guides, max_mismatches))
+}
+
+/// Stub for builds without GPU support: always errors with a build hint.
+#[cfg(not(feature = "gpu"))]
+fn scan_on_gpu(
+    _source: &dyn BinSource,
+    _guides: &[Guide],
+    _max_mismatches: u8,
+) -> Result<Vec<Hit>, DiscoverError> {
+    Err(DiscoverError::Gpu(
+        "this crispr-ots binary was built without GPU support; rebuild with \
+         `cargo build --features gpu` to use `--scanner gpu`"
+            .to_string(),
+    ))
 }
 
 /// Side-channel metadata for one input guide. The variant carries the

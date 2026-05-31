@@ -1,0 +1,29 @@
+[package]
+name = "crispr-scan-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "CUDA (cudarc) GPU off-target scan kernel implementing the crispr-scan Scanner trait"
+
+[lints]
+workspace = true
+
+[dependencies]
+crispr-encoding = { path = "../crispr-encoding" }
+crispr-db = { path = "../crispr-db" }
+crispr-scan = { path = "../crispr-scan" }
+bytemuck = "1"
+# driver + nvrtc only; `dynamic-loading` dlopens libcuda/libnvrtc at runtime so
+# this crate builds on machines without the CUDA toolkit (e.g. the login node)
+# and loads the real libraries on the GPU nodes. `cuda-12060` selects the
+# binding version matching the cluster's CUDA 12.6.
+cudarc = { version = "0.19.7", default-features = false, features = [
+    "driver",
+    "nvrtc",
+    "std",
+    "dynamic-loading",
+    "cuda-12060",
+] }
