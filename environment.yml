@@ -19,7 +19,8 @@ channels:
 dependencies:
   - python=3.11
   - biopython>=1.8
-  - crispr-ots          # off-target scanner; drop-in for guidescan
+  - crispr-ots          # off-target scanner; fast exact-mismatch (default engine)
+  - guidescan>=2.2      # off-target scanner; supports RNA/DNA bulges
   - pybedtools>=0.9
   - matplotlib
   - pybigwig

@@ -19,11 +19,11 @@ SUBCOMMANDS = {
     },
     "index_genome": {
         "module_path": "crisprware.index_genome",
-        "help": "Build Guidescan2 indices for off-target assessment.",
+        "help": "Build crispr-ots and/or Guidescan2 indices for off-target assessment.",
     },
     "score_guides": {
         "module_path": "crisprware.score_guides",
-        "help": "Score guides with RS3 cleavage and Guidescan2 specificity.",
+        "help": "Score guides with RS3 cleavage and crispr-ots/Guidescan2 off-target specificity.",
     },
     "rank_guides": {
         "module_path": "crisprware.rank_guides",

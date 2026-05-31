@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
 """
-    This script takes the output from generate_guides and adds
-    with  on-target Ruleset3 and off-target Guidescan2 scores.
+    This script takes the output from generate_guides and adds on-target
+    Ruleset3 cleavage scores and off-target specificity scores. Off-target
+    scoring runs against one or more indices built by index_genome; the engine
+    (crispr-ots or guidescan2) is auto-detected per index, and passing one index
+    of each type scores with both methods in a single run.
 
     score_guides --grna_bed tests/test_data/gRNA_test.bed \
         --guidescan2_indices tests/test_data/Hg38_chr21_gscan_index/chr21.fa.index\
@@ -23,6 +26,11 @@ from os import remove
 from crisprware.utils.utility_functions import create_output
 from crisprware.utils.dna_sequence_functions import map_ambiguous_sequence
 
+# Both engines expose the same `enumerate` CLI and emit the same CSV schema; only
+# the binary name and the on-disk index format differ. The engine is inferred from
+# the index files (see detect_indexer) so score_guides can mix both in one run.
+INDEXER_EXECUTABLE = {"crispr-ots": "crispr-ots", "guidescan2": "guidescan"}
+
 
 def restricted_float(x: Union[str, float]) -> float:
     x = float(x)
@@ -39,8 +47,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "-i",
         "--guidescan2_indices",
         type=str,
-        help="One or more, space-separate Guidescan2 indices. \
-            A specificity score will be calculated against each index separately.",
+        help="One or more, space-separated off-target indices (crispr-ots and/or \
+            guidescan2; the engine is auto-detected from each index's files). A \
+            separate specificity column is produced for each index, so passing one \
+            index of each type scores guides with both methods in a single run.",
         required=False,
         nargs="*",
     )
@@ -72,11 +82,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
     parser.add_argument(
-        "--rna_bulges", type=int, default=0, help="RNA bulges for Guidescan2 off-target scoring [default: 0]"
+        "--rna_bulges",
+        type=int,
+        default=0,
+        help="RNA bulges for off-target scoring. guidescan2 indices only; crispr-ots \
+            requires 0 [default: 0]",
     )
 
     parser.add_argument(
-        "--dna_bulges", type=int, default=0, help="DNA bulges for Guidescan2 off-target scoring [default: 0]"
+        "--dna_bulges",
+        type=int,
+        default=0,
+        help="DNA bulges for off-target scoring. guidescan2 indices only; crispr-ots \
+            requires 0 [default: 0]",
     )
 
     parser.add_argument(
@@ -155,6 +173,7 @@ def gscan_scoring(
     guideCSV: str,
     output: str,
     guideIndex: str,
+    indexer: str = "crispr-ots",
     threads: int = 2,
     mismatches: int = 3,
     rna_bulges: int = 0,
@@ -165,26 +184,36 @@ def gscan_scoring(
     keep_gscan: bool = False,
 ) -> pd.DataFrame:
     """
-    Executes GuideScan's enumerate command with specified parameters and processes the output.
+    Executes the selected engine's enumerate command with specified parameters and processes the output.
 
     Parameters:
     - guideCSV (str): The path to the input CSV file containing guide RNA sequences.
     - output (str): The path where the output CSV file will be saved.
     - guideIndex (str): The index used for off-target scoring.
-    - threads (int, optional): The number of threads to use for the GuideScan command. Defaults to 2.
+    - indexer (str, optional): Which engine to run, 'crispr-ots' (default) or 'guidescan2'.
+      Both share the same enumerate CLI; crispr-ots requires rna_bulges == dna_bulges == 0.
+    - threads (int, optional): The number of threads to use for the command. Defaults to 2.
     - mismatches (int, optional): The maximum number of mismatches allowed. Defaults to 3.
     - rna_bulges (int, optional): The number of RNA bulges allowed. Defaults to 0.
     - dna_bulges (int, optional): The number of DNA bulges allowed. Defaults to 0.
     - threshold (int, optional): The threshold parameter for removing low mismatches. Defaults to 2.
-    - mode (str, optional): The mode of operation for the GuideScan command. Defaults to "succinct".
+    - mode (str, optional): The mode of operation for the command. Defaults to "succinct".
     - alt_pam (str, optional): An alternative PAM sequence to be considered. Defaults to an empty string.
 
     Returns:
-    - pandas.DataFrame: A DataFrame containing the processed output from the GuideScan command.
+    - pandas.DataFrame: A DataFrame containing the processed output from the enumerate command.
     """
 
+    if indexer == "crispr-ots" and (rna_bulges > 0 or dna_bulges > 0):
+        raise ValueError(
+            f"\n\tcrispr-ots does not support RNA/DNA bulges "
+            f"(got --rna_bulges {rna_bulges}, --dna_bulges {dna_bulges} for index '{guideIndex}').\
+            \n\tBuild a guidescan2 index for bulge-aware off-target scoring, "
+            f"or set --rna_bulges 0 --dna_bulges 0.\n"
+        )
+
     cmd = [
-        "crispr-ots",
+        INDEXER_EXECUTABLE[indexer],
         "enumerate",
         "--max-off-targets",
         "-1",
@@ -311,16 +340,30 @@ def cleavage_scoring(
     return gRNADF
 
 
-def check_files_exist(index: str) -> None:
-    """Check the existence of the three required files for a given index."""
+def detect_indexer(index: str) -> str:
+    """Infer which engine built an off-target index from its files on disk.
 
-    files = [f"{index}.reverse", f"{index}.forward", f"{index}.gs"]
-    for file in files:
-        if not Path(file).exists():
-            raise FileNotFoundError(
-                f"\n\n\tRequired file {file} not found for index {index}. \
-                                    \n\tMake sure \n\t\t{index}.reverse \n\t\t{index}.forward \n\t\t{index}.gs \n\texist\n"
-            )
+    crispr-ots writes '<index>.crot' (alongside zero-byte guidescan-compatible
+    stubs), while Guidescan2 writes the FM-index trio
+    '<index>.gs/.forward/.reverse'. The '.crot' file is therefore the unambiguous
+    signal for crispr-ots and is checked first.
+
+    Returns 'crispr-ots' or 'guidescan2'; raises FileNotFoundError if neither
+    index is present.
+    """
+
+    if Path(f"{index}.crot").exists():
+        return "crispr-ots"
+
+    if all(Path(f"{index}.{ext}").exists() for ext in ("gs", "forward", "reverse")):
+        return "guidescan2"
+
+    raise FileNotFoundError(
+        f"\n\n\tNo off-target index found at '{index}'.\
+        \n\tExpected either '{index}.crot' (crispr-ots) or \
+        \n\t'{index}.gs', '{index}.forward', '{index}.reverse' (guidescan2).\
+        \n\tBuild one with: index_genome --indexer {{crispr-ots,guidescan2}} -f <fasta>\n"
+    )
 
 
 def get_alt_pams(pams: List[str]) -> str:
@@ -348,9 +391,23 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         args = parse_arguments()
 
     # print("ALT PAMS" + args.alt_pams)
+    index_engines = {}
     if not args.skip_gs2:
-        for index in args.guidescan2_indices:
-            check_files_exist(index)
+        if not args.guidescan2_indices:
+            raise ValueError(
+                "\n\tNo off-target indices provided. Pass one or more with '--guidescan2_indices' \
+                \n\t(crispr-ots and/or guidescan2 indices, auto-detected), or set '--skip_gs2'.\n"
+            )
+        # Auto-detect each index's engine; this also validates that the files exist.
+        index_engines = {index: detect_indexer(index) for index in args.guidescan2_indices}
+
+        crispr_ots_indices = [i for i, e in index_engines.items() if e == "crispr-ots"]
+        if (args.rna_bulges > 0 or args.dna_bulges > 0) and crispr_ots_indices:
+            raise ValueError(
+                f"\n\t--rna_bulges/--dna_bulges > 0 requires guidescan2 indices, but these are \
+                \n\tcrispr-ots indices: {crispr_ots_indices}.\n\tBuild guidescan2 indices for \
+                \n\tbulge-aware scoring, or set --rna_bulges 0 --dna_bulges 0.\n"
+            )
 
     if not args.skip_rs3 and not args.tracr:
         raise ValueError("\n\tThe '--tracr' argument is required for RS3 scoring but was not provided.\n")
@@ -402,8 +459,9 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
 
     if not args.skip_gs2:
         for gscanIndex in args.guidescan2_indices:
+            indexer = index_engines[gscanIndex]
             print(
-                "\n\tBeginning Guidescan2 specificity scoring against "
+                f"\n\tBeginning {indexer} specificity scoring against "
                 + gscanIndex
                 + "\n\tIf memory constrained reduce '--chunk_size'\n"
             )
@@ -421,6 +479,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
                         guideCSV=input,
                         output=output,
                         guideIndex=gscanIndex,
+                        indexer=indexer,
                         threads=args.threads,
                         mismatches=args.mismatches,
                         rna_bulges=args.rna_bulges,
