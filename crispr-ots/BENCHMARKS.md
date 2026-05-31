@@ -512,6 +512,101 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 Apple Silicon / aarch64 binaries are unaffected — NEON is part of the
 AArch64 ABI.
 
+## GPU feasibility analysis (2026-05-30)
+
+Profile of the mouse Cas12a 16-thread enumerate (1 000 guides,
+`--bin-width 11`, warm cache, 23-nt protospacer, cap=500):
+
+```
+[trace] scan 1038 guides: 3.85s (12,160,287 raw hits)
+[trace] dropped 7,345,252 off-target sequences past --max-off-targets-per-bin cap
+[trace] total: 4.67s
+```
+
+The bin-scan SIMD kernel is **77 %** of wall (3.85 s / 4.67 s). GPU
+acceleration only matters if it speeds up that kernel by enough to
+shrink total wall meaningfully — Amdahl's ceiling for this profile is
+~4.3× even with an instant-fast scan.
+
+### Hardware on this box
+- **GPU**: NVIDIA GeForce GTX 1650 Ti Mobile (Turing, compute 7.5,
+  1 024 CUDA cores, ~2.8 TFLOPS FP32, ~128 GB/s on-card memory bandwidth)
+- **VRAM**: **4 GiB** (≈ 3.7 GiB free at idle)
+- **CPU**: i7-10870H, 16 logical cores, AVX2 + BMI2 + POPCNT but no
+  AVX-512 VPOPCNTDQ
+- **CPU RAM**: 62 GiB; mouse `.crot` files mmap'd from NVMe
+
+### VRAM is the deciding constraint
+| Index | On-disk | Fits in 4 GiB VRAM? |
+|---|---:|---:|
+| chr22 SpCas9, width 9 | 116 MB | trivially |
+| Mouse Cas12a (23 nt) | 4.0 GB | ❌ no headroom |
+| Mouse SpCas9 | 6.3 GB | ❌ way over |
+
+For mouse scale on this machine, we'd have to **stream bins from RAM
+over PCIe** rather than keep the database resident. Laptop PCIe is
+typically x4 Gen3 (≈ 4 GB/s); streaming the full 4-6 GB index per
+query costs **1.0-1.5 s of PCIe just for the read**. That's a hard floor
+before any kernel runs — bigger than the headroom we have over the
+4.67 s CPU baseline.
+
+### Theoretical kernel speedup (ignoring transfer)
+The bin-scan inner loop is roughly:
+```
+mm = popcount_pairs((guide.high XOR ot.high) & mask.high)
+   + popcount_pairs((guide.low  XOR ot.low ) & mask.low)
+if mm <= max_mismatches: append_hit
+```
+
+~10 simple integer ops per (guide, bin_entry) pair. Mouse Cas12a at
+mm ≤ 4: ~12 M raw hits over ~88 M sites × prefilter pass-rate ≈
+several billion pair evaluations.
+
+- GPU compute ceiling: 2.8 TIOPS / 10 ops = ~280 G pair/s → kernel
+  finishes in ~20 ms.
+- GPU memory-bandwidth ceiling: 128 GB/s. Each pair touches 16 B of
+  bin-entry data; 4 GB of data → 30 ms.
+
+So an *in-VRAM* kernel could run in **20-30 ms** vs the CPU's 3.85 s.
+That's ~150× on the inner kernel, ~4× on overall wall (Amdahl).
+
+### Practical bottleneck on this hardware: PCIe ingress
+Adding PCIe-streaming bins:
+- Total bytes to ship: 4-6 GB (one .crot pass per scan)
+- Effective laptop x4 Gen3: 4 GB/s
+- Streaming time: 1.0-1.5 s
+- Total expected GPU wall: 1.5 s + 30 ms = **~1.5 s** vs CPU 4.67 s
+
+≈ 3× overall speedup *if* the streaming and compute overlap perfectly,
+which on this card requires careful tile pipelining. Not worth the
+implementation cost given the existing 4.67 s baseline already beats
+GuideScan2 by 13× and FlashFry chunked-8-procs by 3.5×.
+
+### When GPU starts to win
+A modern desktop GPU changes the calculus:
+| GPU | VRAM | Bandwidth | Mouse `.crot` fits? |
+|---|---:|---:|---:|
+| RTX 3060 | 12 GB | 360 GB/s | yes |
+| RTX 4070 | 12 GB | 504 GB/s | yes |
+| RTX 4090 | 24 GB | 1008 GB/s | comfortably, plus headroom for two genomes |
+
+On any of these, the .crot stays VRAM-resident across queries (the
+canonical use-case: index once, run thousands of scans). PCIe is paid
+only on the first scan after open; subsequent scans are memory-bound
+on the GPU side at ~30-100 ms each. **Expected: 30-50× speedup on the
+scan kernel, 4× overall.**
+
+### Recommendation
+Don't prototype on the 1650 Ti — the 4 GiB VRAM kills mouse-scale and
+the chr22 numbers we already have (0.76 s at 16 threads) are too small
+to evaluate GPU benefit cleanly. When the production hardware is
+chosen (a workstation GPU with ≥ 12 GiB), a `wgpu` or `cudarc`
+prototype of the bin-scan inner loop is a tractable 1-2-week effort and
+should land 3-5× overall on mouse-scale workloads. Until then, the
+**single highest-impact CPU follow-up** is the AVX-512 VPOPCNTDQ path
+(listed below) — comparable gains on the hottest line of the existing
+SIMD scan, no new dependency.
+
 ## Outstanding work that should move these numbers
 
 - **Phase 4b** — mmap-friendly on-disk format. Target: shrink the
