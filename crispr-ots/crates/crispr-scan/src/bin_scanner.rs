@@ -26,7 +26,7 @@
 //! re-implemented lane-wise via SWAR (Hacker's Delight § 5-1).
 
 use crispr_db::{BinSource, PackedEntry};
-use crispr_encoding::{mismatches_masked, Site};
+use crispr_encoding::{mismatches_masked, Site, SiteMask};
 use rayon::prelude::*;
 use wide::u64x4;
 
@@ -148,6 +148,179 @@ fn mismatches_x4(
     pop_pairs_x4(cl) + pop_pairs_x4(ch)
 }
 
+/// Portable per-bin kernel: compare every site in `sites` against the
+/// gathered active guides four-at-a-time via `wide::u64x4` (AVX2 on x86-64,
+/// NEON on aarch64, scalar elsewhere) with a SWAR pair-popcount, plus a
+/// scalar tail for the 0–3 leftover guides. Pushes one [`Hit`] per
+/// `(guide, site)` pair within `max_mismatches`. This is the default path on
+/// any CPU without AVX-512 VPOPCNTDQ.
+fn scan_bin_x4(
+    active_lows: &[u64],
+    active_highs: &[u64],
+    active_idx: &[u32],
+    sites: &[PackedEntry],
+    compare_mask: SiteMask,
+    max_mismatches: u8,
+    out: &mut Vec<Hit>,
+) {
+    let mask_low = compare_mask.low;
+    let mask_high = compare_mask.high;
+    let max_mm_u32 = u32::from(max_mismatches);
+    let max_mm_u64 = u64::from(max_mm_u32);
+    let n = active_idx.len();
+    let n_chunks = n / 4;
+    let tail_start = n_chunks * 4;
+    for entry in sites {
+        let site = entry.site();
+        let position = entry.position();
+        let site_low = site.low;
+        let site_high = site.high;
+        // ---- SIMD body: 4 guides per iteration. ----
+        for c in 0..n_chunks {
+            let base = c * 4;
+            let g_lows = u64x4::new([
+                active_lows[base],
+                active_lows[base + 1],
+                active_lows[base + 2],
+                active_lows[base + 3],
+            ]);
+            let g_highs = u64x4::new([
+                active_highs[base],
+                active_highs[base + 1],
+                active_highs[base + 2],
+                active_highs[base + 3],
+            ]);
+            let mm = mismatches_x4(g_lows, g_highs, site_low, site_high, mask_low, mask_high);
+            let mm_arr = mm.to_array();
+            for lane in 0..4 {
+                if mm_arr[lane] <= max_mm_u64 {
+                    out.push(Hit {
+                        guide_index: active_idx[base + lane],
+                        off_target: site,
+                        position,
+                        mismatches: u8::try_from(mm_arr[lane]).expect("mismatch fits in u8"),
+                    });
+                }
+            }
+        }
+        // ---- Scalar tail (0–3 leftover guides). ----
+        for k in tail_start..n {
+            let g_site = Site {
+                low: active_lows[k],
+                high: active_highs[k],
+            };
+            let mm = mismatches_masked(g_site, site, compare_mask);
+            if mm <= max_mm_u32 {
+                out.push(Hit {
+                    guide_index: active_idx[k],
+                    off_target: site,
+                    position,
+                    mismatches: u8::try_from(mm).expect("mismatch fits in u8"),
+                });
+            }
+        }
+    }
+}
+
+/// AVX-512 VPOPCNTDQ per-bin kernel: same arithmetic as [`scan_bin_x4`] but
+/// eight guides per iteration via `__m512i`, replacing the 10-op SWAR
+/// pair-popcount with a single hardware `_mm512_popcnt_epi64` per 64-bit
+/// lane. Selected only when the running CPU reports `avx512f` +
+/// `avx512vpopcntdq` (Genoa / Genoa-X, Ice Lake-SP, Sapphire Rapids, …).
+///
+/// # Safety
+/// The caller must ensure the CPU supports `avx512f` and `avx512vpopcntdq`
+/// (the `enable`d target features); calling on any other CPU is UB.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512vpopcntdq")]
+#[allow(clippy::cast_possible_wrap, clippy::similar_names)]
+unsafe fn scan_bin_avx512(
+    active_lows: &[u64],
+    active_highs: &[u64],
+    active_idx: &[u32],
+    sites: &[PackedEntry],
+    compare_mask: SiteMask,
+    max_mismatches: u8,
+    out: &mut Vec<Hit>,
+) {
+    use std::arch::x86_64::{
+        _mm512_add_epi64, _mm512_and_si512, _mm512_loadu_si512, _mm512_or_si512,
+        _mm512_popcnt_epi64, _mm512_set1_epi64, _mm512_slli_epi64, _mm512_storeu_si512,
+        _mm512_xor_si512,
+    };
+    let max_mm_u32 = u32::from(max_mismatches);
+    let max_mm_u64 = u64::from(max_mm_u32);
+    let n = active_idx.len();
+    let n_chunks = n / 8;
+    let tail_start = n_chunks * 8;
+    // Constants broadcast to all eight 64-bit lanes once per bin. These pure
+    // compute intrinsics need no `unsafe` block: inside a `#[target_feature]`
+    // fn the enabled features are statically guaranteed, so only the pointer
+    // loads/stores below (which dereference raw pointers) require `unsafe`.
+    let upper = _mm512_set1_epi64(UPPER_PAIR_BITS_U64 as i64);
+    let mask_low_v = _mm512_set1_epi64(compare_mask.low as i64);
+    let mask_high_v = _mm512_set1_epi64(compare_mask.high as i64);
+    for entry in sites {
+        let site = entry.site();
+        let position = entry.position();
+        let site_low_v = _mm512_set1_epi64(site.low as i64);
+        let site_high_v = _mm512_set1_epi64(site.high as i64);
+        for c in 0..n_chunks {
+            let base = c * 8;
+            // SAFETY: `base + 8 <= n`, so the unaligned 64-byte loads stay in
+            // bounds; all intrinsics require avx512f/avx512vpopcntdq, which the
+            // caller guarantees.
+            let mm_arr: [u64; 8] = unsafe {
+                let g_lows = _mm512_loadu_si512(active_lows.as_ptr().add(base).cast());
+                let g_highs = _mm512_loadu_si512(active_highs.as_ptr().add(base).cast());
+                let cl = _mm512_and_si512(_mm512_xor_si512(g_lows, site_low_v), mask_low_v);
+                let ch = _mm512_and_si512(_mm512_xor_si512(g_highs, site_high_v), mask_high_v);
+                let ind_l = _mm512_or_si512(
+                    _mm512_and_si512(cl, upper),
+                    _mm512_and_si512(_mm512_slli_epi64::<1>(cl), upper),
+                );
+                let ind_h = _mm512_or_si512(
+                    _mm512_and_si512(ch, upper),
+                    _mm512_and_si512(_mm512_slli_epi64::<1>(ch), upper),
+                );
+                let mm = _mm512_add_epi64(
+                    _mm512_popcnt_epi64(ind_l),
+                    _mm512_popcnt_epi64(ind_h),
+                );
+                let mut arr = [0u64; 8];
+                _mm512_storeu_si512(arr.as_mut_ptr().cast(), mm);
+                arr
+            };
+            for lane in 0..8 {
+                if mm_arr[lane] <= max_mm_u64 {
+                    out.push(Hit {
+                        guide_index: active_idx[base + lane],
+                        off_target: site,
+                        position,
+                        mismatches: u8::try_from(mm_arr[lane]).expect("mismatch fits in u8"),
+                    });
+                }
+            }
+        }
+        // ---- Scalar tail (0–7 leftover guides). ----
+        for k in tail_start..n {
+            let g_site = Site {
+                low: active_lows[k],
+                high: active_highs[k],
+            };
+            let mm = mismatches_masked(g_site, site, compare_mask);
+            if mm <= max_mm_u32 {
+                out.push(Hit {
+                    guide_index: active_idx[k],
+                    off_target: site,
+                    position,
+                    mismatches: u8::try_from(mm).expect("mismatch fits in u8"),
+                });
+            }
+        }
+    }
+}
+
 impl Scanner for BinScanner<'_> {
     #[allow(clippy::too_many_lines)] // SIMD inner loop pulls the hot path inline
     fn scan(&self, guides: &[Guide], max_mismatches: u8) -> Vec<Hit> {
@@ -179,9 +352,16 @@ impl Scanner for BinScanner<'_> {
         // Per-thread fold: each worker keeps its own scratch buffers and
         // local hit collector. SIMD inner loop processes 4 (guide × site)
         // pairs per iteration; tail handled scalar.
-        let mask_low = compare_mask.low;
-        let mask_high = compare_mask.high;
-        let max_mm_u64 = u64::from(max_mm_u32);
+        // Select the SIMD kernel once per scan. AVX-512 VPOPCNTDQ (Genoa /
+        // Genoa-X, Ice Lake-SP, Sapphire Rapids, Zen 4+) does the 2-bit-pair
+        // popcount in one hardware instruction over eight guides per
+        // iteration; every other CPU falls back to the portable `wide::u64x4`
+        // SWAR path. `CRISPR_OTS_NO_AVX512` forces the fallback so the two
+        // kernels can be A/B-benchmarked on the same binary and node.
+        #[cfg(target_arch = "x86_64")]
+        let use_avx512 = std::env::var_os("CRISPR_OTS_NO_AVX512").is_none()
+            && std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512vpopcntdq");
         let (hits, total_pairs, prefilter_pass) = bins
             .par_iter()
             .fold(
@@ -220,63 +400,42 @@ impl Scanner for BinScanner<'_> {
                         }
                     }
                     if !active_idx.is_empty() {
-                        let n = active_idx.len();
-                        let n_chunks = n / 4;
-                        let tail_start = n_chunks * 4;
-                        for entry in *sites {
-                            let site = entry.site();
-                            let position = entry.position();
-                            let site_low = site.low;
-                            let site_high = site.high;
-                            // ---- SIMD body: 4 guides per iteration. ----
-                            for c in 0..n_chunks {
-                                let base = c * 4;
-                                let g_lows = u64x4::new([
-                                    active_lows[base],
-                                    active_lows[base + 1],
-                                    active_lows[base + 2],
-                                    active_lows[base + 3],
-                                ]);
-                                let g_highs = u64x4::new([
-                                    active_highs[base],
-                                    active_highs[base + 1],
-                                    active_highs[base + 2],
-                                    active_highs[base + 3],
-                                ]);
-                                let mm = mismatches_x4(
-                                    g_lows, g_highs, site_low, site_high, mask_low, mask_high,
+                        #[cfg(target_arch = "x86_64")]
+                        if use_avx512 {
+                            // SAFETY: `use_avx512` is only true when this CPU
+                            // reported avx512f + avx512vpopcntdq.
+                            unsafe {
+                                scan_bin_avx512(
+                                    &active_lows,
+                                    &active_highs,
+                                    &active_idx,
+                                    sites,
+                                    compare_mask,
+                                    max_mismatches,
+                                    &mut local_hits,
                                 );
-                                let mm_arr = mm.to_array();
-                                for lane in 0..4 {
-                                    if mm_arr[lane] <= max_mm_u64 {
-                                        let gi = active_idx[base + lane];
-                                        local_hits.push(Hit {
-                                            guide_index: gi,
-                                            off_target: site,
-                                            position,
-                                            mismatches: u8::try_from(mm_arr[lane])
-                                                .expect("mismatch fits in u8"),
-                                        });
-                                    }
-                                }
                             }
-                            // ---- Scalar tail (0–3 leftover guides). ----
-                            for k in tail_start..n {
-                                let g_site = Site {
-                                    low: active_lows[k],
-                                    high: active_highs[k],
-                                };
-                                let mm = mismatches_masked(g_site, site, compare_mask);
-                                if mm <= max_mm_u32 {
-                                    local_hits.push(Hit {
-                                        guide_index: active_idx[k],
-                                        off_target: site,
-                                        position,
-                                        mismatches: u8::try_from(mm).expect("mismatch fits in u8"),
-                                    });
-                                }
-                            }
+                        } else {
+                            scan_bin_x4(
+                                &active_lows,
+                                &active_highs,
+                                &active_idx,
+                                sites,
+                                compare_mask,
+                                max_mismatches,
+                                &mut local_hits,
+                            );
                         }
+                        #[cfg(not(target_arch = "x86_64"))]
+                        scan_bin_x4(
+                            &active_lows,
+                            &active_highs,
+                            &active_idx,
+                            sites,
+                            compare_mask,
+                            max_mismatches,
+                            &mut local_hits,
+                        );
                     }
                     (
                         active_idx,
@@ -482,5 +641,96 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].mismatches, 0);
         assert_eq!(hits[0].position.strand, Strand::Forward);
+    }
+
+    /// The AVX-512 8-wide kernel must produce byte-identical hits to the
+    /// portable x4 kernel on the same inputs. The small scan tests above only
+    /// exercise the scalar tail (1–2 guides → `n_chunks == 0`); this one drives
+    /// full 8-lane chunks plus a remainder. Skips on CPUs/builds without
+    /// VPOPCNTDQ (e.g. the Zen 2 GPU hosts), where the dispatch never picks it.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx512_kernel_matches_x4_kernel() {
+        use crispr_db::{PackedEntry, Position};
+
+        if std::env::var_os("CRISPR_OTS_NO_AVX512").is_some()
+            || !std::arch::is_x86_feature_detected!("avx512f")
+            || !std::arch::is_x86_feature_detected!("avx512vpopcntdq")
+        {
+            return;
+        }
+
+        // xorshift64 — deterministic, no external rng dependency.
+        let mut state: u64 = 0x1234_5678_9abc_def0;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        // 50 random sites; full-width random Site words (both kernels apply the
+        // same compare-mask internally, so unrealistic count/reserved bits are
+        // harmless and still exercise every lane).
+        let sites: Vec<PackedEntry> = (0..50u32)
+            .map(|i| {
+                PackedEntry::from_site_position(
+                    Site {
+                        low: next(),
+                        high: next(),
+                    },
+                    Position {
+                        contig_id: 0,
+                        offset: i,
+                        strand: Strand::Forward,
+                    },
+                )
+            })
+            .collect();
+
+        // 21 guides → two full 8-lane chunks + a 5-guide scalar tail (and, for
+        // the x4 kernel, five 4-lane chunks + a 1-guide tail).
+        let active_idx: Vec<u32> = (0..21).collect();
+        let active_lows: Vec<u64> = (0..21).map(|_| next()).collect();
+        let active_highs: Vec<u64> = (0..21).map(|_| next()).collect();
+
+        let sort_key = |h: &Hit| (h.guide_index, h.position.offset, h.mismatches);
+        for enzyme in [Enzyme::spcas9_ngg(), Enzyme::cpf1_tttn()] {
+            let mask = enzyme.compare_mask;
+            for max_mm in [0u8, 1, 2, 4, 8] {
+                let mut hits_x4 = Vec::new();
+                scan_bin_x4(
+                    &active_lows,
+                    &active_highs,
+                    &active_idx,
+                    &sites,
+                    mask,
+                    max_mm,
+                    &mut hits_x4,
+                );
+                let mut hits_x8 = Vec::new();
+                // SAFETY: VPOPCNTDQ confirmed by the guard at the top of the test.
+                unsafe {
+                    scan_bin_avx512(
+                        &active_lows,
+                        &active_highs,
+                        &active_idx,
+                        &sites,
+                        mask,
+                        max_mm,
+                        &mut hits_x8,
+                    );
+                }
+                let mut keys_x4: Vec<_> = hits_x4.iter().map(sort_key).collect();
+                let mut keys_x8: Vec<_> = hits_x8.iter().map(sort_key).collect();
+                keys_x4.sort_unstable();
+                keys_x8.sort_unstable();
+                assert_eq!(
+                    keys_x4, keys_x8,
+                    "AVX-512 and x4 kernels disagree (enzyme={}, max_mm={max_mm})",
+                    enzyme.name
+                );
+            }
+        }
     }
 }
