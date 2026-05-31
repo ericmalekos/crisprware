@@ -382,6 +382,252 @@ hand-picked cases — including one that exercises PAM-distal positions
 21-23 of the matrix; max |Δ| = 4e-11 (print-precision rounding). The
 aggregation matches the parasol convention by construction.
 
+## Cluster baseline: prism Genoa-X (2026-05-31, pre-acceleration)
+
+First real numbers on the cluster hardware, replacing the i7-10870H laptop
+figures as the reference point for the AVX-512 and GPU work. **This is the
+current AVX2 / `x86-64-v3` engine — no AVX-512 path, no GPU yet** — i.e. the
+apples-to-apples "before" for the two acceleration tasks.
+
+### Hardware
+- **Node:** phoenix-09, AMD **EPYC 9684X** ("Genoa-X", Zen 4, AVX-512 incl.
+  `avx512_vpopcntdq`, 1152 MB V-Cache). 64 of 384 logical cores allocated.
+- **Build:** `target-cpu=x86-64-v3` (AVX2 `wide::u64x4` + SWAR popcount).
+- Reference `GRCm39.fa` and the `.crot` live on the ceph group FS (NFS).
+
+### Index build + enumerate (1 000 NGG guides, mm ≤ 4, CFD, warm cache)
+
+| Step | Wall | Peak RSS | Notes |
+|---|---:|---:|---|
+| `index --bin-width 11` | 5 m 07 s | 12.4 GB | 6.69 GB `.crot`; I/O-bound on the NFS FASTA read (~1.3× vs laptop — `index` isn't the hot loop) |
+| `enumerate -t 1` | 19.58 s | 8.0 GB | scan ≈ 73 % of single-thread wall |
+| `enumerate -t 16` | 5.59 s | 8.5 GB | 3.5× over t=1 |
+| `enumerate -t 64` | 5.36 s | 9.2 GB | ≈ flat vs t=16 |
+
+### Methodology note that drives the accelerator work
+At 1 000 guides the engine **saturates by ~16 threads** (t=64 ≈ t=16). The
+residual ~5 s is fixed overhead — mmap page-in of the 6.7 GB index plus
+single-threaded hit grouping, scoring, and output — **not** the SIMD scan.
+Consequences for the acceleration tasks:
+
+- **AVX-512 VPOPCNTDQ** helps most where the scan dominates: single-/few-thread
+  runs, scan-heavy enzymes (Cas12a), or larger guide sets. At t=64 on this
+  1 K-guide SpCas9 workload its overall headroom is Amdahl-capped by the ~5 s
+  fixed-overhead floor.
+- **GPU** likewise needs a scan-bound workload to shine. Benchmark both
+  accelerators on **10 K–100 K guides** (scan-dominated) and on Cas12a, with
+  the index kept VRAM-resident across queries, to measure their real ceiling.
+  A `random_10k.fasta` fixture should be generated for these comparisons; the
+  1 K fixture stays for correctness pinning.
+
+## AVX-512 VPOPCNTDQ scan path (2026-05-31)
+
+Added a runtime-dispatched 8-wide scan kernel (`scan_bin_avx512` in
+`crispr-scan/src/bin_scanner.rs`): it replaces the portable `wide::u64x4` +
+10-op SWAR pair-popcount with `__m512i` and a single hardware
+`_mm512_popcnt_epi64` per 64-bit lane, **eight guides per iteration**.
+Selected at runtime via `is_x86_feature_detected!("avx512f" / "avx512vpopcntdq")`,
+so one binary runs the AVX-512 path on Genoa / Genoa-X / Ice Lake-SP /
+Sapphire Rapids and transparently falls back to the AVX2 path on Zen 2 (the
+GPU hosts) and anything older. `CRISPR_OTS_NO_AVX512=1` forces the fallback
+on the same binary (used for the A/B below). No new dependency (pure
+`std::arch`); MSRV bumped to 1.89, the first stable rustc with the 512-bit
+intrinsics.
+
+### A/B on Genoa-X (phoenix-09, 1 000 NGG guides, mm ≤ 4, CFD, warm cache)
+
+| Threads | AVX-512 | AVX2 fallback | Speedup | Regime |
+|---:|---:|---:|---:|---|
+| 1 | 12.35 s | 17.49 s | **1.42×** | scan-bound (scan ≈ 73 % of wall) |
+| 16 | 9.69 s | 9.60 s | ~1.0× | memory-bandwidth-bound |
+
+User (compute) time at t=1 is 9.49 s vs 12.85 s = **1.35× less CPU**; the
+kernel-level scan speedup is ~1.7× (overall 1.42× after the ~5 s fixed
+overhead). The gain vanishes at 16 threads because the scan there is
+**memory-bandwidth-bound, not compute-bound** — the run sits at ~234 % CPU
+(≈ 2.4 busy cores), and the 6.7 GB working set overflows even Genoa-X's
+1152 MB V-Cache, so threads stall on memory and faster popcount can't help.
+
+**Correctness:** AVX-512 output is **byte-identical** to the fallback on the
+full mouse workload — **9 497 796 off-target rows match exactly** (`cmp`) —
+on top of the `avx512_kernel_matches_x4_kernel` unit test that drives full
+8-lane chunks + a remainder across both the SpCas9 and Cas12a masks.
+
+**Takeaway:** a clean win for scan-bound use (single-/few-thread, scan-heavy
+enzymes), free on capable hardware, harmless elsewhere. The high-thread
+ceiling is set by memory bandwidth, not the kernel — which is exactly the
+ceiling the GPU path must beat by moving the working set into the A5500's
+~768 GB/s VRAM, resident across queries.
+
+## GPU (CUDA / cudarc) scan path (2026-05-31)
+
+A `crispr-scan-gpu` crate implements the same `Scanner` trait with a CUDA
+kernel compiled at runtime via NVRTC. The off-target database — a flat array of
+24-byte `PackedEntry` records — is uploaded once and kept VRAM-resident (the
+mouse `.crot` is 6.7 GB, well inside the A5500's 24 GB). The kernel runs one
+thread per database entry, inner-looping over every guide with the exact same
+XOR / compare-mask / 2-bit-pair popcount as the CPU `BinScanner` (hardware
+`__popcll`), and atomic-appends matches. No bin-prefix prefilter — brute force
+finds the identical hit set and the GPU's throughput makes it cheap. Selected
+with `--scanner gpu`; it lives behind an optional `gpu` cargo feature so the
+default build is CUDA-free, and cudarc's `dynamic-loading` lets it build even
+on the CUDA-less login node and load the real libraries on the GPU nodes.
+
+### Correctness
+GPU output is **byte-identical** to the CPU path on the full mouse workload:
+1 000 NGG guides, mm ≤ 4, `--max-off-targets-per-bin -1` → **9 497 796 rows
+match exactly** (`cmp`). Locked by the `gpu_matches_cpu_when_device_present`
+unit test (runs wherever a CUDA device is present, skips elsewhere), which
+checks GPU ≡ CPU hit sets at mm 0–4. (With the default cap the two can pick
+*different* sequences to drop, because the cap keeps the first N in
+hit-iteration order and the GPU's atomic-append order differs — so equivalence
+is asserted with the cap disabled.)
+
+### A5500 vs 16-thread CPU (phoenix-01, 1 000 NGG guides, mm ≤ 4, CFD, warm)
+
+| Stage | GPU (A5500) | CPU (EPYC 7662, 16 t) |
+|---|---:|---:|
+| index load (one-time) | flatten 3.6 s + H2D 0.55 s | — (mmap, paged during scan) |
+| **scan kernel, index resident** | **0.98 s** | 6.69 s |
+| full `scan_on_gpu` (load + kernel) | 5.97 s | 6.69 s |
+| total wall (incl. group/score/write) | 10.7 s | 11.1 s |
+| peak RSS | 13.7 GB | 8.4 GB |
+
+**Headline: the resident scan kernel is ~6.8× faster than the 16-thread CPU
+scan** (0.98 s vs 6.69 s) over 9.5 M hits — the right metric for the canonical
+index-once / query-many pattern (`GpuScanner` uploads the index once and serves
+many `scan()` calls at ~1 s each).
+
+**A single `enumerate` is roughly a wash end-to-end.** The GPU kernel is ~7×
+faster, but (a) the 6.7 GB index load — single-threaded flatten + upload, ~4 s
+warm / ~12 s cold off ceph — and (b) the ~4 s single-threaded
+group/score/write tail (shared with the CPU path) dominate the wall. Higher GPU
+RSS (13.7 vs 8.4 GB) is the host `Vec` copy of the entries used for upload and
+hit reconstruction.
+
+### Scaling to 10 K guides — the advantage *shrinks*, not grows
+
+Replicating the 1 K set 10× (same index, warm) to probe scan-bound scaling.
+Counter to the naive "more scan work favors the GPU" expectation, the lead
+**erodes** at higher guide counts:
+
+| guides | hits | GPU scan (resident) | CPU scan (16 t) | GPU total | CPU total |
+|---:|---:|---:|---:|---:|---:|
+| 1 000 | 9.5 M | 0.92 s | 2.6–6.7 s* | 10.8 s | 7.0 s |
+| 10 000 | 95 M | 14.3 s | 16.6 s | 69.0 s | 58.7 s |
+
+\* the CPU scan is host-page-cache-sensitive — ~2.6 s fully warm, ~6.7 s under
+cache pressure. The GPU scan (~0.9 s at 1 K) is stable because the index is
+VRAM-resident, immune to host cache eviction.
+
+Why the GPU's lead shrinks as guides grow:
+- **Hit volume is the GPU's weak point.** Output scales with hits (9.5 M →
+  95 M); the GPU must atomic-append them, copy them host-ward, and reconstruct
+  them on a single core — none of which the kernel accelerates. At 10 K that
+  hit-handling dominates the "scan" number.
+- **A prototype inefficiency compounds it:** the adaptive output buffer (16 M
+  initial cap, grown on overflow) **re-runs the whole kernel** when 95 M > 16 M,
+  so the 10 K scan effectively runs the kernel twice. A two-pass
+  count-then-write — or, better, a kernel-side per-bin cap that emits far fewer
+  hits — removes this; with it the 10 K GPU scan should be ~7 s, not 14 s.
+- **The serial post-scan tail dominates both backends.** group/score/write is
+  ~42 s of the ~59–69 s total at 10 K for *either* scanner, so end-to-end is
+  tail-bound and the GPU's extra index-load + retry overhead pushes it slightly
+  behind.
+
+So the GPU win is real **in the regime where kernel compute dominates and hit
+volume is modest** — the 1 K-guide, index-once / query-many case. For large
+high-hit-count sweeps, the levers below (kernel-side cap, no-retry output,
+parallel tail) are prerequisites, not nice-to-haves. (This corrected an earlier
+guess that larger sets would simply favor the GPU — they don't, until the hit
+pipeline and the tail are fixed.)
+
+### All-vs-all (genome self-scan): on-GPU aggregation + the brute-force ceiling
+
+The real target is scanning **every** genome protospacer against the genome —
+millions of guides. Two changes make it even approachable:
+- **Output must be per-guide aggregates, not hits.** `GpuScanner::scan_counts`
+  accumulates per-guide off-target counts by mismatch level on the GPU
+  (`atomicAdd` into an `n_guides × (max_mm+1)` array) — compact regardless of
+  hit volume (a full mouse all-vs-all hit list would be ~10¹² rows).
+- **Guides must be sampled uniformly** across the index (`allvsall_bench`
+  example). The first-n entries are all low-complexity poly-A sites (~62 k
+  off-targets each) and badly skew any measurement.
+
+Measured on the A5500 (mm ≤ 4, uniform-sampled real genome sites, index
+VRAM-resident):
+
+| guides | scan_counts | hits | per-guide | implied all-vs-all (277 M sites) |
+|---:|---:|---:|---:|---:|
+| 10 000 | 5.98 s | 96 M | 598 µs | ~46 h |
+| 100 000 | 61.0 s | 975 M | 610 µs | ~47 h |
+| 1 000 000 | 621.8 s | 9.75 B | 622 µs | ~48 h |
+
+Per-guide time is **flat (~0.6 ms) → cleanly linear**, and the rate
+(~4.6×10¹¹ comparisons/s) is **compute-bound at ~peak integer throughput** for
+this op mix (~15 ops: XOR/mask/2-bit-pair-popcount over both site words). So
+brute force is **~46 h on one A5500**; 8× multi-GPU → ~6 h — still too slow for
+routine use.
+
+**The bin-prefilter is the essential next lever.** Brute force compares every
+site against all 277 M; the prefilter restricts each site to its candidate
+bins (those within k mismatches on the bin-width prefix), cutting comparisons
+by **~100×+** → a projected **tens of minutes on one A5500**, then ÷8 with
+multi-GPU. The catch is memory access: candidate-bin / bin-offset lookups
+scatter, so the win hinges on a **bin-pair-tiled** kernel — load a bin and a
+neighbor bin into shared memory, compare all pairs, reuse — and likely a
+**larger bin width** than the w=11 used for single-guide queries (a sharper
+prefix means fewer candidate bins). That kernel, plus multi-GPU, is the path
+from "46 h" to "minutes", and is the next build.
+
+### Bin-prefilter, per-guide kernel: correct, but enumeration-bound
+
+Built `GpuScanner::scan_counts_prefilter` — each guide computes its bin key,
+recursively enumerates its candidate bins (those within k base-mismatches of
+the prefix), scans only those, and accumulates counts in registers (no atomics,
+since each guide owns its counters). **Validated: byte-identical counts to the
+brute-force kernel** on a 10 k-guide sample. The number of *comparisons* drops
+~130× vs brute force.
+
+But the per-guide implementation is **enumeration-bound**, not comparison-
+bound: each guide independently walks 31,714 candidate bins (w=11, k=4), and
+that recursion + scattered bin-offset lookups dominate.
+
+| guides (density) | per-guide | projected all-vs-all |
+|---:|---:|---:|
+| 10 k (stride 27729) | 1442 µs | ~111 h |
+| 100 k (stride 2772) | 370 µs | ~28 h |
+| 1 M (stride 277) | 278 µs | **~21 h** |
+
+Per-guide time falls with density (shared candidate bins stay L2-resident) but
+**flattens at ~250–280 µs**, so the full self-scan lands ~19–21 h — only
+**~2.4× over brute force** (46 h). The 130× comparison reduction is squandered
+because the *enumeration* (31 k bins/guide) is redone for every guide.
+
+**The fix is bin-pair tiling:** process guides **by bin** (one block per bin),
+so the candidate-bin enumeration is done **once per bin and shared by its ~66
+guides** (66× less enumeration), with each candidate bin's entries loaded once
+and reused across the bin's guides. That makes the kernel comparison-bound →
+the 130× reduction realized → projected **~20 min on one A5500**, ~3 min across
+the node's 8 GPUs. That tiled kernel is the remaining build.
+
+### What unlocks the ceiling (future work, in rough priority)
+- **Expose index-once / query-many from the CLI** (persistent/server mode):
+  realizes the 6.8× directly — the `GpuScanner` API already supports it.
+- **Scan-bound workloads** (10 K–100 K guides, Cas12a): the 0.98 s kernel scales
+  far better than the CPU's linear scan; the fixed tail amortizes.
+- **Zero-copy / parallel index load**: upload straight from `MmapDb::entries()`
+  (downcast) or read in parallel — kills the ~4 s flatten and the extra 6.7 GB
+  RSS. The flatten is I/O-bound (paging the index in), not copy-bound.
+- **Kernel-side per-bin cap + emit `(guide, site, position, mm)` directly**:
+  stop emitting the 4 M dropped hits and drop the host entries array entirely.
+- **Parallelize the post-scan tail** (group/score/write) — the ~4 s floor that
+  bounds *both* backends end-to-end (see the AVX-512 section's same finding).
+- **Multi-GPU** (8× A5500 / A100 per node) for linear throughput scaling.
+
+Profiled on the A5500 (compute 8.6, 24 GB, ~768 GB/s); the A100 (40/80 GB,
+~1.5–2 TB/s) should push the kernel faster still.
+
 ## Snapshot history
 
 Track perf regressions and the impact of each optimization phase here.
@@ -400,6 +646,13 @@ Track perf regressions and the impact of each optimization phase here.
 | mm39-bench | 2026-05-30 | 1 K mouse, 1 t | 18.6 s | 8.0 GB | Full GRCm39, bin-width 11, cold-cache |
 | mm39-bench | 2026-05-30 | 1 K mouse, 16 t | **5.9 s** | 8.5 GB | Full GRCm39, bin-width 11, warm-cache |
 | mm39-bench | 2026-05-30 | 1 K mouse Cas12a, 16 t | **9.75 s** | 7.0 GB | Cpf1 TTTN, mouse, bin-width 11 |
+| prism-base | 2026-05-31 | 1 K mouse, 1 t | 19.6 s | 8.0 GB | **Genoa-X EPYC 9684X**, AVX2/v3 build, warm; scan ≈73% of wall |
+| prism-base | 2026-05-31 | 1 K mouse, 16 t | 5.59 s | 8.5 GB | Genoa-X; 3.5× over t=1 |
+| prism-base | 2026-05-31 | 1 K mouse, 64 t | 5.36 s | 9.2 GB | Genoa-X; ≈flat vs t=16 → ~5 s fixed-overhead floor, scan no longer bottleneck |
+| avx512 | 2026-05-31 | 1 K mouse, 1 t | **12.35 s** | 8.0 GB | Genoa-X VPOPCNTDQ; 1.42× vs AVX2 fallback (17.49 s); output bit-identical (9.5 M rows) |
+| avx512 | 2026-05-31 | 1 K mouse, 16 t | 9.69 s | 8.5 GB | memory-bound; ≈ AVX2 fallback (9.60 s) |
+| gpu-a5500 | 2026-05-31 | 1 K mouse, resident kernel | **0.98 s** | 13.7 GB | A5500 scan kernel only; 6.8× vs CPU-16t (6.69 s); output bit-identical (9.5 M rows) |
+| gpu-a5500 | 2026-05-31 | 1 K mouse, 1 enumerate (warm) | 10.7 s | 13.7 GB | incl. ~4 s index load + ~4 s serial group/score/write (≈ CPU 11.1 s) |
 
 ## Reproducing
 
