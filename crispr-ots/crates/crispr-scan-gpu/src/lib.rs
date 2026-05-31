@@ -225,6 +225,105 @@ extern "C" __global__ void scan_count_prefilter_kernel(
         out_counts[gi * stride + m] = local[m];
     }
 }
+
+// ---- Bin-pair-tiled self-scan (all-vs-all) ----
+// One block per guide bin B. Because every guide in B shares the bin-key B, the
+// candidate-bin enumeration is done ONCE per bin (amortised over its ~66
+// guides) instead of once per guide. The w*3 single-mutation subtrees are split
+// across the block's threads; each visited candidate bin is compared against
+// ALL of B's guides, accumulating per-guide counts via global atomics. Output
+// is indexed by absolute entry index: out_counts[entry*stride + mm].
+
+struct TiledCtx {
+    const unsigned long long* entries;
+    const unsigned int* bin_off;
+    unsigned long long mask_low, mask_high;
+    unsigned int max_mm, stride;
+    unsigned int* out_counts;
+    unsigned int g_start, g_count;
+};
+
+__device__ void tiled_process(const TiledCtx* c, unsigned int key) {
+    const unsigned int o_start = c->bin_off[2u * key];
+    const unsigned int o_count = c->bin_off[2u * key + 1u];
+    if (o_count == 0u) return;
+    const unsigned long long UPPER = 0xAAAAAAAAAAAAAAAAULL;
+    for (unsigned int gi = 0; gi < c->g_count; ++gi) {
+        const unsigned long long ge = (unsigned long long)(c->g_start + gi);
+        const unsigned long long g_low = c->entries[3 * ge];
+        const unsigned long long g_high = c->entries[3 * ge + 1];
+        const unsigned int outbase = (c->g_start + gi) * c->stride;
+        for (unsigned int oi = 0; oi < o_count; ++oi) {
+            const unsigned long long oe = (unsigned long long)(o_start + oi);
+            const unsigned long long o_low = c->entries[3 * oe];
+            const unsigned long long o_high = c->entries[3 * oe + 1];
+            const unsigned long long cl = (g_low ^ o_low) & c->mask_low;
+            const unsigned long long ch = (g_high ^ o_high) & c->mask_high;
+            const unsigned long long il = (cl & UPPER) | ((cl << 1) & UPPER);
+            const unsigned long long ih = (ch & UPPER) | ((ch << 1) & UPPER);
+            const unsigned int mm = __popcll(il) + __popcll(ih);
+            if (mm <= c->max_mm) {
+                atomicAdd(&c->out_counts[outbase + mm], 1u);
+            }
+        }
+    }
+}
+
+__device__ void tiled_visit(
+    const TiledCtx* c, unsigned int key, int w, int k_rem, int start_pos)
+{
+    tiled_process(c, key);
+    if (k_rem == 0) return;
+    for (int p = start_pos; p < w; ++p) {
+        const unsigned int shift = 2u * (unsigned int)p;
+        for (unsigned int delta = 1u; delta <= 3u; ++delta) {
+            tiled_visit(c, key ^ (delta << shift), w, k_rem - 1, p + 1);
+        }
+    }
+}
+
+extern "C" __global__ void tiled_self_scan_kernel(
+    const unsigned long long* __restrict__ entries,
+    const unsigned int* __restrict__ bin_off,
+    const unsigned int bin_lo, const unsigned int bin_hi,
+    const unsigned long long mask_low, const unsigned long long mask_high,
+    const unsigned int max_mm, const unsigned int bin_w,
+    unsigned int* __restrict__ out_counts)
+{
+    const unsigned int B = bin_lo + blockIdx.x;
+    if (B >= bin_hi) return;
+    const unsigned int g_start = bin_off[2u * B];
+    const unsigned int g_count = bin_off[2u * B + 1u];
+    if (g_count == 0u) return;
+
+    TiledCtx c;
+    c.entries = entries;
+    c.bin_off = bin_off;
+    c.mask_low = mask_low;
+    c.mask_high = mask_high;
+    c.max_mm = max_mm;
+    c.stride = max_mm + 1u;
+    c.out_counts = out_counts;
+    c.g_start = g_start;
+    c.g_count = g_count;
+
+    const int w = (int)bin_w;
+    const unsigned int tid = threadIdx.x;
+    // d=0 root (bin B against itself): one thread.
+    if (tid == 0) tiled_process(&c, B);
+    // Single-mutation subtrees, distributed across threads. Each subtree visits
+    // the candidate bins whose lowest mutated position is p (delta), recursing
+    // to higher positions — so every candidate bin is visited exactly once.
+    if (max_mm >= 1u) {
+        const unsigned int nbranch = (unsigned int)w * 3u;
+        for (unsigned int branch = tid; branch < nbranch; branch += blockDim.x) {
+            const unsigned int p = branch / 3u;
+            const unsigned int delta = (branch % 3u) + 1u;
+            const unsigned int key = B ^ (delta << (2u * p));
+            tiled_visit(&c, key, w, (int)max_mm - 1, (int)p + 1);
+        }
+    }
+}
 "#;
 
 /// Threads per block.
@@ -284,6 +383,8 @@ pub struct GpuScanner {
     func_count: CudaFunction,
     /// Per-guide bin-prefilter count kernel (`scan_count_prefilter_kernel`).
     func_prefilter: CudaFunction,
+    /// Bin-pair-tiled all-vs-all self-scan kernel (`tiled_self_scan_kernel`).
+    func_tiled: CudaFunction,
     /// Database entries on the device (resident), as a flat `u64` array
     /// (3 per entry).
     d_entries: CudaSlice<u64>,
@@ -388,6 +489,7 @@ impl GpuScanner {
         let func = module.load_function("scan_kernel")?;
         let func_count = module.load_function("scan_count_kernel")?;
         let func_prefilter = module.load_function("scan_count_prefilter_kernel")?;
+        let func_tiled = module.load_function("tiled_self_scan_kernel")?;
         let compile_s = t_compile.elapsed().as_secs_f64();
 
         // Upload the entries, reinterpreted as a flat u64 slice (PackedEntry
@@ -412,6 +514,7 @@ impl GpuScanner {
             func,
             func_count,
             func_prefilter,
+            func_tiled,
             d_entries,
             d_bin_offsets,
             entries,
@@ -426,6 +529,13 @@ impl GpuScanner {
     #[must_use]
     pub fn entry_count(&self) -> u32 {
         self.n_entries
+    }
+
+    /// Total number of bin keys (`4^bin_width`), i.e. the exclusive upper bound
+    /// for `self_scan_counts`'s `bin_hi`.
+    #[must_use]
+    pub fn bin_count(&self) -> u32 {
+        1u32 << (2 * self.bin_w)
     }
 
     /// Genome-scale path: instead of returning every hit, accumulate per-guide
@@ -551,6 +661,63 @@ impl GpuScanner {
             eprintln!(
                 "[trace] gpu scan_counts_prefilter: {n_guides} guides, kernel+I/O {:.3}s (resident)",
                 t.elapsed().as_secs_f64()
+            );
+        }
+        counts
+    }
+
+    /// Bin-pair-tiled all-vs-all self-scan: treats every index entry in bins
+    /// `[bin_lo, bin_hi)` as a guide and counts its off-targets by mismatch
+    /// level, amortising the candidate-bin enumeration over each bin's guides
+    /// (one CUDA block per bin). Returns a compact `n_entries × (max_mm + 1)`
+    /// row-major `u32` array indexed `out[entry * stride + mm]`; entries outside
+    /// the bin range are left zero. Pass `bin_lo = 0`, `bin_hi = bin_count()`
+    /// for the full genome self-scan, or a sub-range to benchmark a slice.
+    ///
+    /// # Panics
+    /// Panics on any CUDA error.
+    #[must_use]
+    pub fn self_scan_counts(&self, bin_lo: u32, bin_hi: u32, max_mismatches: u8) -> Vec<u32> {
+        let stride = (u32::from(max_mismatches) + 1) as usize;
+        let n_out = self.n_entries as usize * stride;
+        if n_out == 0 || bin_hi <= bin_lo {
+            return vec![0; n_out];
+        }
+        let trace = std::env::var_os("CRISPR_OTS_TRACE").is_some();
+        let stream = &self.stream;
+        let mut d_counts = stream.alloc_zeros::<u32>(n_out).expect("alloc count buffer");
+
+        let mask_low = self.compare_mask.low;
+        let mask_high = self.compare_mask.high;
+        let max_mm_u32 = u32::from(max_mismatches);
+        let bin_w = self.bin_w;
+        let cfg = LaunchConfig {
+            grid_dim: (bin_hi - bin_lo, 1, 1),
+            block_dim: (64, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let t_k = std::time::Instant::now();
+        {
+            let mut lb = stream.launch_builder(&self.func_tiled);
+            lb.arg(&self.d_entries);
+            lb.arg(&self.d_bin_offsets);
+            lb.arg(&bin_lo);
+            lb.arg(&bin_hi);
+            lb.arg(&mask_low);
+            lb.arg(&mask_high);
+            lb.arg(&max_mm_u32);
+            lb.arg(&bin_w);
+            lb.arg(&mut d_counts);
+            // SAFETY: the 9 arguments match tiled_self_scan_kernel.
+            unsafe { lb.launch(cfg).expect("launch tiled kernel") };
+        }
+        stream.synchronize().expect("sync tiled kernel");
+        let kernel_s = t_k.elapsed().as_secs_f64();
+        let counts = stream.clone_dtoh(&d_counts).expect("download counts");
+        stream.synchronize().expect("sync count download");
+        if trace {
+            eprintln!(
+                "[trace] gpu self_scan tiled: bins [{bin_lo},{bin_hi}), kernel {kernel_s:.3}s + download"
             );
         }
         counts

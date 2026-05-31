@@ -33,6 +33,10 @@ fn main() {
                 .collect()
         },
     );
+    // Sampling mode: "stride" (default, spread across the index — worst case for
+    // L2 reuse) or "contig" (a contiguous run from the middle — what the real
+    // all-vs-all looks like, since entries are processed in bin order).
+    let contig = args.next().is_some_and(|s| s == "contig");
     let path = if Path::new(&idx)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("crot"))
@@ -57,20 +61,33 @@ fn main() {
     let mut validated = false;
     for &n in &ns {
         let n = n.min(total_sites);
-        // Sample guides uniformly across the whole index (by stride), NOT the
-        // first n: entries are sorted by bin key, so the first n are all
-        // low-complexity poly-A-prefix sites with pathological off-target
-        // counts. A strided sample is representative of the real all-vs-all mix.
-        let step = (total_sites / n).max(1);
-        let guides: Vec<Guide> = entries
-            .iter()
-            .step_by(step)
-            .take(n)
-            .map(|e| Guide {
-                id: String::new(),
-                site: e.site(),
-            })
-            .collect();
+        let guides: Vec<Guide> = if contig {
+            // A contiguous run from the middle: dense, bin-adjacent guides —
+            // what the real all-vs-all looks like (entries are processed in bin
+            // order), and the best case for L2 reuse of candidate bins.
+            let off = (total_sites * 3 / 8).min(total_sites - n);
+            entries[off..off + n]
+                .iter()
+                .map(|e| Guide {
+                    id: String::new(),
+                    site: e.site(),
+                })
+                .collect()
+        } else {
+            // Strided across the whole index (NOT the first n: those are
+            // bin-sorted low-complexity poly-A sites). Spreads guides out, so it
+            // is the *worst* case for L2 reuse.
+            let step = (total_sites / n).max(1);
+            entries
+                .iter()
+                .step_by(step)
+                .take(n)
+                .map(|e| Guide {
+                    id: String::new(),
+                    site: e.site(),
+                })
+                .collect()
+        };
         let t = Instant::now();
         let counts = scanner.scan_counts_prefilter(&guides, max_mm);
         let secs = t.elapsed().as_secs_f64();

@@ -580,36 +580,48 @@ neighbor bin into shared memory, compare all pairs, reuse — and likely a
 prefix means fewer candidate bins). That kernel, plus multi-GPU, is the path
 from "46 h" to "minutes", and is the next build.
 
-### Bin-prefilter, per-guide kernel: correct, but enumeration-bound
+### Bin-prefilter: ~1.3 h all-vs-all per A5500 (and a benchmarking trap)
 
-Built `GpuScanner::scan_counts_prefilter` — each guide computes its bin key,
+`GpuScanner::scan_counts_prefilter` — each guide computes its bin key,
 recursively enumerates its candidate bins (those within k base-mismatches of
 the prefix), scans only those, and accumulates counts in registers (no atomics,
-since each guide owns its counters). **Validated: byte-identical counts to the
-brute-force kernel** on a 10 k-guide sample. The number of *comparisons* drops
-~130× vs brute force.
+each guide owns its counters). **Validated byte-identical to the brute-force
+kernel.** The number of *comparisons* drops ~130× vs brute force.
 
-But the per-guide implementation is **enumeration-bound**, not comparison-
-bound: each guide independently walks 31,714 candidate bins (w=11, k=4), and
-that recursion + scattered bin-offset lookups dominate.
+**The benchmark trap (and the real result).** The kernel's speed is dominated
+by **L2 reuse of the candidate bins**, which depends entirely on how the guides
+are *sampled*:
 
-| guides (density) | per-guide | projected all-vs-all |
-|---:|---:|---:|
-| 10 k (stride 27729) | 1442 µs | ~111 h |
-| 100 k (stride 2772) | 370 µs | ~28 h |
-| 1 M (stride 277) | 278 µs | **~21 h** |
+| sampling | per-guide | projected all-vs-all |
+|---|---:|---:|
+| **strided** across the whole index (10 k–1 M) | 278–1442 µs | ~21–111 h |
+| **contiguous** middle run (100 k) | 28.2 µs | 2.2 h |
+| **contiguous** middle run (1 M) | **16.3 µs** | 1.26 h |
+| **contiguous** middle run (5 M) | 17.4 µs | **1.34 h** |
 
-Per-guide time falls with density (shared candidate bins stay L2-resident) but
-**flattens at ~250–280 µs**, so the full self-scan lands ~19–21 h — only
-**~2.4× over brute force** (46 h). The 130× comparison reduction is squandered
-because the *enumeration* (31 k bins/guide) is redone for every guide.
+Strided sampling spreads each guide's candidate bins across the whole index →
+L2 thrash → 278 µs/guide and a misleading ~21 h projection. **The real
+all-vs-all processes entries in bin order — i.e. contiguous — so adjacent
+guides share candidate bins and the rate is ~17 µs/guide (16× faster):
+the full mouse self-scan is ~1.3 h on one A5500**, hence **~10 min across the
+node's 8 GPUs** (shard the guide set; the 6.7 GB index fits resident on each),
+and less on the A100. No new kernel required — just run the existing per-guide
+prefilter on the index in order.
 
-**The fix is bin-pair tiling:** process guides **by bin** (one block per bin),
-so the candidate-bin enumeration is done **once per bin and shared by its ~66
-guides** (66× less enumeration), with each candidate bin's entries loaded once
-and reused across the bin's guides. That makes the kernel comparison-bound →
-the 130× reduction realized → projected **~20 min on one A5500**, ~3 min across
-the node's 8 GPUs. That tiled kernel is the remaining build.
+### Bin-pair tiling: tried as a separate kernel, shelved
+
+`tiled_self_scan_kernel` / `self_scan_counts` processes guides **by bin** (one
+block per bin) so the candidate-bin enumeration is shared by the bin's guides —
+the idea being to amortise enumeration. **Validated byte-identical to the
+per-guide prefilter**, but it is **~100× slower** (4 000 bins took 1 578 s vs
+the per-guide kernel doing the same 596 k guides in 16 s). The design
+**collapses parallelism**: one block per bin with only the `w*3 = 33`
+top-level subtrees active per block (≈130 k active threads vs the per-guide
+kernel's one-thread-per-guide), each doing large uneven serial work. With the
+contiguous per-guide result above already at ~1.3 h, the tiling is moot and is
+kept only as a documented dead-end; the win is the access pattern, not the
+decomposition. A *finer-grained* tiling (distribute comparisons, not subtrees,
+across a block) could still help but is not worth it over per-guide + sharding.
 
 ### What unlocks the ceiling (future work, in rough priority)
 - **Expose index-once / query-many from the CLI** (persistent/server mode):
