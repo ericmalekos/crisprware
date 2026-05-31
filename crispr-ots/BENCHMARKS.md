@@ -234,6 +234,35 @@ variant would close the gap.
 | crispr-ots index vs GuideScan2 index | **4.9× faster** |
 | crispr-ots index vs FlashFry index | **6.0× faster** |
 
+### Bin-width sweep at mouse scale
+
+The chr22 sweep settled width 9 for ~5 M sites. Mouse has ~138 M NGG
+sites (≈28×), so the prediction was width ≈ 11 (`log4(28) ≈ 2.4`
+above chr22's 9). Empirical verification on the same 1 000-guide
+workload, warm-cache, all measurements with `/usr/bin/time -v`:
+
+| Width | Build wall | t=1 enum wall | t=16 enum wall | `.crot` size |
+|---:|---:|---:|---:|---:|
+| 9 | 5 m 08 s | 44.96 s | 8.94 s | 6.62 GB |
+| 10 | 5 m 35 s | 23.89 s | 6.55 s | 6.63 GB |
+| **11** | 6 m 26 s* | **18.79 s** | **6.00 s** | 6.69 GB |
+| 12 | 6 m 11 s | 29.04 s | 7.59 s | 6.79 GB |
+
+*Width 11's build wall is from the headline build; the sweep reused
+that index so didn't re-time it.
+
+**Width 11 is the empirical optimum on both axes** — single-thread
+*and* 16-thread. Width 12 regresses because the per-bin fixed cost
+(prefix-match check, prefetch, function-call boilerplate) starts to
+dominate when each bin holds only ~8 entries (138 M / 4¹² = 8.2/bin)
+versus ~33 entries at width 11 (138 M / 4¹¹). Width 9 is 7.5× slower
+at one thread because the prefilter passes far too many candidates.
+
+Disk and peak RSS are roughly flat across the sweep (`.crot` grows
+1 % from width 9 to 12; RSS within 100 MB), so the choice is a
+pure runtime trade-off. Driver: `mm39-bench/binwidth_sweep.sh`,
+raw numbers in `mm39-bench/binwidth_sweep.tsv`.
+
 ### Correctness against both reference tools (mouse)
 
 End-to-end correctness on the same 1 000-guide workload, scored against
