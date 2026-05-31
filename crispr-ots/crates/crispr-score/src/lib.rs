@@ -8,6 +8,8 @@
 //! behind a `ScoreModel` trait once we have more than one to abstract
 //! over.
 
+pub mod cas12a;
 pub mod cfd;
 
+pub use cas12a::{Cas12aCfd, Cas12aMatrix, Cas12aResult, Cas12aParseError};
 pub use cfd::{Cfd, CfdResult, SpecConvention, CFD_MINIMUM_THRESHOLD};
