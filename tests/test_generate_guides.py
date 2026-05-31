@@ -35,7 +35,11 @@ class TestGenerateGuides(unittest.TestCase):
         self.assertEqual(sgRNAs, expected_sgRNAs)
 
         chrm = """CCGTACGATCCGACGTTTGACCTGATCCGTACGAAAGATCCGGGATGCC"""
-        args = Namespace(context_window=(7, 4), sgRNA_length=23, pam_5_prime=True)
+        # Cas12a 5'-PAM: context_window is upstream/downstream of the
+        # (PAM + protospacer) block, so the PAM is INCLUDED in the
+        # emitted context. With context_window=(3, 4), the layout is
+        # 3 upstream + 4 PAM + 23 protospacer + 4 downstream = 34 nt.
+        args = Namespace(context_window=(3, 4), sgRNA_length=23, pam_5_prime=True)
         pam = "TTTG"
         expected_sgRNAs = [("ACCTGATCCGTACGAAAGATCCG", 16, "ACGTTTGACCTGATCCGTACGAAAGATCCGGGAT")]
         sgRNAs = list(find_sgRNA(args, pam, chrm, start, end, forward=True))
@@ -45,6 +49,22 @@ class TestGenerateGuides(unittest.TestCase):
         sgRNAs = list(find_sgRNA(args, pam, chrm, start, end, forward=False))
         expected_sgRNAs = [("CCGACGTTTGACCTGATCCGTAC", 33, "CGATCCGACGTTTGACCTGATCCGTACGAAAGAT")]
         self.assertEqual(sgRNAs, expected_sgRNAs)
+
+    def test_cas12a_context_length(self):
+        """5'-PAM (Cas12a) context must include the PAM, giving 34 nt total
+        for the canonical TTTV+23nt+(4,3) layout that DeepCpf1/enPAM+GB expect.
+        """
+        chrm = "AAAATTTACTTTTTCAAAATTGTTTTCATGCTAACCC"  # 34-nt window starts at idx 0
+        args = Namespace(context_window=(4, 3), sgRNA_length=23, pam_5_prime=True)
+
+        sgRNAs = list(find_sgRNA(args, "TTTA", chrm, 0, len(chrm), forward=True))
+        self.assertEqual(len(sgRNAs), 1)
+        sgRNA, pos, context = sgRNAs[0]
+        self.assertEqual(len(context), 34, f"expected 34-nt Cas12a context, got {len(context)}")
+        # Layout asserts: upstream(4) + PAM(4) + protospacer(23) + downstream(3)
+        self.assertEqual(context[4:8], "TTTA")     # PAM at positions 4-7
+        self.assertEqual(context[8:31], sgRNA)     # protospacer at positions 8-30
+        self.assertEqual(len(sgRNA), 23)
 
     def test_output_bed_line(self):
         args = Namespace(prefix="", active_site_offset_5=-4, active_site_offset_3=-4, pam="NGG", pam_5_prime=False)

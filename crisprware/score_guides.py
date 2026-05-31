@@ -125,6 +125,32 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
     parser.add_argument(
+        "--cas12a_scorer",
+        choices=["none", "enpam_gb", "deepcpf1", "both"],
+        default="none",
+        help="Cas12a on-target scorer. enpam_gb for en(As)Cas12a; deepcpf1 \
+            for wildtype AsCas12a/LbCas12a; both for parallel scoring. \
+            Mutually exclusive with --tracr (RS3 is SpCas9-only); implies \
+            --skip_rs3. [default: none]",
+    )
+
+    parser.add_argument(
+        "--min_deepcpf1",
+        type=float,
+        default=float("-inf"),
+        help="Minimum DeepCpf1 score (raw regression, ~[0, 100]). Applied \
+            after scoring; analogous to --min_rs3. [default: None]",
+    )
+
+    parser.add_argument(
+        "--min_enpam_gb",
+        type=float,
+        default=float("-inf"),
+        help="Minimum enPAM+GB score (probability-like, [0, 1]). Applied \
+            after scoring; analogous to --min_rs3. [default: None]",
+    )
+
+    parser.add_argument(
         "--chunk_size",
         type=int,
         default=100000,
@@ -352,8 +378,18 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         for index in args.guidescan2_indices:
             check_files_exist(index)
 
+    if args.cas12a_scorer != "none":
+        if args.tracr:
+            raise ValueError(
+                "\n\t--tracr (SpCas9 RuleSet3) and --cas12a_scorer are mutually exclusive."
+                " For Cas12a guides, drop --tracr.\n"
+            )
+        args.skip_rs3 = True
+
     if not args.skip_rs3 and not args.tracr:
-        raise ValueError("\n\tThe '--tracr' argument is required for RS3 scoring but was not provided.\n")
+        raise ValueError(
+            "\n\tEither --tracr (SpCas9 RS3) or --cas12a_scorer must be set, or pass --skip_rs3 to skip on-target scoring entirely.\n"
+        )
 
     pams = ""
     if args.alt_pams:
@@ -396,6 +432,32 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             gRNADF=gRNADF, tracr=args.tracr, chunk_size=args.chunk_size, threads=args.threads, minStdDev=args.min_rs3
         )
         print(f"\n\tAfter dropping RS3 cleavage scores below {args.min_rs3}:\t{len(gRNADF)}\n")
+
+    if args.cas12a_scorer in ("enpam_gb", "both"):
+        from crisprware.scorers import enpam_gb as _enpam_gb
+        print("\n\tBeginning enPAM+GB Cas12a on-target scoring\n")
+        gRNADF["enpam_gb_score"] = _enpam_gb.compute_enpam_gb_scores(
+            gRNADF["context"].tolist(), threads=args.threads, chunk_size=args.chunk_size
+        )
+        gRNADF["enpam_gb_score"] = gRNADF["enpam_gb_score"].round(8)
+        if args.min_enpam_gb > float("-inf"):
+            before = len(gRNADF)
+            gRNADF = gRNADF[gRNADF["enpam_gb_score"] > args.min_enpam_gb]
+            print(f"\tAfter dropping enPAM+GB scores below {args.min_enpam_gb}: {before} -> {len(gRNADF)}\n")
+        final_columns += ["enpam_gb_score"]
+
+    if args.cas12a_scorer in ("deepcpf1", "both"):
+        from crisprware.scorers import deepcpf1 as _deepcpf1
+        print("\n\tBeginning DeepCpf1 Cas12a on-target scoring\n")
+        gRNADF["deepcpf1_score"] = _deepcpf1.compute_deepcpf1_scores(
+            gRNADF["context"].tolist(), threads=args.threads, chunk_size=args.chunk_size
+        )
+        gRNADF["deepcpf1_score"] = gRNADF["deepcpf1_score"].round(8)
+        if args.min_deepcpf1 > float("-inf"):
+            before = len(gRNADF)
+            gRNADF = gRNADF[gRNADF["deepcpf1_score"] > args.min_deepcpf1]
+            print(f"\tAfter dropping DeepCpf1 scores below {args.min_deepcpf1}: {before} -> {len(gRNADF)}\n")
+        final_columns += ["deepcpf1_score"]
 
     gRNADF.loc[:, "id"] = gRNADF["id,sequence,pam,chromosome,position,sense"].str.split(",").str[0]
     guidescan_dfs = []

@@ -273,11 +273,11 @@ def find_sgRNA(
         else:
             if forward:
                 sgRNA = chrm[index + len(pam) : index + len(pam) + k]
-                context = chrm[index - upstr + len(pam) : index + len(pam) + k + downstr]
+                context = chrm[index - upstr : index + len(pam) + k + downstr]
                 position = index + 1
             else:
                 sgRNA = chrm[index - k : index]
-                context = chrm[index - k - downstr : index + upstr]
+                context = chrm[index - k - downstr : index + len(pam) + upstr]
                 position = index + 1
 
         index += 1
@@ -372,11 +372,11 @@ def process_pam(
 
     results = []
 
-    # if not args.pam_5_prime:
     context_length = args.sgRNA_length + args.context_window[0] + args.context_window[1]
-    # if the pam is 5' of the protospacer, the context length needs to be adjusted by length of the pam
-    # else:
-    #    context_length = args.sgRNA_length + args.context_window[0] + args.context_window[1] + len(pam)
+    if args.pam_5_prime:
+        # 5'-PAM enzymes (Cas12a/Cpf1) bake the PAM into the context window
+        # so downstream on-target scorers (DeepCpf1/enPAM+GB) see it.
+        context_length += len(pam)
     chrm_seq = str(record.seq).upper()
     chrm_name = record.id
 
