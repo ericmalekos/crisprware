@@ -137,6 +137,59 @@ spec disagreement (max |Δ| ~0.9 on the 1000-gRNA fixture).
 Be willing to refuse or warn at high k. FlashFry has a max-off-target
 overflow mechanism (`crispr/CRISPRSiteOT.scala`); replicate it.
 
+## Cas12a (Cpf1) CFD-style off-target scoring
+
+**Different penalty table; same multiplicative form.** crisprware's
+`parasol_scripts/score_flashfry_cfd.py` implements a Cas12a-specific
+"CFD-like" score using the matrices in `parasol_scripts/off_targ_*.csv`.
+Two matrices ship: `2xNLS-Cas12a` (the AsCas12a wild-type-ish profile)
+and `enCas12a` (the engineered broad-PAM variant). Format:
+`RDA,Pos,MM,avg_percent_active` — one row per (position 1..23, mismatch
+key like `rA:dC`, fraction-active float). 276 rows = 23 × 12 (twelve
+distinct mismatch pairs; same-base pairs are implicit 1.0).
+
+**Per-pair score**: trim the 4-bp PAM from both target and off-target,
+then for each protospacer position 1..23 multiply in the `(pos, "r{rna}
+:d{dna}")` penalty for mismatches. Identical 4×4×23 flat-array form to
+our SpCas9 `Cfd::penalty` — only the constants differ. **No PAM weight
+multiplication** for Cas12a (unlike SpCas9's `pam_weight[pos1][pos2]`
+tail term).
+
+**Per-guide aggregate** (the "single score" analog of our SpCas9
+`cfd_specificity`):
+- `tttn_specificity = 1 / Σ_all_OT (score_pair × count)`
+- `tttv_specificity = 1 / Σ_{OT.pam ∉ TTTT*} (score_pair × count)`
+
+Both use the GuideScan2 denominator convention (`1 / Σ`, no `+ 1`).
+The TTTV variant exists because Cas12a tolerates non-TTTV PAMs poorly
+in practice — excluding TTTT-prefixed off-targets from the denominator
+gives a per-guide score weighted toward biologically credible
+off-targets.
+
+**Implementation status**: landed in `crispr-score/src/cas12a.rs`.
+`Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls | EnCas12a)` constructs
+a scorer from one of the bundled matrices (CSVs embedded via
+`include_str!`); `score_pair` and `aggregate_with_len` mirror the
+SpCas9 scorer's API. CLI exposes `--score cfd-cas12a` (alias
+`cfd-cas12a:2xnls`) and `--score cfd-cas12a:encas12a`. The TSV
+writer adds `cas12a_max`, `cas12a_spec_tttn`, `cas12a_spec_tttv`
+columns when any Cas12a score is populated; the CSV writer uses
+`cas12a_spec_tttn` for the `specificity` column.
+
+Per-pair correctness is locked by
+`crispr-score/tests/cas12a_parasol_validate.rs` — four cases
+covering perfect-match, single mismatch, two-mismatch product, and
+a realistic 3-mismatch case, all matching the parasol script's
+`cfd_score_pair` output to ≤ 4 × 10⁻¹¹.
+
+**Remaining gap**: our current `Enzyme::cpf1_tttn` is 20-nt protospacer
+(24-bp total); the matrix has 23 positions. Positions 21..23 of the
+matrix are unused at our scan length (treated as match, penalty 1.0).
+For off-targets whose 3'-distal bases mismatch the target, the
+parasol script (which reads 27-mers from the genome) will assign a
+slightly lower score. A future 23-nt-protospacer enzyme variant
+(`MAX_SITE_LEN` already supports 27 bp) would close this gap.
+
 ## Reproducible 1000-gRNA fixture generation
 
 ```python
