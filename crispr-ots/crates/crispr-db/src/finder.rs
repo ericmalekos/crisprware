@@ -233,8 +233,8 @@ mod tests {
     #[test]
     fn cpf1_finds_forward_site() {
         let finder = SiteFinder::new(Enzyme::cpf1_tttn());
-        // TTT + N + 20-mer = 24 chars.
-        let seq = b"TTTACGTACGTACGTACGTACGTA";
+        // TTT + N + 23-mer = 27 chars.
+        let seq = b"TTTACGTACGTACGTACGTACGTACGT";
         let sites = collect_sites(&finder, seq);
         let fwd: Vec<_> = sites
             .iter()
@@ -247,13 +247,13 @@ mod tests {
     #[test]
     fn cpf1_finds_reverse_site() {
         let finder = SiteFinder::new(Enzyme::cpf1_tttn());
-        // Reverse-strand Cpf1 site: forward sees rc(TTTN + 20mer)
-        // = rc(20mer) + rc(TTTN) = rc(20mer) + NAAA (where the rc of the
-        // variable N base is also variable). Use TTTA → AAAA at the end.
-        // 20-mer ACGTACGTACGTACGTACGT → rc = ACGTACGTACGTACGTACGT (this
-        // particular sequence is a palindrome, conveniently). PAM TTTA →
-        // rc = TAAA at the *end* of the window.
-        let seq = b"ACGTACGTACGTACGTACGTTAAA";
+        // Reverse-strand Cpf1 site: forward sees rc(TTTN + 23mer)
+        // = rc(23mer) + rc(TTTN). Use TTTA → TAAA at the end of the
+        // forward read. 23-mer of all A's → rc = 23-mer of all T's...
+        // simpler: pick a palindromic 23-mer. ACGTACGTACGTACGTACGTACG
+        // → rc = CGTACGTACGTACGTACGTACGT (not palindromic). Just use a
+        // hand-picked sequence and verify by decoding.
+        let seq = b"ACGTACGTACGTACGTACGTACGTAAA";
         let sites = collect_sites(&finder, seq);
         let rev: Vec<_> = sites
             .iter()
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(rev.len(), 1);
         // Decoded canonical form should start with TTT (the PAM) and
         // continue with the protospacer.
-        let decoded = rev[0].0.decode_ascii(24);
+        let decoded = rev[0].0.decode_ascii(27);
         assert_eq!(&decoded[..3], "TTT");
     }
 

@@ -235,22 +235,20 @@ impl Cas12aCfd {
         &self.matrix_name
     }
 
-    /// Score a single `(target, off_target)` pair on the **20-nt-protospacer
+    /// Score a single `(target, off_target)` pair on the **23-nt-protospacer
     /// Cas12a** layout (`Enzyme::cpf1_tttn`): 4-bp PAM at the top, then
-    /// 20-bp protospacer. The matrix has 23 positions; positions 21..23
-    /// are unused because our enzyme stops at 20 — matching the parasol
-    /// script's `min(cap_len=20, len(t_sub))` cap on a 24-bp input.
+    /// 23-bp protospacer. All 23 matrix positions are scored.
     ///
     /// `target` should be the on-target/guide bits; `off_target` is the
     /// genomic OT. PAM bits aren't read (no Cas12a PAM weight model).
     #[must_use]
     pub fn score_pair(&self, target: Site, off_target: Site) -> f64 {
-        self.score_pair_with_len(target, off_target, 20)
+        self.score_pair_with_len(target, off_target, 23)
     }
 
     /// Like [`Cas12aCfd::score_pair`] but parameterizes the protospacer
-    /// length, supporting a hypothetical 23-nt Cas12a enzyme that walks
-    /// the full matrix length (positions 1..=23). Out-of-range positions
+    /// length, supporting the legacy 20-nt protospacer Cas12a layout
+    /// (matching FlashFry's `Cpf1ParameterPack`). Out-of-range positions
     /// (anything > `protospacer_len`) implicitly score 1.0 (match).
     ///
     /// # Panics
@@ -317,7 +315,7 @@ impl Cas12aCfd {
     where
         I: IntoIterator<Item = (Site, u8, u32)>,
     {
-        self.aggregate_with_len(target, ots, 20)
+        self.aggregate_with_len(target, ots, 23)
     }
 
     /// Like [`Cas12aCfd::aggregate`] but parameterizes the protospacer
@@ -480,8 +478,8 @@ mod tests {
         //                                     site → matrix pos 2)
         // Guide base at protospacer pos 2 = A → key `rA:d?`.
         // OT base at same pos = C → key `rA:dC`.
-        let target = encode("TTTAAAAAAAAAAAAAAAAAAAAA");
-        let off = encode("TTTAACAAAAAAAAAAAAAAAAAA");
+        let target = encode("TTTAAAAAAAAAAAAAAAAAAAAAAAA");
+        let off = encode("TTTAACAAAAAAAAAAAAAAAAAAAAA");
         let score = scorer.score_pair(target, off);
         // Compare to the raw matrix entry for (pos=2, rA:dC):
         let body = Cas12aMatrix::TwoXNls.csv();
@@ -506,8 +504,8 @@ mod tests {
         // Mismatches at protospacer positions 1 and 2.
         // Guide: TTTA AA AAAAAAAAAAAAAAAAAA
         // OT:    TTTA CC AAAAAAAAAAAAAAAAAA   (rA:dC at pos 1 and pos 2)
-        let target = encode("TTTAAAAAAAAAAAAAAAAAAAAA");
-        let off = encode("TTTACCAAAAAAAAAAAAAAAAAA");
+        let target = encode("TTTAAAAAAAAAAAAAAAAAAAAAAAA");
+        let off = encode("TTTACCAAAAAAAAAAAAAAAAAAAAA");
         let score = scorer.score_pair(target, off);
 
         // Look up both pos=1 rA:dC and pos=2 rA:dC, multiply.
@@ -538,7 +536,7 @@ mod tests {
     fn aggregate_specificity_formula() {
         // 1 / Σ (cfd × count). For an empty OT list, fall back to 1.0.
         let scorer = Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls).unwrap();
-        let target = encode("TTTAAAAAAAAAAAAAAAAAAAAA");
+        let target = encode("TTTAAAAAAAAAAAAAAAAAAAAAAAA");
         let empty = std::iter::empty::<(Site, u8, u32)>();
         let r = scorer.aggregate(target, empty);
         assert_eq!(r.tttn_specificity, 1.0);
@@ -557,12 +555,12 @@ mod tests {
     fn tttv_excludes_tttt_offtargets() {
         let scorer = Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls).unwrap();
         // Target with TTTA PAM.
-        let target = encode("TTTAAAAAAAAAAAAAAAAAAAAA");
+        let target = encode("TTTAAAAAAAAAAAAAAAAAAAAAAAA");
         // Two off-targets, both at mm=1 (single base diff at proto pos
         // 1). One has TTTA PAM (kept by tttv); the other has TTTT PAM
         // (excluded by tttv).
-        let ot_tttv = encode("TTTACAAAAAAAAAAAAAAAAAAA"); // pos 1: A→C
-        let ot_tttt = encode("TTTTCAAAAAAAAAAAAAAAAAAA"); // pos 1: A→C, PAM TTTT
+        let ot_tttv = encode("TTTACAAAAAAAAAAAAAAAAAAAAAA"); // pos 1: A→C
+        let ot_tttt = encode("TTTTCAAAAAAAAAAAAAAAAAAAAAA"); // pos 1: A→C, PAM TTTT
         let r = scorer.aggregate(
             target,
             [(ot_tttv, 1, 1), (ot_tttt, 1, 1)],
@@ -593,8 +591,8 @@ mod tests {
         let a = Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls).unwrap();
         let b = Cas12aCfd::from_csv(Cas12aMatrix::TwoXNls.csv()).unwrap();
         // Both should compute identical scores on an arbitrary pair.
-        let t = encode("TTTAAAAAAAAAAAAAAAAAAAAA");
-        let o = encode("TTTACCAAAAAAAAAAAAAAAAAA");
+        let t = encode("TTTAAAAAAAAAAAAAAAAAAAAAAAA");
+        let o = encode("TTTACCAAAAAAAAAAAAAAAAAAAAA");
         assert_eq!(a.score_pair(t, o), b.score_pair(t, o));
     }
 

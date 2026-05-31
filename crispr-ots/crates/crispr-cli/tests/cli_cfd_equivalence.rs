@@ -118,6 +118,7 @@ fn cfd_specificity_matches_flashfry_on_emx1() {
         format: OutputFormat::Tsv,
         spec_convention: SpecConvention::Flashfry,
         threshold: None,
+                max_per_bin: None,
     };
     run_discover(&table, &config).expect("discover succeeds");
 

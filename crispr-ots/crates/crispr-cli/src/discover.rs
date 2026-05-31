@@ -89,6 +89,17 @@ pub struct DiscoverConfig {
     /// has mismatch ≤ t. Matches `guidescan enumerate --threshold`.
     /// `None` disables filtering.
     pub threshold: Option<u8>,
+    /// If `Some(n)`, keep at most `n` distinct off-target sequences per
+    /// `(guide, mismatch-count)` bin. The cap is applied while the raw
+    /// hit stream is being grouped — once a bin reaches `n` distinct
+    /// sequences, additional sequences at that mismatch level for the
+    /// same guide are dropped. `None` disables the cap.
+    ///
+    /// Affects `otCount`, the `otSequences` listing in TSV output, and
+    /// the CFD denominator (since aggregation sums over kept sequences
+    /// only). Useful for taming low-complexity guides that explode to
+    /// 100k+ off-targets at high mismatch counts.
+    pub max_per_bin: Option<u32>,
 }
 
 /// Errors surfaced by the discover pipeline. Downstream layers wrap with
@@ -184,18 +195,44 @@ pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(
     // ---- Group hits by (guide, off-target sequence) for aggregation. ----
     // We collapse over genomic positions to match FlashFry's reporting,
     // where multi-mapping OT sequences appear once with a count.
+    //
+    // `max_per_bin` (the `--max-off-targets-per-bin` flag) short-circuits
+    // here: once a `(guide, mismatch-count)` bin has accumulated `n`
+    // distinct off-target sequences, any *new* sequences at that mismatch
+    // level for that guide are dropped. Sequences already in the bin
+    // still have their position count incremented for genuine
+    // multi-mappers — only *new* sequences are gated.
     let mut grouped: HashMap<usize, HashMap<Site, GroupAgg>> = HashMap::new();
+    let mut bin_seq_count: HashMap<(usize, u8), u32> = HashMap::new();
+    let mut dropped_seqs: u64 = 0;
     for hit in &hits {
-        let entry = grouped
-            .entry(hit.guide_index as usize)
-            .or_default()
-            .entry(hit.off_target)
-            .or_insert(GroupAgg {
+        let gi = hit.guide_index as usize;
+        let inner = grouped.entry(gi).or_default();
+        if let Some(existing) = inner.get_mut(&hit.off_target) {
+            existing.count += 1;
+            debug_assert_eq!(existing.mismatches, hit.mismatches);
+            continue;
+        }
+        if let Some(cap) = config.max_per_bin {
+            let n = bin_seq_count.entry((gi, hit.mismatches)).or_insert(0);
+            if *n >= cap {
+                dropped_seqs += 1;
+                continue;
+            }
+            *n += 1;
+        }
+        inner.insert(
+            hit.off_target,
+            GroupAgg {
                 mismatches: hit.mismatches,
-                count: 0,
-            });
-        entry.count += 1;
-        debug_assert_eq!(entry.mismatches, hit.mismatches);
+                count: 1,
+            },
+        );
+    }
+    if trace && dropped_seqs > 0 {
+        eprintln!(
+            "[trace] dropped {dropped_seqs} off-target sequences past --max-off-targets-per-bin cap"
+        );
     }
 
     // ---- Index raw hits by guide for per-position CSV output. ----
@@ -666,6 +703,7 @@ mod tests {
                 format: OutputFormat::Tsv,
                 spec_convention: SpecConvention::Flashfry,
                 threshold: None,
+                max_per_bin: None,
             },
         )
         .unwrap();
@@ -713,6 +751,7 @@ mod tests {
                 format: OutputFormat::Csv,
                 spec_convention: SpecConvention::Guidescan,
                 threshold: None,
+                max_per_bin: None,
             },
         )
         .unwrap();
@@ -771,6 +810,7 @@ mod tests {
                 format: OutputFormat::Csv,
                 spec_convention: SpecConvention::Guidescan,
                 threshold: None,
+                max_per_bin: None,
             },
         )
         .unwrap();
@@ -821,6 +861,7 @@ mod tests {
                 format: OutputFormat::Tsv,
                 spec_convention: SpecConvention::Flashfry,
                 threshold: Some(1),
+                max_per_bin: None,
             },
         )
         .unwrap();
@@ -871,6 +912,7 @@ mod tests {
                 format: OutputFormat::Tsv,
                 spec_convention: SpecConvention::Flashfry,
                 threshold: Some(0),
+                max_per_bin: None,
             },
         )
         .unwrap();
@@ -880,6 +922,101 @@ mod tests {
         // header only — both discoveries of the guide are dropped because
         // the same sequence is found at two genomic positions.
         assert_eq!(lines.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn max_per_bin_caps_distinct_off_target_sequences() {
+        // Reference contains the query at offset 0 (the on-target) plus
+        // three distinct 1-mismatch off-targets at positions 30, 60, 90.
+        // With `max_per_bin = Some(2)` the third should be dropped from
+        // the per-(guide, mm=1) bin. The on-target (mm=0) stays.
+        use crate::build::{build_table_in_memory, BuildConfig};
+        use crispr_encoding::Enzyme;
+
+        let dir = fixture_dir();
+        let reference = dir.join("ref.fa");
+        let queries = dir.join("q.fa");
+        let output = dir.join("out.tsv");
+        // Each protospacer is 20 As + AGG = 23 chars. Variations at
+        // position 1 keep the PAM (`AGG`) intact and create a single
+        // mismatch each.
+        let mut body = String::from(">chrA\n");
+        body.push_str("AAAAAAAAAAAAAAAAAAAAAGG"); // on-target
+        body.push_str(&"T".repeat(7)); // spacer to next NGG
+        body.push_str("CAAAAAAAAAAAAAAAAAAAAGG"); // 1mm
+        body.push_str(&"T".repeat(7));
+        body.push_str("GAAAAAAAAAAAAAAAAAAAAGG"); // 1mm
+        body.push_str(&"T".repeat(7));
+        body.push_str("TAAAAAAAAAAAAAAAAAAAAGG"); // 1mm (dropped at cap)
+        body.push('\n');
+        write_file(&reference, &body);
+        write_file(&queries, ">q\nAAAAAAAAAAAAAAAAAAAAAGG\n");
+
+        let table = build_table_in_memory(&BuildConfig {
+            reference,
+            enzyme: Enzyme::spcas9_ngg(),
+            output: dir.join("ignored.crot"),
+            bin_width: None,
+        })
+        .unwrap();
+
+        // Reference run: cap disabled → otCount counts all four hits
+        // (1 on-target + 3 off-targets at mm=1).
+        run_discover(
+            &table,
+            &DiscoverConfig {
+                input: DiscoverInput::QueryFasta(queries.clone()),
+                max_mismatches: 4,
+                scores: vec![],
+                output: output.clone(),
+                format: OutputFormat::Tsv,
+                spec_convention: SpecConvention::Flashfry,
+                threshold: None,
+                max_per_bin: None,
+            },
+        )
+        .unwrap();
+        let unbounded = std::fs::read_to_string(&output).unwrap();
+        let unbounded_otcount: usize = unbounded
+            .lines()
+            .nth(1)
+            .unwrap()
+            .split('\t')
+            .nth(5)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(unbounded_otcount, 4);
+
+        // Capped run: keep at most 2 distinct sequences per (guide, mm)
+        // bin. Mm=0 keeps the 1 on-target; mm=1 keeps 2 of 3 → total 3.
+        run_discover(
+            &table,
+            &DiscoverConfig {
+                input: DiscoverInput::QueryFasta(queries),
+                max_mismatches: 4,
+                scores: vec![],
+                output: output.clone(),
+                format: OutputFormat::Tsv,
+                spec_convention: SpecConvention::Flashfry,
+                threshold: None,
+                max_per_bin: Some(2),
+            },
+        )
+        .unwrap();
+        let capped = std::fs::read_to_string(&output).unwrap();
+        let capped_otcount: usize = capped
+            .lines()
+            .nth(1)
+            .unwrap()
+            .split('\t')
+            .nth(5)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(capped_otcount, 3);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

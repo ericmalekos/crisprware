@@ -471,12 +471,12 @@ mod tests {
 
     #[test]
     fn cpf1_end_to_end() {
-        // TTT + N=A + 20-mer ACGTACGTACGTACGTACGT.
-        let table = build_table(b">c\nTTTAACGTACGTACGTACGTACGT\n", Enzyme::cpf1_tttn());
+        // TTT + N=A + 23-mer ACGTACGTACGTACGTACGTACG (27 chars total).
+        let table = build_table(b">c\nTTTAACGTACGTACGTACGTACGTACG\n", Enzyme::cpf1_tttn());
         let scanner = BinScanner::new(&table);
         let guide = Guide {
             id: "g".into(),
-            site: Site::encode_ascii(b"TTTAACGTACGTACGTACGTACGT"),
+            site: Site::encode_ascii(b"TTTAACGTACGTACGTACGTACGTACG"),
         };
         let hits = scanner.scan(&[guide], 0);
         assert_eq!(hits.len(), 1);

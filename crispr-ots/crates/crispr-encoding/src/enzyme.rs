@@ -145,17 +145,26 @@ impl Enzyme {
         Self::from_canonical("SpCas9-NGG-or-NAG", canonical, PamSide::ThreePrime, 3, 20)
     }
 
-    /// Cpf1 (Cas12a) with TTTN PAM, 20-nt protospacer.
-    /// Equivalent to FlashFry's `Cpf1ParameterPack`. Note FlashFry treats
-    /// the variable N as part of a 4-bp PAM region, *not* as the first base
-    /// of the protospacer.
+    /// Cpf1 (Cas12a) with TTTN PAM, **23-nt protospacer** (total scan
+    /// length 27 bp).
+    ///
+    /// We diverge from FlashFry's `Cpf1ParameterPack` (which caps at 20-nt
+    /// because its 24-bp `Long` encoding can't fit anything longer) and
+    /// match the protospacer length the published Cas12a activity matrices
+    /// were measured at (`crispr-score::Cas12aMatrix`'s 23 positions).
+    /// Our `MAX_SITE_LEN = 28` supports the 27-bp encoded site directly,
+    /// so all 23 matrix positions enter the CFD-like score.
+    ///
+    /// Note FlashFry treats the variable `N` as part of a 4-bp PAM region,
+    /// *not* as the first base of the protospacer — we follow that
+    /// convention.
     #[must_use]
     pub fn cpf1_tttn() -> Self {
         Self::from_iupac(
             "Cpf1-TTTN",
             &[IupacCode::T, IupacCode::T, IupacCode::T, IupacCode::N],
             PamSide::FivePrime,
-            20,
+            23,
         )
     }
 }
@@ -313,12 +322,15 @@ mod tests {
     }
 
     #[test]
-    fn cpf1_tttn_mask_matches_flashfry() {
+    fn cpf1_tttn_23nt_protospacer_layout() {
+        // We diverge from FlashFry's 20-nt cap (chosen so the encoded
+        // site fits in a single Long): we run 23-nt protospacer for full
+        // matrix coverage. PAM occupies bits 46-47 of `low` plus bits 0-5
+        // of `high`; the protospacer fills bits 0-45 of `low`.
         let e = Enzyme::cpf1_tttn();
-        // FlashFry: Cpf1ParameterPack.comparisonBitEncoding = 0x00FFFFFFFFFFL
-        assert_eq!(e.compare_mask.low, 0x00FF_FFFF_FFFF);
+        assert_eq!(e.total_scan_len(), 27);
+        assert_eq!(e.compare_mask.low, (1u64 << 46) - 1);
         assert_eq!(e.compare_mask.high, 0);
-        assert_eq!(e.total_scan_len(), 24);
         assert_eq!(e.canonical_pams.len(), 4);
     }
 
