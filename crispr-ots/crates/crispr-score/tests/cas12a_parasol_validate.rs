@@ -14,10 +14,15 @@ fn validate_against_parasol() {
     let scorer = Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls).unwrap();
     #[allow(clippy::unreadable_literal)] // these match the parasol output verbatim
     let cases = [
-        ("perfect", "TTTAAAAAAAAAAAAAAAAAAAAA", "TTTAAAAAAAAAAAAAAAAAAAAA", 1.0),
-        ("1mm",     "TTTAAAAAAAAAAAAAAAAAAAAA", "TTTAACAAAAAAAAAAAAAAAAAA", 0.1029411765),
-        ("2mm",     "TTTAAAAAAAAAAAAAAAAAAAAA", "TTTACCAAAAAAAAAAAAAAAAAA", 0.0209099265),
-        ("3mm",     "TTTACGTACGTACGTACGTACGTA", "TTTACGAACGTACGTACGTACTTA", 0.8505747126),
+        // 27-mer Cas12a sites: 4-bp TTTN PAM + 23-bp protospacer.
+        ("perfect",    "TTTAAAAAAAAAAAAAAAAAAAAAAAA", "TTTAAAAAAAAAAAAAAAAAAAAAAAA", 1.0),
+        ("1mm pos2",   "TTTAAAAAAAAAAAAAAAAAAAAAAAA", "TTTAACAAAAAAAAAAAAAAAAAAAAA", 0.10294117647058823),
+        ("2mm pos1,2", "TTTAAAAAAAAAAAAAAAAAAAAAAAA", "TTTACCAAAAAAAAAAAAAAAAAAAAA", 0.020909926470588234),
+        // 4 mismatches in PAM-distal positions 18-21 (1-indexed in the
+        // protospacer). Exercises matrix positions 21..23 that the
+        // legacy 20-nt enzyme couldn't reach.
+        ("distal 4mm", "TTTAAAAAAAAAAAAAAAAAAAAAAAA", "TTTAAAAAAAAAAAAAAAAAACCCCAA", 0.10851063829787233),
+        ("realistic",  "TTTACGTACGTACGTACGTACGTACGT", "TTTACGAACGTACGTACGTACTTACGT", 0.8505747126436781),
     ];
     for (label, t, o, exp) in cases {
         let s = scorer.score_pair(encode(t), encode(o));

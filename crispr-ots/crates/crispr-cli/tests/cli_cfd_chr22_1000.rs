@@ -140,6 +140,7 @@ fn cfd_and_otcount_match_flashfry_on_1000_random_chr22_guides() {
             format: OutputFormat::Tsv,
             spec_convention: SpecConvention::Flashfry,
             threshold: None,
+                max_per_bin: None,
         },
     )
     .expect("discover succeeds");

@@ -257,9 +257,9 @@ mod tests {
     fn cpf1_bin_key_skips_pam() {
         let enz = Enzyme::cpf1_tttn();
         let table = BinTable::for_enzyme(enz);
-        // TTT + N=A + 20-mer protospacer ACGTACGAAAAAAAAAAAAA.
-        let site = Site::encode_ascii(b"TTTAACGTACGAAAAAAAAAAAAA");
-        assert_eq!(site.decode_ascii(24).len(), 24);
+        // TTT + N=A + 23-mer protospacer ACGTACG + 16 A's = 27 chars.
+        let site = Site::encode_ascii(b"TTTAACGTACGAAAAAAAAAAAAAAAA");
+        assert_eq!(site.decode_ascii(27).len(), 27);
         let key = table.bin_key(site);
         // Bin key should be the first 7 protospacer bases ACGTACG,
         // *not* including any of TTT[N].
@@ -350,13 +350,13 @@ mod tests {
 
     #[test]
     fn cpf1_bin_key_independent_of_pam_n() {
-        // Two sites with the same protospacer but different PAM N — the
-        // bin key (first 7 protospacer bases) should be identical because
-        // the PAM lives outside the bin window.
+        // Two sites with the same 23-nt protospacer but different PAM N
+        // — the bin key (first 7 protospacer bases) should be identical
+        // because the PAM lives outside the bin window.
         let enz = Enzyme::cpf1_tttn();
         let table = BinTable::for_enzyme(enz);
-        let site_x = Site::encode_ascii(b"TTTAACGTACGAAAAAAAAAAAAA");
-        let site_y = Site::encode_ascii(b"TTTCACGTACGAAAAAAAAAAAAA");
+        let site_x = Site::encode_ascii(b"TTTAACGTACGAAAAAAAAAAAAAAAA");
+        let site_y = Site::encode_ascii(b"TTTCACGTACGAAAAAAAAAAAAAAAA");
         assert_eq!(table.bin_key(site_x), table.bin_key(site_y));
     }
 

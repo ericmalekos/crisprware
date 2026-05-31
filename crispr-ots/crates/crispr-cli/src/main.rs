@@ -145,10 +145,22 @@ struct EnumerateArgs {
     #[arg(short, long)]
     output: PathBuf,
 
+    /// Per-(guide, mismatch-count) off-target cap. Once a bin reaches
+    /// N distinct off-target sequences, additional sequences at that
+    /// mismatch level for the same guide are dropped. Affects
+    /// `otCount`, the `otSequences` listing, and the CFD specificity
+    /// denominator (kept sequences only). Tames low-complexity guides
+    /// with 100 k+ off-targets at high mismatch counts. Set to -1 to
+    /// disable.
+    #[arg(long, default_value_t = 500, allow_hyphen_values = true)]
+    max_off_targets_per_bin: i64,
+
     // ── GuideScan2 compatibility surface ──────────────────────────────
     /// Cap on per-guide off-target rows (-1 = uncapped). Accepted for
     /// GuideScan2 CLI compatibility; today we always emit every
-    /// off-target up to `--mismatches`.
+    /// off-target up to `--mismatches`. See also
+    /// `--max-off-targets-per-bin` for our finer-grained per-mismatch
+    /// cap.
     #[arg(long, default_value_t = -1, allow_hyphen_values = true)]
     max_off_targets: i64,
 
@@ -317,7 +329,19 @@ fn run_enumerate_cmd(args: EnumerateArgs) -> Result<()> {
         output: args.output,
         format,
         spec_convention,
-        threshold: if args.threshold < 0 { None } else { Some(u8::try_from(args.threshold).expect("threshold fits in u8")) },
+        threshold: if args.threshold < 0 {
+            None
+        } else {
+            Some(u8::try_from(args.threshold).expect("threshold fits in u8"))
+        },
+        max_per_bin: if args.max_off_targets_per_bin < 0 {
+            None
+        } else {
+            Some(
+                u32::try_from(args.max_off_targets_per_bin)
+                    .expect("--max-off-targets-per-bin fits in u32"),
+            )
+        },
     };
     run_discover(&mmap, &config).context("enumerate failed")
 }

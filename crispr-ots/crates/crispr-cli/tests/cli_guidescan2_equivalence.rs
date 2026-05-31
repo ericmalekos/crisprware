@@ -168,6 +168,7 @@ fn match_set_and_specificity_match_guidescan2_under_gs2_convention() {
             format: OutputFormat::Tsv,
             spec_convention: SpecConvention::Flashfry,
             threshold: None,
+                max_per_bin: None,
         },
     )
     .expect("discover (TSV) succeeds");
@@ -182,6 +183,7 @@ fn match_set_and_specificity_match_guidescan2_under_gs2_convention() {
             format: OutputFormat::Csv,
             spec_convention: SpecConvention::Guidescan,
             threshold: None,
+                max_per_bin: None,
         },
     )
     .expect("discover (CSV) succeeds");
