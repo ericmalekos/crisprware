@@ -35,6 +35,8 @@
 !scripts/**
 !tests/
 !tests/**
+!tools/
+!tools/**
 
 # Re-ignore generated/build artifacts (must come after un-ignore rules)
 __pycache__/
