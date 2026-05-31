@@ -184,7 +184,7 @@ def gscan_scoring(
     """
 
     cmd = [
-        "guidescan",
+        "crispr-ots",
         "enumerate",
         "--max-off-targets",
         "-1",
