@@ -215,7 +215,14 @@ impl From<SpecConventionArg> for SpecConvention {
 fn parse_score_metric(s: &str) -> Result<ScoreMetric, String> {
     match s.to_ascii_lowercase().as_str() {
         "cfd" | "doench2016cfd" => Ok(ScoreMetric::Cfd),
-        other => Err(format!("unknown score metric '{other}' (supported: cfd)")),
+        "cfd-cas12a" | "cfd-cas12a:2xnls" | "cas12a-2xnls" => Ok(ScoreMetric::Cas12aTwoXNls),
+        "cfd-cas12a:encas12a" | "cas12a-encas12a" | "encas12a" => {
+            Ok(ScoreMetric::Cas12aEnCas12a)
+        }
+        other => Err(format!(
+            "unknown score metric '{other}' (supported: cfd, cfd-cas12a, \
+             cfd-cas12a:encas12a)"
+        )),
     }
 }
 
