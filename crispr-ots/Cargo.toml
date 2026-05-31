@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/crispr-encoding",
+    "crates/crispr-db",
+    "crates/crispr-scan",
+    "crates/crispr-score",
+    "crates/crispr-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://github.com/ericmalekos/crispr-ots"
+authors = ["Eric Malekos <ericmalekos@gmail.com>"]
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+
+[profile.bench]
+inherits = "release"
+debug = true
+
+[profile.dev]
+opt-level = 1

@@ -1,0 +1,22 @@
+[package]
+name = "crispr-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "On-disk database format (mmap, SoA bin layout) for CRISPR off-target sites"
+
+[lints]
+workspace = true
+
+[dependencies]
+crispr-encoding = { path = "../crispr-encoding" }
+flate2 = "1.0"
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3"
+# memmap2 powers zero-copy reads of the v2 on-disk format; bytemuck lets
+# us safely interpret aligned byte regions as `#[repr(C)]` Pod structs.
+memmap2 = "0.9"
+bytemuck = { version = "1", features = ["derive"] }

@@ -1,0 +1,32 @@
+[package]
+name = "crispr-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Thin command-line frontend over the crispr-ots engine"
+
+# The CLI ships both a library (for end-to-end tests that exercise the
+# pipeline in-process) and the `crispr-ots` binary.
+[lib]
+name = "crispr_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "crispr-ots"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+crispr-encoding = { path = "../crispr-encoding" }
+crispr-db = { path = "../crispr-db" }
+crispr-scan = { path = "../crispr-scan" }
+crispr-score = { path = "../crispr-score" }
+
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+rayon = "1"
