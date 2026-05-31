@@ -1,0 +1,61 @@
+{% set name = "crispr-ots" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+# git_url is relative to this meta.yaml's directory. conda-build clones
+# the working tree at HEAD into the build sandbox — only tracked files
+# (so target/, *.crot, mm39-bench/GRCm39* etc. are skipped automatically
+# via the repo's .gitignore). To pick up a WIP change you haven't
+# committed yet, commit it (a "wip" amend is fine for iteration) before
+# running `conda build`.
+source:
+  git_url: ../..
+  git_rev: HEAD
+
+build:
+  number: 0
+  # cargo install lands the binary at $PREFIX/bin/crispr-ots, which is
+  # exactly where conda expects executables to live. --locked enforces
+  # Cargo.lock; --no-track skips writing crate metadata into the prefix.
+  script:
+    - cd crispr-ots
+    - cargo install --no-track --locked --path crates/crispr-cli --root $PREFIX
+
+requirements:
+  build:
+    # conda-forge ships a `rust` package that provides cargo + rustc.
+    # The `compiler('c')` shim brings in a C linker (needed by some
+    # transitive crates' build.rs steps).
+    - {{ compiler('rust') }}
+    - {{ compiler('c') }}
+    - make
+  run: []
+  # Rust statically links everything except glibc, so there are no
+  # run-time conda dependencies. The resulting binary uses the
+  # `target-cpu=x86-64-v3` baseline from crispr-ots/.cargo/config.toml,
+  # which requires Haswell-or-newer (Intel 2013+, AMD Excavator+) at
+  # runtime. Every node on an A100/A5500-equipped HPC cluster will
+  # satisfy this.
+
+test:
+  commands:
+    - crispr-ots --version
+    - crispr-ots index --help
+    - crispr-ots enumerate --help
+
+about:
+  home: https://github.com/ericmalekos/crisprware
+  license: UC Santa Cruz Noncommercial License
+  license_file: license.txt
+  summary: Fast CRISPR off-target scanning (SpCas9 + Cas12a)
+  description: |
+    crispr-ots is the Rust off-target scanner used by `crisprware`
+    in place of `guidescan` / FlashFry. It builds an mmap'd off-target
+    database from a reference FASTA (`crispr-ots index`) and emits
+    GuideScan2-compatible CSV or FlashFry-style per-guide TSV
+    (`crispr-ots enumerate`) with CFD (SpCas9) or CFD-like (Cas12a)
+    aggregated specificity scores. See `crispr-ots/BENCHMARKS.md` for
+    the perf comparison vs FlashFry and GuideScan2 on mouse GRCm39.
