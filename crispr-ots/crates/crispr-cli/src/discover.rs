@@ -36,12 +36,21 @@ use crispr_score::{Cfd, CfdResult, SpecConvention};
 
 use crate::csv_out::{self, CsvRow};
 use crate::kmers_csv::{self, KmerEntry};
-use crate::tsv::{write_rows as write_tsv_rows, CfdColumns, DiscoverRow};
+use crate::tsv::{write_rows as write_tsv_rows, Cas12aColumns, CfdColumns, DiscoverRow};
+use crispr_score::{Cas12aCfd, Cas12aMatrix, Cas12aResult};
 
 /// Scoring metrics that can be applied during discover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoreMetric {
+    /// Doench 2016 CFD. SpCas9-only; the model has no biological
+    /// interpretation for other enzymes.
     Cfd,
+    /// Cas12a "CFD-like" multiplicative score backed by the
+    /// `2xNLS-Cas12a` activity matrix (the `AsCas12a` wild-type-ish
+    /// profile from `parasol_scripts/off_targ_2xNLS_Cas12a.csv`).
+    Cas12aTwoXNls,
+    /// Cas12a CFD-like with the `enCas12a` engineered broad-PAM matrix.
+    Cas12aEnCas12a,
 }
 
 /// Output-file shape for `enumerate`.
@@ -204,10 +213,22 @@ pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(
     } else {
         None
     };
+    let cas12a_scorer = if config.scores.contains(&ScoreMetric::Cas12aTwoXNls) {
+        Some(Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls).expect("bundled 2xNLS matrix parses"))
+    } else if config.scores.contains(&ScoreMetric::Cas12aEnCas12a) {
+        Some(
+            Cas12aCfd::from_matrix(Cas12aMatrix::EnCas12a)
+                .expect("bundled enCas12a matrix parses"),
+        )
+    } else {
+        None
+    };
+    let cas12a_protospacer_len: u32 = u32::from(enzyme.protospacer_len);
 
     // ---- Compute the per-guide CFD result + apply --threshold filter. ----
     let mut keep_guide: Vec<bool> = vec![true; guide_records.len()];
     let mut cfd_results: Vec<Option<CfdResult>> = vec![None; guide_records.len()];
+    let mut cas12a_results: Vec<Option<Cas12aResult>> = vec![None; guide_records.len()];
     for (idx, rec) in guide_records.iter().enumerate() {
         let group = grouped.get(&idx);
         let all_offs: Vec<(Site, u8, u32)> = group
@@ -238,6 +259,13 @@ pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(
             }
         }
 
+        if let Some(c) = cas12a_scorer.as_ref() {
+            cas12a_results[idx] = Some(c.aggregate_with_len(
+                rec.site,
+                all_offs.iter().map(|(s, mm, count)| (*s, *mm, *count)),
+                cas12a_protospacer_len,
+            ));
+        }
         if let Some(c) = cfd.as_ref() {
             cfd_results[idx] = Some(c.aggregate_with(
                 rec.site,
@@ -256,6 +284,7 @@ pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(
                 &guide_records,
                 hits_by_guide.as_ref().unwrap(),
                 &cfd_results,
+                &cas12a_results,
                 &keep_guide,
             )?;
         }
@@ -265,6 +294,7 @@ pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(
                 &guide_records,
                 &grouped,
                 &cfd_results,
+                &cas12a_results,
                 &keep_guide,
                 total_len,
             )?;
@@ -276,6 +306,7 @@ pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(
                 &guide_records,
                 hits_by_guide.as_ref().unwrap(),
                 &cfd_results,
+                &cas12a_results,
                 &keep_guide,
             )?;
             let tsv_path = sidecar_tsv_path(&config.output);
@@ -284,6 +315,7 @@ pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(
                 &guide_records,
                 &grouped,
                 &cfd_results,
+                &cas12a_results,
                 &keep_guide,
                 total_len,
             )?;
@@ -433,6 +465,7 @@ fn write_csv_output(
     guide_records: &[GuideRecord],
     hits_by_guide: &[Vec<Hit>],
     cfd_results: &[Option<CfdResult>],
+    cas12a_results: &[Option<Cas12aResult>],
     keep_guide: &[bool],
 ) -> Result<(), DiscoverError> {
     let file = File::create(path)?;
@@ -444,7 +477,16 @@ fn write_csv_output(
         if !keep_guide[idx] {
             continue;
         }
-        let spec = cfd_results[idx].map_or(1.0, |r| r.specificity);
+        // Specificity for the CSV's `specificity` column. SpCas9 takes
+        // precedence when both scorers were requested in the same run
+        // (uncommon, since they target different enzymes); when only
+        // Cas12a is populated we surface its TTTN specificity. Falls
+        // back to 1.0 when no score metric was requested.
+        let spec = match (cfd_results[idx], cas12a_results[idx]) {
+            (Some(r), _) => r.specificity,
+            (None, Some(r)) => r.tttn_specificity,
+            (None, None) => 1.0,
+        };
         let hits_for_guide: &[Hit] = hits_by_guide
             .get(idx)
             .map_or(empty_hits.as_slice(), Vec::as_slice);
@@ -469,11 +511,13 @@ fn write_csv_output(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_tsv_output(
     path: &Path,
     guide_records: &[GuideRecord],
     grouped: &HashMap<usize, HashMap<Site, GroupAgg>>,
     cfd_results: &[Option<CfdResult>],
+    cas12a_results: &[Option<Cas12aResult>],
     keep_guide: &[bool],
     total_len: usize,
 ) -> Result<(), DiscoverError> {
@@ -500,6 +544,11 @@ fn write_tsv_output(
             cfd_max: r.max_cfd,
             cfd_specificity: r.specificity,
         });
+        let cas12a = cas12a_results[idx].map(|r| Cas12aColumns {
+            cas12a_max: r.max_cfd,
+            cas12a_spec_tttn: r.tttn_specificity,
+            cas12a_spec_tttv: r.tttv_specificity,
+        });
         rows.push(DiscoverRow {
             contig: rec.contig_name.clone(),
             start: rec.offset,
@@ -509,6 +558,7 @@ fn write_tsv_output(
             ot_count,
             ot_sequences,
             cfd,
+            cas12a,
         });
     }
     rows.sort_by(|a, b| {

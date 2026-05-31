@@ -27,8 +27,12 @@ pub struct DiscoverRow {
     pub ot_count: usize,
     /// Comma-separated `SEQ_count_mismatches` entries, FlashFry-compatible.
     pub ot_sequences: String,
-    /// Optional CFD outputs. `None` when `--score cfd` was not requested.
+    /// Optional SpCas9 CFD outputs. `None` when `--score cfd` was not
+    /// requested or the enzyme isn't SpCas9.
     pub cfd: Option<CfdColumns>,
+    /// Optional Cas12a CFD outputs. `None` when no Cas12a score metric
+    /// was requested or the enzyme isn't Cas12a.
+    pub cas12a: Option<Cas12aColumns>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -37,25 +41,36 @@ pub struct CfdColumns {
     pub cfd_specificity: f64,
 }
 
-/// Write rows to a writer. The header includes CFD columns iff *any* row
-/// has CFD data — the assumption is that all rows in a single run share
-/// the same scoring configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct Cas12aColumns {
+    pub cas12a_max: f64,
+    pub cas12a_spec_tttn: f64,
+    pub cas12a_spec_tttv: f64,
+}
+
+/// Write rows to a writer. The header conditionally includes CFD and/or
+/// Cas12a columns based on which scores are populated. We assume all
+/// rows in a single run share the same scoring configuration.
 ///
 /// # Errors
 /// Surfaces any I/O error from the underlying writer.
 pub fn write_rows<W: Write>(writer: &mut W, rows: &[DiscoverRow]) -> io::Result<()> {
     let include_cfd = rows.iter().any(|r| r.cfd.is_some());
+    let include_cas12a = rows.iter().any(|r| r.cas12a.is_some());
+    write!(
+        writer,
+        "contig\tstart\tstop\ttarget\torientation\totCount\totSequences"
+    )?;
     if include_cfd {
-        writeln!(
+        write!(writer, "\tcfd_max\tcfd_specificity")?;
+    }
+    if include_cas12a {
+        write!(
             writer,
-            "contig\tstart\tstop\ttarget\torientation\totCount\totSequences\tcfd_max\tcfd_specificity"
-        )?;
-    } else {
-        writeln!(
-            writer,
-            "contig\tstart\tstop\ttarget\torientation\totCount\totSequences"
+            "\tcas12a_max\tcas12a_spec_tttn\tcas12a_spec_tttv"
         )?;
     }
+    writeln!(writer)?;
     for row in rows {
         write!(
             writer,
@@ -75,6 +90,17 @@ pub fn write_rows<W: Write>(writer: &mut W, rows: &[DiscoverRow]) -> io::Result<
                 write!(writer, "\tNA\tNA")?;
             }
         }
+        if include_cas12a {
+            if let Some(c) = row.cas12a {
+                write!(
+                    writer,
+                    "\t{}\t{}\t{}",
+                    c.cas12a_max, c.cas12a_spec_tttn, c.cas12a_spec_tttv
+                )?;
+            } else {
+                write!(writer, "\tNA\tNA\tNA")?;
+            }
+        }
         writeln!(writer)?;
     }
     Ok(())
@@ -91,6 +117,7 @@ mod tests {
             stop: 123,
             target: target.into(),
             strand: Strand::Forward,
+            cas12a: None,
             ot_count,
             ot_sequences: String::new(),
             cfd: None,
