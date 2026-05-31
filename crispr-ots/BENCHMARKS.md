@@ -623,6 +623,28 @@ kept only as a documented dead-end; the win is the access pattern, not the
 decomposition. A *finer-grained* tiling (distribute comparisons, not subtrees,
 across a block) could still help but is not worth it over per-guide + sharding.
 
+### Multi-GPU all-vs-all: full mouse genome in 24 min on 4 A5500s
+
+`multi_gpu_allvsall` shards the entries into N contiguous chunks (one per GPU)
+and runs the per-guide prefilter on each shard in parallel threads, each with
+its own resident `GpuScanner`. Measured on phoenix-01:
+
+| run | guides | wall | grand-total hits |
+|---|---:|---:|---:|
+| 1 GPU, 3% middle slice | 8.32 M | 177.8 s | 103,883,517,496 |
+| 4 GPU, same slice | 8.32 M | 57.5 s | 103,883,517,496 |
+| **4 GPU, full self-scan** | **277 M** | **1444.7 s (24.1 min)** | 2,715,565,331,281 |
+
+The sharded grand total is **identical to the single-GPU reference** (disjoint
+contiguous shards → sharding is correct). So the **full mouse all-vs-all — all
+277 M sites scanned against the genome, ~2.7×10¹² off-target relationships at
+mm ≤ 4 — completes in 24 minutes on 4 A5500s** (≈12 min on all 8, linear). Per-
+GPU scan times span 1282–1430 s: contiguous sharding balances guide *count* but
+not hit density, so the wall is bound by the densest shard; work-balanced
+sharding (split by estimated comparisons, not guide count) would tighten it.
+From a 46 h brute-force estimate to ~24 min — the whole genome-wide self-scan
+now runs over coffee.
+
 ### What unlocks the ceiling (future work, in rough priority)
 - **Expose index-once / query-many from the CLI** (persistent/server mode):
   realizes the 6.8× directly — the `GpuScanner` API already supports it.
