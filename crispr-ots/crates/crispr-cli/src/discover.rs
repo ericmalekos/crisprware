@@ -219,11 +219,19 @@ pub fn run_discover(source: &dyn BinSource, config: &DiscoverConfig) -> Result<(
             .unwrap_or_default();
 
         if let Some(t) = config.threshold {
-            // Drop the guide if any off-target row (mm > 0) has mm <= t.
-            // The on-target rows (mm == 0) never trigger the filter.
-            let close_off = all_offs
-                .iter()
-                .any(|(_, mm, _)| *mm > 0 && *mm <= t);
+            // Drop the guide if either:
+            //   (a) some off-target sequence (mm > 0) has mm <= t, OR
+            //   (b) the guide's own sequence appears at >= 2 genomic
+            //       positions at mm = 0 (multi-mapping on-target — at
+            //       least one of those copies is at an unintended
+            //       location, so for the threshold's purposes it acts
+            //       as a 0-mm off-target).
+            // Matches guidescan2's --threshold semantics: per its docs,
+            // a guide is dropped if any non-on-target hit is within
+            // `threshold` mismatches, including 0-mm multi-mappers.
+            let close_off = all_offs.iter().any(|(_, mm, count)| {
+                (*mm > 0 && *mm <= t) || (*mm == 0 && *count >= 2)
+            });
             if close_off {
                 keep_guide[idx] = false;
                 continue;
@@ -771,6 +779,56 @@ mod tests {
         let lines: Vec<&str> = tsv.lines().collect();
         // header only — both query sites are dropped because each one's
         // closest off-target is the other (1 mm).
+        assert_eq!(lines.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn threshold_drops_multimapping_on_target() {
+        // The guide's exact sequence appears at TWO genomic positions
+        // (both mm = 0). guidescan2 treats this as a hit at distance 0
+        // from another PAM-adjacent site and drops the guide under any
+        // non-negative `--threshold`. Verify we match that semantic.
+        use crate::build::{build_table_in_memory, BuildConfig};
+        use crispr_encoding::Enzyme;
+
+        let dir = fixture_dir();
+        let reference = dir.join("ref.fa");
+        let queries = dir.join("q.fa");
+        let output = dir.join("out.tsv");
+        // Same NGG-flanked 20-mer twice, 30 bp apart, no mismatches.
+        write_file(
+            &reference,
+            ">chrA\nAAAAAAAAAAAAAAAAAAAAAGGTTTTTTTTTTTTTTTTTTTTTTTTTTTAAAAAAAAAAAAAAAAAAAAAGGTTTTTTTT\n",
+        );
+        write_file(&queries, ">q\nAAAAAAAAAAAAAAAAAAAAAGG\n");
+
+        let table = build_table_in_memory(&BuildConfig {
+            reference,
+            enzyme: Enzyme::spcas9_ngg(),
+            output: dir.join("ignored.crot"),
+            bin_width: None,
+        })
+        .unwrap();
+
+        run_discover(
+            &table,
+            &DiscoverConfig {
+                input: DiscoverInput::QueryFasta(queries),
+                max_mismatches: 4,
+                scores: vec![ScoreMetric::Cfd],
+                output: output.clone(),
+                format: OutputFormat::Tsv,
+                spec_convention: SpecConvention::Flashfry,
+                threshold: Some(0),
+            },
+        )
+        .unwrap();
+
+        let tsv = std::fs::read_to_string(&output).unwrap();
+        let lines: Vec<&str> = tsv.lines().collect();
+        // header only — both discoveries of the guide are dropped because
+        // the same sequence is found at two genomic positions.
         assert_eq!(lines.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
