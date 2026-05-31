@@ -24,6 +24,10 @@ dependencies:
   - matplotlib
   - pybigwig
   - gffread
+  - tensorflow=2.15.*   # DeepCpf1 (Cas12a on-target); CPU build is fine for inference
+  - h5py>=3.10          # legacy DeepCpf1 .h5 weight loader
+  - scikit-learn>=1.3   # enPAM+GB GradientBoostingRegressor
+  - joblib>=1.3         # enPAM+GB model serialization
   - pip
   - pip:
     - lightgbm==3.3.5

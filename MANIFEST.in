@@ -4,3 +4,4 @@ include environment.yml
 
 recursive-include scripts *.py *.R
 recursive-include crisprware *.py
+recursive-include crisprware/scorers/weights *.h5 *.joblib
