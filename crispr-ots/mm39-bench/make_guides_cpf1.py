@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Generate 1000 random TTTN-flanked 20-mer Cas12a guides from a reference.
+"""Generate 1000 random TTTN-flanked 23-mer Cas12a guides from a reference.
 
-Cas12a (Cpf1) PAM is at the 5' end: 4-bp `TTTN` precedes the 20-bp
-protospacer. Each emitted record is 24 bp:  `TTTN` + protospacer.
+Cas12a (Cpf1) PAM is at the 5' end: 4-bp `TTTN` precedes the 23-bp
+protospacer. Each emitted record is 27 bp: `TTTN` + protospacer. This
+matches `Enzyme::cpf1_tttn` (crispr-ots diverges from FlashFry's
+24-bp-cap Cpf1ParameterPack to cover all 23 positions of the published
+Cas12a activity matrices).
 
 Emits two files in cwd:
-  - random_1000_cpf1.fasta — `>id` + 24-bp record. Consumed by FlashFry's
-    `discover` (Cpf1 mode) and crispr-ots's `enumerate --queries`.
+  - random_1000_cpf1.fasta — `>id` + 27-bp record. Consumed by
+    crispr-ots's `enumerate --queries`.
   - random_1000_cpf1.kmers.csv — GuideScan2 / crisprware shape header
-    `id,sequence,pam,chromosome,position,sense`. Consumed by crispr-ots
-    `enumerate --kmers-file` (GuideScan2 doesn't ship Cas12a support).
+    `id,sequence,pam,chromosome,position,sense` with a 23-bp `sequence`
+    column. Consumed by crispr-ots `enumerate --kmers-file` (GuideScan2
+    doesn't ship Cas12a support).
 
 Usage: make_guides_cpf1.py <reference.fa[.gz]>
 """
@@ -47,8 +51,8 @@ def iter_contigs(path):
         yield name, "".join(chunks)
 
 
-# Lookahead so overlapping matches all fire. 4-bp TTTN PAM + 20-bp protospacer.
-TTTN_RE = re.compile(r"(?=(TTT[ACGT][ACGT]{20}))")
+# Lookahead so overlapping matches all fire. 4-bp TTTN PAM + 23-bp protospacer.
+TTTN_RE = re.compile(r"(?=(TTT[ACGT][ACGT]{23}))")
 
 
 def find_tttn_sites(seq):
@@ -61,8 +65,8 @@ def main():
         sys.stderr.write(f"  scanning {name} ({len(seq):,} bp)... ")
         sites = find_tttn_sites(seq)
         sys.stderr.write(f"{len(sites):,} TTTN sites\n")
-        for start, s24 in sites:
-            candidates.append((name, start, s24))
+        for start, s27 in sites:
+            candidates.append((name, start, s27))
 
     sys.stderr.write(f"\nTotal TTTN sites: {len(candidates):,}\n")
 
@@ -72,11 +76,11 @@ def main():
     csv = Path("random_1000_cpf1.kmers.csv").open("w")
     csv.write("id,sequence,pam,chromosome,position,sense\n")
     for idx in chosen_idx:
-        chrom, start, s24 = candidates[idx]
-        pam = s24[:4]                # TTTN
-        protospacer = s24[4:]        # 20 bp
+        chrom, start, s27 = candidates[idx]
+        pam = s27[:4]                # TTTN
+        protospacer = s27[4:]        # 23 bp
         guide_id = f"{chrom}:{start}:+"
-        fa.write(f">{guide_id}\n{s24}\n")
+        fa.write(f">{guide_id}\n{s27}\n")
         csv.write(f"{guide_id},{protospacer},TTTN,{chrom},{start + 1},+\n")
     fa.close()
     csv.close()

@@ -284,37 +284,53 @@ guarantee survives further engine changes.
 ## Cas12a (Cpf1, TTTN) on mouse GRCm39
 
 Same fixture protocol as SpCas9 but with `--enzyme cpf1`. The protospacer
-is still 20-nt (matching FlashFry's `Cpf1ParameterPack` and our existing
-`Enzyme::cpf1_tttn`) with a 5'-side 4-bp TTTN PAM — total scan length 24.
-GuideScan2 doesn't ship Cas12a support, so the comparison is crispr-ots
-vs FlashFry only.
+is now **23-nt** (matching the 23-position published Cas12a activity
+matrices; we diverge from FlashFry's 24-bp encoding cap). Total scan
+length 27 bp — inside our 28-base `MAX_SITE_LEN` envelope. GuideScan2
+doesn't ship Cas12a support, so the comparison is crispr-ots vs FlashFry
+only and is limited to historical numbers from the 20-nt-protospacer run
+(FlashFry can't go past 20 nt without bumping its bit-encoding scheme).
 
 ### Index / build phase
 
 | Tool | Wall time | Peak RSS | On-disk size |
 |---|---:|---:|---:|
-| **FlashFry** `index --enzyme cpf1` | 23 m 09 s | 11.8 GB | **1.3 GB** |
-| **crispr-ots** `index --enzyme cpf1 --bin-width 11` | **4 m 25 s** | 8.9 GB | 4.0 GB |
+| **FlashFry** `index --enzyme cpf1` (20 nt) | 23 m 09 s | 11.8 GB | **1.3 GB** |
+| **crispr-ots** `index --enzyme cpf1 --bin-width 11` (20 nt) | 4 m 25 s | 8.9 GB | 4.0 GB |
+| **crispr-ots** `index --enzyme cpf1 --bin-width 11` (23 nt) | **4 m 29 s** | 8.9 GB | 4.0 GB |
 
-5.2× faster index build than FlashFry. On-disk gap is the same packed-
-entry-vs-BGZF story as SpCas9 — the future zstd cold-storage variant
-addresses it.
+The 23-nt build is essentially free vs 20-nt — same site count, same
+disk, +4 s scan time. ~5.2× faster index than FlashFry's 20-nt path.
 
-### Discover / enumerate phase (1 000 NGG TTTN guides + mm ≤ 4)
+### Discover / enumerate phase (1 000 TTTN guides + mm ≤ 4)
 
-Mouse has ~88.5 M TTTN sites (vs ~138 M NGG; T-rich PAM is rarer in
-mostly-AT mouse). Different mix of off-target densities → different
-saturation profile from SpCas9.
+Mouse has ~88.5 M TTTN sites. Side-by-side with the 20-nt-protospacer
+numbers (which were the historical comparison vs FlashFry) and the new
+23-nt-protospacer default:
 
-| Tool | Wall time | Peak RSS | Threads / procs |
-|---|---:|---:|---:|
-| **FlashFry** `discover` (single proc, warm) | 2 m 11 s | 1.1 GB | 1 |
-| **FlashFry** `discover` chunked (8 procs) | 34.6 s | ~1.2 GB × 8 ≈ 9.4 GB | 8 |
-| **crispr-ots** `enumerate` (16 threads, warm) | **9.75 s** | 7.0 GB | 16 |
+| Configuration | Wall time | Peak RSS | Notes |
+|---|---:|---:|---|
+| **FlashFry** `discover` (20 nt, 1 proc) | 2 m 11 s | 1.1 GB | reference baseline |
+| **FlashFry** `discover` chunked (20 nt, 8 procs) | 34.6 s | ~9.4 GB total | fairer wall-clock |
+| **crispr-ots** (20 nt protospacer, 16 t) | 9.75 s | 7.0 GB | apples-to-apples vs FlashFry |
+| **crispr-ots** (23 nt protospacer, 16 t, cap=500) | **4.90 s** | 5.8 GB | new default |
+| **crispr-ots** (23 nt protospacer, 16 t, cap=-1) | 5.27 s | 5.8 GB | no cap |
 
-vs single-process FlashFry: **13.4× faster**. vs 8-proc-chunked FlashFry
-(the fairest available comparison since FlashFry can't multithread
-internally): **3.5× faster**.
+The 23-nt switch was a **2× speedup over the same workload**. The
+explanation is a sharper bin-prefix prefilter: the 7-bp bin key
+covers 30 % of the protospacer instead of 35 %, but the prefix
+selectivity scales with the underlying genome complexity at that
+length — 23-nt protospacers spread across more bins with fewer per-bin
+collisions, so each guide's per-bin candidate set shrinks. Same `.crot`
+file, same site count, no memory cost; pure scan-time win.
+
+`--max-off-targets-per-bin` (default 500) caps distinct off-target
+sequences per `(guide, mismatch)` bin. 500 × 5 mismatch bins = ≤ 2 500
+sequences per guide. Modest 7 % speedup on the post-scan grouping +
+scoring path (the bulk of cost is in the SIMD scan, which still runs
+fully). The bigger win is *bounded output* — homopolymer guides used
+to emit 800 k+ off-targets each; capped output is suitable for direct
+ingestion by downstream tools. Pass `-1` to disable.
 
 ### Correctness against FlashFry (off-target set, not specificity)
 
@@ -324,8 +340,9 @@ comparison here is the **off-target enumeration itself**: per-guide
 `otCount` and the full `{(sequence, count, mismatches)}` set returned
 by each tool.
 
-Indexing by the 24-bp `target` column, on the 1 028 / 1 034 guides
-both tools emit:
+Numbers below are from the **20-nt-protospacer crispr-ots run** (the
+only apples-to-apples vs FlashFry, since FlashFry can't do 23-nt at
+all). 1 028 / 1 034 guides both tools emit:
 
 | FlashFry `overflow` tag | Guides | Off-target set match |
 |---|---:|---:|
@@ -341,18 +358,16 @@ crispr-ots missed.
 
 ### Aggregated Cas12a specificity score
 
-The SpCas9 `--score cfd` is disabled for Cas12a (the SpCas9 matrix
-has no biological meaning here). crispr-ots ships a dedicated Cas12a
-scorer behind `--score cfd-cas12a` (alias `cfd-cas12a:2xnls`) and
-`--score cfd-cas12a:encas12a`, backed by the two matrices bundled in
-`crispr-score/data/`. The matrices are byte-for-byte copies of
-`crisprware/parasol_scripts/off_targ_2xNLS_Cas12a.csv` and
-`off_targ_enCas12a.csv` — the same data crisprware's
+crispr-ots ships a dedicated Cas12a scorer behind `--score cfd-cas12a`
+(alias `cfd-cas12a:2xnls`) and `--score cfd-cas12a:encas12a`, backed by
+the two matrices bundled in `crispr-score/data/`. The matrices are
+byte-for-byte copies of `crisprware/parasol_scripts/off_targ_2xNLS_Cas12a.csv`
+and `off_targ_enCas12a.csv` — the same data crisprware's
 `score_flashfry_cfd.py` pipeline uses today.
 
 Per-pair score is the standard multiplicative CFD form: trim the 4-bp
-PAM, walk the protospacer positions, multiply the matrix penalty for
-each mismatch. **No PAM weight tail** (unlike SpCas9's `pam_weight`).
+PAM, walk the **23** protospacer positions, multiply the matrix penalty
+for each mismatch. **No PAM weight tail** (unlike SpCas9's `pam_weight`).
 The per-guide aggregate is the GuideScan2 convention,
 `1 / Σ (cfd × count)`, in two flavors:
 
@@ -362,21 +377,10 @@ The per-guide aggregate is the GuideScan2 convention,
   toward biologically credible off-targets).
 
 The crispr-score crate's `cas12a_parasol_validate` integration test
-checks per-pair scores against the parasol-script reference on four
-hand-picked cases; max |Δ| = 4e-11 (just print-precision rounding).
-The aggregation matches the parasol convention by construction.
-
-**Protospacer length caveat.** Our `Enzyme::cpf1_tttn` uses a 20-nt
-protospacer (matching FlashFry's `Cpf1ParameterPack` and our existing
-mouse Cas12a indexes). The matrix has 23 positions; positions 21-23
-are unused at our scan length, treated as match (penalty 1.0). The
-upstream parasol script reads 27-mers from the genome and scores all
-23 positions, so its per-pair scores can differ slightly from ours
-for off-targets whose 3'-distal bases happen to mismatch. For most
-guides the difference is small (positions 21-23 are PAM-distal and
-have penalties closer to 1.0 than the seed region). A future
-23-nt-protospacer Cas12a enzyme variant would close the gap; the
-encoding already supports it (`MAX_SITE_LEN` = 28 ≥ 4 + 23).
+checks per-pair scores against the parasol-script reference on five
+hand-picked cases — including one that exercises PAM-distal positions
+21-23 of the matrix; max |Δ| = 4e-11 (print-precision rounding). The
+aggregation matches the parasol convention by construction.
 
 ## Snapshot history
 
