@@ -82,7 +82,7 @@ def guideScanIndex(fasta: str, output: str) -> int:
         int: A success code (1) indicating that the index was generated successfully.
     """
 
-    cmd = ["guidescan", "index", "--index", output, fasta]
+    cmd = ["crispr-ots", "index", "--index", output, fasta]
 
     subprocess.run(cmd, check=True)
 
