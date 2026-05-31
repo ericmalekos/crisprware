@@ -1,0 +1,23 @@
+# Bake the modern-x86 baseline (Haswell 2013+) into every release build so
+# the `wide` crate's SIMD types compile to AVX2 / BMI2 / POPCNT instead of
+# silently falling back to scalar emulation. This is the standard
+# `x86_64-v3` micro-architecture level documented in
+# https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels.
+#
+# For maximum performance on the build machine specifically (e.g. AVX-512
+# on Ice Lake / Tiger Lake / Sapphire Rapids / Zen 4), users can override
+# at the shell level with:
+#
+#     RUSTFLAGS="-C target-cpu=native" cargo build --release
+#
+# Apple Silicon / aarch64 keeps its default baseline (NEON is part of the
+# AArch64 ABI), so the x86-only target-cpu has no effect there.
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

@@ -1,0 +1,29 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Editor / OS detritus
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Profiling / benchmark outputs
+*.perf
+*.profraw
+flamegraph.svg
+perf.data*
+
+# Large test fixtures (we'll keep small fixtures in test_data/)
+*.fa.gz
+*.bin
+*.bam
+*.sam
+!test_data/*.fa
+!test_data/*.fa.gz
+
+# Local config that shouldn't be committed
+.env
+.envrc

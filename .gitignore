@@ -17,6 +17,8 @@
 !annotations/**
 !colab_notebooks/
 !colab_notebooks/**
+!crispr-ots/
+!crispr-ots/**
 !crisprware/
 !crisprware/**
 !dist/
@@ -37,3 +39,11 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 *.egg-info/
+
+# Rust workspace artifacts (crispr-ots/)
+crispr-ots/target/
+crispr-ots/**/*.rs.bk
+crispr-ots/**/*.crot
+crispr-ots/**/*.profraw
+crispr-ots/**/flamegraph.svg
+crispr-ots/**/perf.data*

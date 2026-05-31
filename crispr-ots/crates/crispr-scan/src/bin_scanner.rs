@@ -1,0 +1,486 @@
+//! FlashFry-style bin-scan engine.
+//!
+//! Per-bin inner loop with a bin-prefix prefilter (FlashFry's
+//! `OrderedBinTraversalFactory` idea — optimization #6 in the plan): a
+//! guide whose own 7-mer prefix differs from a bin's key by more than
+//! the mismatch budget cannot match any site in that bin (all sites in
+//! the bin share that 7-mer by construction), so the entire bin is
+//! skipped for that guide. Drops the comparison count by ~10–20× on
+//! genome-scale workloads.
+//!
+//! Phase 5: the outer bin loop runs in parallel via rayon. Each thread
+//! keeps its own scratch buffers and a local `Vec<Hit>`; results are
+//! concatenated at the end. Bins are independent after the prefilter
+//! (no shared mutable state in the inner loop), so the parallel speedup
+//! is close to the core count on machines where the workload isn't
+//! memory-bandwidth-bound.
+//!
+//! Phase 6: the per-bin inner loop now batches four
+//! `(active-guide × site)` mismatch comparisons per iteration via the
+//! `wide` crate's `u64x4` (AVX2 on x86-64, NEON on aarch64, scalar
+//! everywhere else). Active guides are gathered into struct-of-arrays
+//! scratch buffers (`active_guide_lows`, `active_guide_highs`) at the
+//! top of each bin so the SIMD chunk loads are contiguous; the broadcast
+//! goes the other direction (one site against four guides). The 24-base
+//! pair-popcount trick from `crispr_encoding::mismatches_masked` is
+//! re-implemented lane-wise via SWAR (Hacker's Delight § 5-1).
+
+use crispr_db::{BinSource, PackedEntry};
+use crispr_encoding::{mismatches_masked, Site};
+use rayon::prelude::*;
+use wide::u64x4;
+
+/// A single guide submitted for off-target search.
+#[derive(Debug, Clone)]
+pub struct Guide {
+    /// User-provided identifier (FASTA name, CSV id, etc.).
+    pub id: String,
+    /// Encoded protospacer + on-target PAM, using the same `Enzyme` as the
+    /// `BinTable` being scanned.
+    pub site: Site,
+}
+
+/// One discovered off-target hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hit {
+    /// Index into the input `&[Guide]` slice.
+    pub guide_index: u32,
+    /// The off-target site, in canonical (5'-protospacer-first) orientation.
+    pub off_target: Site,
+    /// Genomic location of the off-target.
+    pub position: crispr_db::Position,
+    /// Hamming distance between guide and off-target, PAM bits excluded.
+    pub mismatches: u8,
+}
+
+/// Engine that searches a database for off-targets.
+pub trait Scanner {
+    /// Find every off-target with at most `max_mismatches` mismatches.
+    /// Results are returned in **engine-defined order** — callers that need
+    /// a stable order should sort afterwards.
+    fn scan(&self, guides: &[Guide], max_mismatches: u8) -> Vec<Hit>;
+}
+
+/// Bin-scan scanner. Works against any [`BinSource`] — currently
+/// implemented for the in-memory `BinTable` (used by integration tests
+/// and the build path) and the mmap'd `MmapDb` (used by the CLI's
+/// discover path). The scanner pulls all of the bin metadata it needs
+/// at the top of each `scan()` invocation, so the trait's virtual
+/// dispatch costs one call per scan — no hot-loop indirection.
+pub struct BinScanner<'a> {
+    source: &'a (dyn BinSource + 'a),
+}
+
+impl std::fmt::Debug for BinScanner<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BinScanner")
+            .field("enzyme", &self.source.enzyme().name)
+            .field("bin_width", &self.source.bin_width())
+            .finish()
+    }
+}
+
+impl<'a> BinScanner<'a> {
+    #[must_use]
+    pub fn new(source: &'a (dyn BinSource + 'a)) -> Self {
+        Self { source }
+    }
+}
+
+/// Per-worker accumulator threaded through the parallel fold: reusable
+/// scratch buffers (guide indices + SoA gather of guide.low / guide.high),
+/// local hit collector, and (when tracing) per-thread prefilter counters.
+type WorkerState = (
+    Vec<u32>, // active guide indices
+    Vec<u64>, // active guide.low values, indexed parallel to indices
+    Vec<u64>, // active guide.high values
+    Vec<Hit>, // per-thread hit accumulator
+    u64,      // total (guide, bin) pairs visited
+    u64,      // pairs that passed prefilter
+);
+
+/// Bits at the "high" position of every 2-bit pair within a `u64`. Same
+/// constant as the one in `crispr_encoding::mismatch`; duplicated here so
+/// we don't need a public re-export on the hot path.
+const UPPER_PAIR_BITS_U64: u64 = 0xAAAA_AAAA_AAAA_AAAA;
+
+/// Lane-wise count of "differing 2-bit pairs": for each 2-bit pair within
+/// each `u64` lane, set one indicator bit if either bit of the pair is
+/// set, then popcount across the lane. SWAR popcount (Hacker's Delight
+/// § 5-1) — no hardware lane-wise popcount needed, so works on any
+/// platform `wide` supports.
+#[inline]
+fn pop_pairs_x4(x: u64x4) -> u64x4 {
+    let upper = u64x4::splat(UPPER_PAIR_BITS_U64);
+    let indicator = (x & upper) | ((x << 1) & upper);
+    swar_popcount_x4(indicator)
+}
+
+#[inline]
+fn swar_popcount_x4(mut v: u64x4) -> u64x4 {
+    let m1 = u64x4::splat(0x5555_5555_5555_5555);
+    let m2 = u64x4::splat(0x3333_3333_3333_3333);
+    let m4 = u64x4::splat(0x0F0F_0F0F_0F0F_0F0F);
+    let h01 = u64x4::splat(0x0101_0101_0101_0101);
+    v -= (v >> 1) & m1;
+    v = (v & m2) + ((v >> 2) & m2);
+    v = (v + (v >> 4)) & m4;
+    (v * h01) >> 56
+}
+
+/// SIMD mismatch primitive: four `(guide, site)` pairs against the same
+/// compare-mask in one call. `guide_lows`/`guide_highs` hold the
+/// `Site.low`/`Site.high` fields of four active guides; the single
+/// `site_low`/`site_high` are broadcast to all four lanes.
+///
+/// Mirrors `crispr_encoding::mismatches_masked` exactly, lane-wise.
+#[inline]
+fn mismatches_x4(
+    guide_lows: u64x4,
+    guide_highs: u64x4,
+    site_low: u64,
+    site_high: u64,
+    mask_low: u64,
+    mask_high: u64,
+) -> u64x4 {
+    let cl = (guide_lows ^ u64x4::splat(site_low)) & u64x4::splat(mask_low);
+    let ch = (guide_highs ^ u64x4::splat(site_high)) & u64x4::splat(mask_high);
+    pop_pairs_x4(cl) + pop_pairs_x4(ch)
+}
+
+impl Scanner for BinScanner<'_> {
+    #[allow(clippy::too_many_lines)] // SIMD inner loop pulls the hot path inline
+    fn scan(&self, guides: &[Guide], max_mismatches: u8) -> Vec<Hit> {
+        let compare_mask = self.source.enzyme().compare_mask;
+        let bin_width = self.source.bin_width();
+        let bin_width_bits = u32::from(bin_width) * 2;
+        // Saturating shift so an in-principle bin_width of 16 (32 bits)
+        // still yields u32::MAX; production bins are capped at 15 by
+        // `BinTable::with_width`.
+        let bin_mask: u32 = if bin_width_bits >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << bin_width_bits) - 1
+        };
+        let max_mm_u32 = u32::from(max_mismatches);
+
+        // Precompute each guide's bin-prefix once. Reused on every bin
+        // by every worker thread.
+        let guide_prefixes: Vec<u32> = guides.iter().map(|g| self.source.bin_key(g.site)).collect();
+
+        // Materialize bins into a Vec so rayon can split the work. The
+        // `HashMap::iter` we'd otherwise use isn't a `ParallelIterator`,
+        // and `par_bridge` introduces channel overhead per item. For
+        // 16 384 bins (width 7) the vec is ~256 KB; trivially worth it.
+        let bins: Vec<(u32, &[PackedEntry])> = self.source.iter_bins().collect();
+
+        let trace = std::env::var_os("CRISPR_OTS_SCAN_TRACE").is_some();
+
+        // Per-thread fold: each worker keeps its own scratch buffers and
+        // local hit collector. SIMD inner loop processes 4 (guide × site)
+        // pairs per iteration; tail handled scalar.
+        let mask_low = compare_mask.low;
+        let mask_high = compare_mask.high;
+        let max_mm_u64 = u64::from(max_mm_u32);
+        let (hits, total_pairs, prefilter_pass) = bins
+            .par_iter()
+            .fold(
+                || {
+                    let cap = guides.len() / 16;
+                    (
+                        Vec::with_capacity(cap),
+                        Vec::with_capacity(cap),
+                        Vec::with_capacity(cap),
+                        Vec::new(),
+                        0_u64,
+                        0_u64,
+                    )
+                },
+                |(
+                    mut active_idx,
+                    mut active_lows,
+                    mut active_highs,
+                    mut local_hits,
+                    mut total,
+                    mut passed,
+                ): WorkerState,
+                 (bin_key, sites)| {
+                    // ---- Bin-prefix prefilter (gather active guides into SoA). ----
+                    active_idx.clear();
+                    active_lows.clear();
+                    active_highs.clear();
+                    for (gi, prefix) in guide_prefixes.iter().enumerate() {
+                        total += 1;
+                        if bin_prefix_mismatches(*prefix, *bin_key, bin_mask) <= max_mm_u32 {
+                            active_idx.push(u32::try_from(gi).expect("guide index fits in u32"));
+                            let g_site = guides[gi].site;
+                            active_lows.push(g_site.low);
+                            active_highs.push(g_site.high);
+                            passed += 1;
+                        }
+                    }
+                    if !active_idx.is_empty() {
+                        let n = active_idx.len();
+                        let n_chunks = n / 4;
+                        let tail_start = n_chunks * 4;
+                        for entry in *sites {
+                            let site = entry.site();
+                            let position = entry.position();
+                            let site_low = site.low;
+                            let site_high = site.high;
+                            // ---- SIMD body: 4 guides per iteration. ----
+                            for c in 0..n_chunks {
+                                let base = c * 4;
+                                let g_lows = u64x4::new([
+                                    active_lows[base],
+                                    active_lows[base + 1],
+                                    active_lows[base + 2],
+                                    active_lows[base + 3],
+                                ]);
+                                let g_highs = u64x4::new([
+                                    active_highs[base],
+                                    active_highs[base + 1],
+                                    active_highs[base + 2],
+                                    active_highs[base + 3],
+                                ]);
+                                let mm = mismatches_x4(
+                                    g_lows, g_highs, site_low, site_high, mask_low, mask_high,
+                                );
+                                let mm_arr = mm.to_array();
+                                for lane in 0..4 {
+                                    if mm_arr[lane] <= max_mm_u64 {
+                                        let gi = active_idx[base + lane];
+                                        local_hits.push(Hit {
+                                            guide_index: gi,
+                                            off_target: site,
+                                            position,
+                                            mismatches: u8::try_from(mm_arr[lane])
+                                                .expect("mismatch fits in u8"),
+                                        });
+                                    }
+                                }
+                            }
+                            // ---- Scalar tail (0–3 leftover guides). ----
+                            for k in tail_start..n {
+                                let g_site = Site {
+                                    low: active_lows[k],
+                                    high: active_highs[k],
+                                };
+                                let mm = mismatches_masked(g_site, site, compare_mask);
+                                if mm <= max_mm_u32 {
+                                    local_hits.push(Hit {
+                                        guide_index: active_idx[k],
+                                        off_target: site,
+                                        position,
+                                        mismatches: u8::try_from(mm).expect("mismatch fits in u8"),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    (
+                        active_idx,
+                        active_lows,
+                        active_highs,
+                        local_hits,
+                        total,
+                        passed,
+                    )
+                },
+            )
+            .map(|(_idx, _lows, _highs, hits, total, passed)| (hits, total, passed))
+            .reduce(
+                || (Vec::new(), 0_u64, 0_u64),
+                |(mut a_hits, a_total, a_pass), (b_hits, b_total, b_pass)| {
+                    a_hits.extend(b_hits);
+                    (a_hits, a_total + b_total, a_pass + b_pass)
+                },
+            );
+
+        if trace {
+            // Counts can't realistically exceed 2^53 in any genome we'd
+            // scan, so the lossy cast is fine for the percentage display.
+            #[allow(clippy::cast_precision_loss)]
+            let pct = 100.0 * prefilter_pass as f64 / total_pairs.max(1) as f64;
+            eprintln!(
+                "[scan-trace] {total_pairs} (guide, bin) pairs; \
+                 {prefilter_pass} passed prefilter ({pct:.1}%); \
+                 {} hits; {} rayon threads",
+                hits.len(),
+                rayon::current_num_threads(),
+            );
+        }
+        hits
+    }
+}
+
+/// Count base-level mismatches between two bin-prefix u32 keys (`mask`
+/// covers only the lower `bin_width × 2` bits). Same POPCNT-pair trick as
+/// `mismatches_masked` for the 2 × `u64` site encoding, specialized to
+/// `u32`.
+#[inline]
+fn bin_prefix_mismatches(guide_prefix: u32, bin_key: u32, mask: u32) -> u32 {
+    const UPPER_PAIR_BITS: u32 = 0xAAAA_AAAA;
+    let xor = (guide_prefix ^ bin_key) & mask;
+    ((xor & UPPER_PAIR_BITS) | ((xor << 1) & UPPER_PAIR_BITS)).count_ones()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crispr_db::{read_fasta_from, BinTable, SiteFinder, Strand};
+    use crispr_encoding::Enzyme;
+
+    /// Helper: build a `BinTable` from raw FASTA bytes for a given enzyme.
+    fn build_table(fasta: &[u8], enzyme: Enzyme) -> BinTable {
+        let contigs = read_fasta_from(fasta).expect("parses FASTA");
+        let finder = SiteFinder::new(enzyme.clone());
+        let mut table = BinTable::for_enzyme(enzyme);
+        for (i, contig) in contigs.iter().enumerate() {
+            finder.scan(
+                &contig.sequence,
+                u32::try_from(i).expect("contig fits in u32"),
+                &mut table,
+            );
+        }
+        table
+    }
+
+    #[test]
+    fn empty_table_yields_no_hits() {
+        let table = BinTable::for_enzyme(Enzyme::spcas9_ngg());
+        let scanner = BinScanner::new(&table);
+        let guide = Guide {
+            id: "g0".into(),
+            site: Site::encode_ascii(b"AAAAAAAAAAAAAAAAAAAAAGG"),
+        };
+        let hits = scanner.scan(&[guide], 4);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn empty_guide_list_yields_no_hits() {
+        // Even a non-empty table yields no hits with no guides.
+        let table = build_table(b">c\nAAAAAAAAAAAAAAAAAAAAAGG\n", Enzyme::spcas9_ngg());
+        assert!(table.total() > 0);
+        let scanner = BinScanner::new(&table);
+        let hits = scanner.scan(&[], 4);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn guide_finds_its_own_on_target_at_zero_mismatches() {
+        let table = build_table(b">c\nAAAAAAAAAAAAAAAAAAAAAGG\n", Enzyme::spcas9_ngg());
+        let scanner = BinScanner::new(&table);
+        let guide = Guide {
+            id: "self".into(),
+            site: Site::encode_ascii(b"AAAAAAAAAAAAAAAAAAAAAGG"),
+        };
+        let hits = scanner.scan(&[guide], 0);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].mismatches, 0);
+        assert_eq!(hits[0].guide_index, 0);
+        assert_eq!(hits[0].position.strand, Strand::Forward);
+        assert_eq!(hits[0].position.offset, 0);
+    }
+
+    #[test]
+    fn guide_finds_off_target_within_budget() {
+        // Two sites in the genome:
+        //   - on-target at offset 0:        "AAAAAAAAAAAAAAAAAAAA AGG" (matches guide)
+        //   - off-target at offset 30:      "AAAAAAAAAAAAAAAAAAAT AGG" (1 mm at pos 19)
+        // Plus padding to keep them distinct.
+        let fasta = b">c\n\
+                      AAAAAAAAAAAAAAAAAAAAAGG\
+                      CCCCCCC\
+                      AAAAAAAAAAAAAAAAAAATAGG\n";
+        let table = build_table(fasta, Enzyme::spcas9_ngg());
+        let scanner = BinScanner::new(&table);
+        let guide = Guide {
+            id: "g".into(),
+            site: Site::encode_ascii(b"AAAAAAAAAAAAAAAAAAAAAGG"),
+        };
+
+        // With budget 0: only the exact match.
+        let hits_strict = scanner.scan(std::slice::from_ref(&guide), 0);
+        assert_eq!(hits_strict.len(), 1);
+        assert_eq!(hits_strict[0].mismatches, 0);
+
+        // With budget 1: both sites — the off-target has one mismatch.
+        let hits_lax = scanner.scan(std::slice::from_ref(&guide), 1);
+        assert_eq!(hits_lax.len(), 2);
+        let mut mm: Vec<u8> = hits_lax.iter().map(|h| h.mismatches).collect();
+        mm.sort_unstable();
+        assert_eq!(mm, vec![0, 1]);
+    }
+
+    #[test]
+    fn multiple_guides_get_distinct_hit_indices() {
+        let table = build_table(b">c\nAAAAAAAAAAAAAAAAAAAAAGG\n", Enzyme::spcas9_ngg());
+        let scanner = BinScanner::new(&table);
+        let g0 = Guide {
+            id: "g0".into(),
+            site: Site::encode_ascii(b"AAAAAAAAAAAAAAAAAAAAAGG"),
+        };
+        let g1 = Guide {
+            id: "g1".into(),
+            site: Site::encode_ascii(b"TTTTTTTTTTTTTTTTTTTTAGG"), // very different
+        };
+        let hits = scanner.scan(&[g0, g1], 0);
+        // Only g0 should match.
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].guide_index, 0);
+    }
+
+    #[test]
+    fn pam_difference_alone_does_not_count() {
+        // Same protospacer, different PAM N (AGG vs TGG). The compare-mask
+        // excludes PAM bits, so this is a 0-mismatch hit.
+        let table = build_table(b">c\nAAAAAAAAAAAAAAAAAAAAAGG\n", Enzyme::spcas9_ngg());
+        let scanner = BinScanner::new(&table);
+        let guide = Guide {
+            id: "g".into(),
+            site: Site::encode_ascii(b"AAAAAAAAAAAAAAAAAAAATGG"),
+        };
+        let hits = scanner.scan(&[guide], 0);
+        assert_eq!(hits.len(), 1, "PAM N differs but is masked out");
+        assert_eq!(hits[0].mismatches, 0);
+    }
+
+    #[test]
+    fn reverse_strand_site_is_found() {
+        // A reverse-strand Cas9 NGG site: forward strand has CCT + 20 ACGT.
+        let fasta = b">c\nCCTACGTACGTACGTACGTACGT\n";
+        let table = build_table(fasta, Enzyme::spcas9_ngg());
+
+        // Build a guide whose protospacer matches the reverse-strand
+        // protospacer (i.e. the rev-comp of "ACGTACGTACGTACGTACGT").
+        // rc("ACGTACGTACGTACGTACGT") = "ACGTACGTACGTACGTACGT" — this
+        // sequence happens to be its own rev-comp, so we can just use it.
+        let guide = Guide {
+            id: "g".into(),
+            site: Site::encode_ascii(b"ACGTACGTACGTACGTACGTAGG"),
+        };
+
+        let scanner = BinScanner::new(&table);
+        let hits = scanner.scan(&[guide], 0);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].position.strand, Strand::Reverse);
+        assert_eq!(hits[0].mismatches, 0);
+    }
+
+    #[test]
+    fn cpf1_end_to_end() {
+        // TTT + N=A + 20-mer ACGTACGTACGTACGTACGT.
+        let table = build_table(b">c\nTTTAACGTACGTACGTACGTACGT\n", Enzyme::cpf1_tttn());
+        let scanner = BinScanner::new(&table);
+        let guide = Guide {
+            id: "g".into(),
+            site: Site::encode_ascii(b"TTTAACGTACGTACGTACGTACGT"),
+        };
+        let hits = scanner.scan(&[guide], 0);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].mismatches, 0);
+        assert_eq!(hits[0].position.strand, Strand::Forward);
+    }
+}

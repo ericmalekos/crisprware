@@ -1,0 +1,22 @@
+[package]
+name = "crispr-scan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Off-target scan engine: bin traversal, SIMD mismatch compare, multithreading"
+
+[lints]
+workspace = true
+
+[dependencies]
+crispr-encoding = { path = "../crispr-encoding" }
+crispr-db = { path = "../crispr-db" }
+rayon = "1"
+# Cross-platform SIMD via the `wide` crate. Compiles to AVX2 on x86-64
+# when the target supports it (Haswell 2013+), to NEON on aarch64, or to
+# unrolled scalar everywhere else. Used by `BinScanner` to batch four
+# (guide × site) mismatch comparisons per iteration of the inner loop.
+wide = "0.7"
