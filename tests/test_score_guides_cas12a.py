@@ -35,7 +35,8 @@ def _build_input_bed(tmpdir: str, n_rows: int = 5) -> str:
     return in_path
 
 
-def _make_args(grna_bed: str, output_directory: str, cas12a_scorer: str) -> Namespace:
+def _make_args(grna_bed: str, output_directory: str, cas12a_scorer: str,
+               cas12a_variant=None) -> Namespace:
     """Build the Namespace score_guides.main() expects."""
     return Namespace(
         grna_bed=grna_bed,
@@ -56,8 +57,10 @@ def _make_args(grna_bed: str, output_directory: str, cas12a_scorer: str) -> Name
         keep_tmp=False,
         min_rs3=float("-inf"),
         cas12a_scorer=cas12a_scorer,
+        cas12a_variant=cas12a_variant,
         min_deepcpf1=float("-inf"),
         min_enpam_gb=float("-inf"),
+        min_enseq_deepcpf1=float("-inf"),
     )
 
 
@@ -153,3 +156,54 @@ def test_mutex_tracr_and_cas12a_scorer():
     args.skip_rs3 = False
     with pytest.raises(ValueError, match="mutually exclusive"):
         score_guides.main(args)
+
+
+def test_enseq_deepcpf1_branch_wired():
+    """`--cas12a_scorer enseq_deepcpf1` adds an enseq_deepcpf1_score column."""
+    pytest.importorskip("tensorflow")
+    from crisprware import score_guides
+
+    with tempfile.TemporaryDirectory() as tmp:
+        in_bed = _build_input_bed(tmp, n_rows=5)
+        out_dir = os.path.join(tmp, "out")
+        os.makedirs(out_dir, exist_ok=True)
+
+        args = _make_args(in_bed, out_dir, cas12a_scorer="enseq_deepcpf1")
+        score_guides.main(args)
+        df = _read_scored_output(out_dir)
+
+    assert "enseq_deepcpf1_score" in df.columns, df.columns.tolist()
+    scores = df["enseq_deepcpf1_score"].astype(float).to_numpy()
+    assert np.all(np.isfinite(scores))
+    assert np.all((scores >= 0.0) & (scores <= 1.0))
+
+
+def test_seq_deepcpf1variants_requires_variant():
+    """`seq_deepcpf1variants` without --cas12a_variant must raise."""
+    from crisprware import score_guides
+
+    args = _make_args(grna_bed="dummy", output_directory="/tmp",
+                      cas12a_scorer="seq_deepcpf1variants")
+    with pytest.raises(ValueError, match="--cas12a_variant is required"):
+        score_guides.main(args)
+
+
+def test_seq_deepcpf1variants_AsCas12a_Ultra_branch_wired():
+    """`--cas12a_scorer seq_deepcpf1variants --cas12a_variant AsCas12a_Ultra`
+    adds a variant-specific score column."""
+    pytest.importorskip("tensorflow")
+    from crisprware import score_guides
+
+    with tempfile.TemporaryDirectory() as tmp:
+        in_bed = _build_input_bed(tmp, n_rows=5)
+        out_dir = os.path.join(tmp, "out")
+        os.makedirs(out_dir, exist_ok=True)
+
+        args = _make_args(in_bed, out_dir,
+                          cas12a_scorer="seq_deepcpf1variants",
+                          cas12a_variant="AsCas12a_Ultra")
+        score_guides.main(args)
+        df = _read_scored_output(out_dir)
+
+    expected_col = "seq_deepcpf1variants_AsCas12a_Ultra_score"
+    assert expected_col in df.columns, df.columns.tolist()
