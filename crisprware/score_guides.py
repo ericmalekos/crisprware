@@ -126,12 +126,25 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
     parser.add_argument(
         "--cas12a_scorer",
-        choices=["none", "enpam_gb", "deepcpf1", "both"],
+        choices=["none", "enpam_gb", "deepcpf1", "enseq_deepcpf1",
+                 "seq_deepcpf1variants", "both"],
         default="none",
         help="Cas12a on-target scorer. enpam_gb for en(As)Cas12a; deepcpf1 \
-            for wildtype AsCas12a/LbCas12a; both for parallel scoring. \
-            Mutually exclusive with --tracr (RS3 is SpCas9-only); implies \
-            --skip_rs3. [default: none]",
+            for wildtype AsCas12a/LbCas12a (Kim 2018); enseq_deepcpf1 for \
+            wildtype AsCas12a (Chen 2025, modern); seq_deepcpf1variants for \
+            variant-specific scoring (requires --cas12a_variant). \
+            'both' runs enpam_gb + deepcpf1 in parallel. Mutually exclusive \
+            with --tracr (RS3 is SpCas9-only); implies --skip_rs3. [default: none]",
+    )
+
+    parser.add_argument(
+        "--cas12a_variant",
+        type=str,
+        default=None,
+        help="Cas12a variant name (e.g. AsCas12a_Ultra, enAsCas12a-HF1, \
+            LbCas12a, HyperFi-AsCas12a). Required when --cas12a_scorer is \
+            seq_deepcpf1variants. See crisprware.scorers.seq_deepcpf1variants \
+            for the full 23-variant list.",
     )
 
     parser.add_argument(
@@ -148,6 +161,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default=float("-inf"),
         help="Minimum enPAM+GB score (probability-like, [0, 1]). Applied \
             after scoring; analogous to --min_rs3. [default: None]",
+    )
+
+    parser.add_argument(
+        "--min_enseq_deepcpf1",
+        type=float,
+        default=float("-inf"),
+        help="Minimum enseq-DeepCpf1 / seq-DeepCpf1variants score \
+            (probability, [0, 1]). Applied after scoring. [default: None]",
     )
 
     parser.add_argument(
@@ -386,6 +407,11 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             )
         args.skip_rs3 = True
 
+    if args.cas12a_scorer == "seq_deepcpf1variants" and not args.cas12a_variant:
+        raise ValueError(
+            "\n\t--cas12a_variant is required when --cas12a_scorer is seq_deepcpf1variants.\n"
+        )
+
     if not args.skip_rs3 and not args.tracr:
         raise ValueError(
             "\n\tEither --tracr (SpCas9 RS3) or --cas12a_scorer must be set, or pass --skip_rs3 to skip on-target scoring entirely.\n"
@@ -458,6 +484,37 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             gRNADF = gRNADF[gRNADF["deepcpf1_score"] > args.min_deepcpf1]
             print(f"\tAfter dropping DeepCpf1 scores below {args.min_deepcpf1}: {before} -> {len(gRNADF)}\n")
         final_columns += ["deepcpf1_score"]
+
+    if args.cas12a_scorer == "enseq_deepcpf1":
+        from crisprware.scorers import enseq_deepcpf1 as _enseq
+        print("\n\tBeginning enseq-DeepCpf1 Cas12a on-target scoring\n")
+        gRNADF["enseq_deepcpf1_score"] = _enseq.compute_enseq_deepcpf1_scores(
+            gRNADF["context"].tolist(), threads=args.threads, chunk_size=args.chunk_size
+        )
+        gRNADF["enseq_deepcpf1_score"] = gRNADF["enseq_deepcpf1_score"].round(8)
+        if args.min_enseq_deepcpf1 > float("-inf"):
+            before = len(gRNADF)
+            gRNADF = gRNADF[gRNADF["enseq_deepcpf1_score"] > args.min_enseq_deepcpf1]
+            print(f"\tAfter dropping enseq-DeepCpf1 scores below {args.min_enseq_deepcpf1}: {before} -> {len(gRNADF)}\n")
+        final_columns += ["enseq_deepcpf1_score"]
+
+    if args.cas12a_scorer == "seq_deepcpf1variants":
+        from crisprware.scorers import seq_deepcpf1variants as _variants
+        canonical = _variants._normalize_variant(args.cas12a_variant)
+        col_name = f"seq_deepcpf1variants_{canonical.replace('-', '_')}_score"
+        print(f"\n\tBeginning seq-DeepCpf1variants scoring (variant={canonical})\n")
+        gRNADF[col_name] = _variants.compute_variant_scores(
+            gRNADF["context"].tolist(),
+            variant=canonical,
+            threads=args.threads,
+            chunk_size=args.chunk_size,
+        )
+        gRNADF[col_name] = gRNADF[col_name].round(8)
+        if args.min_enseq_deepcpf1 > float("-inf"):
+            before = len(gRNADF)
+            gRNADF = gRNADF[gRNADF[col_name] > args.min_enseq_deepcpf1]
+            print(f"\tAfter dropping scores below {args.min_enseq_deepcpf1}: {before} -> {len(gRNADF)}\n")
+        final_columns += [col_name]
 
     gRNADF.loc[:, "id"] = gRNADF["id,sequence,pam,chromosome,position,sense"].str.split(",").str[0]
     guidescan_dfs = []
