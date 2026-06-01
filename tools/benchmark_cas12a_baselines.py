@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 
-from crisprware.scorers import deepcpf1, enpam_gb
+from crisprware.scorers import deepcpf1, enpam_gb, enseq_deepcpf1
 
 KIM_DIR = os.path.join(REPO_ROOT, "data", "cas12a", "kim_2018")
 
@@ -37,6 +37,7 @@ EVAL_SHEETS = [
     ("chari_2017.csv",       "Chari 2017 (18 endo)",         "indel_freq_pct"),
     ("kim_2016.csv",         "Kim 2016 (10 endo)",           "indel_freq_pct"),
     # Held-out HT sets for reference (synthetic, not endogenous)
+    ("ht_1-2.csv",       "HT 1-2 (1292 synthetic, held-out)", "indel_freq_subtracted_pct"),
     ("ht_2.csv",         "HT 2 (2963 synthetic, held-out)",  "indel_freq_subtracted_pct"),
     ("ht_3.csv",         "HT 3 (1251 synthetic, held-out)",  "indel_freq_subtracted_pct"),
 ]
@@ -69,10 +70,11 @@ def main():
     print("Loading models...")
     deep_model = deepcpf1.load_model()
     enpam_model = enpam_gb.load_model()
+    enseq_model = enseq_deepcpf1.load_model()
 
-    print(f"\n{'Sheet':40s}  {'N':>5s}   {'Spearman':>10s}  {'Pearson':>9s}")
-    print(f"{'':40s}  {'':>5s}   {'DC | eP':>10s}  {'DC | eP':>9s}")
-    print("-" * 80)
+    print(f"\n{'Sheet':40s}  {'N':>5s}   {'Spearman':>16s}  {'Pearson':>16s}")
+    print(f"{'':40s}  {'':>5s}   {'DC | eP | enS':>16s}  {'DC | eP | enS':>16s}")
+    print("-" * 90)
 
     rows = []
     for csv_name, label, indel_col in EVAL_SHEETS:
@@ -90,19 +92,23 @@ def main():
         truth = df[indel_col].to_numpy(dtype=float)
         dc_scores = _score(df["context"], deepcpf1, deep_model)
         ep_scores = _score(df["context"], enpam_gb, enpam_model)
-        dc_rho, dc_r, n_dc = _metrics(dc_scores, truth)
-        ep_rho, ep_r, n_ep = _metrics(ep_scores, truth)
+        es_scores = _score(df["context"], enseq_deepcpf1, enseq_model)
+        dc_rho, dc_r, _ = _metrics(dc_scores, truth)
+        ep_rho, ep_r, _ = _metrics(ep_scores, truth)
+        es_rho, es_r, _ = _metrics(es_scores, truth)
 
         print(f"  {label:38s}  {len(df):>5d}   "
-              f"{dc_rho:>4.2f} | {ep_rho:>4.2f}   "
-              f"{dc_r:>4.2f} | {ep_r:>4.2f}")
+              f"{dc_rho:>4.2f} | {ep_rho:>4.2f} | {es_rho:>4.2f}   "
+              f"{dc_r:>4.2f} | {ep_r:>4.2f} | {es_r:>4.2f}")
         rows.append({
             "sheet": label,
             "n": len(df),
             "deepcpf1_spearman": dc_rho,
             "enpam_gb_spearman": ep_rho,
+            "enseq_deepcpf1_spearman": es_rho,
             "deepcpf1_pearson": dc_r,
             "enpam_gb_pearson": ep_r,
+            "enseq_deepcpf1_pearson": es_r,
         })
 
     summary = pd.DataFrame(rows)
