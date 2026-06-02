@@ -106,6 +106,22 @@ impl Cfd {
         }
     }
 
+    /// The mismatch penalty table, indexed `[guide_2bit][ot_2bit][position]`.
+    /// Exposed so out-of-crate scorers (e.g. the GPU kernel) can upload the
+    /// exact same FlashFry-derived values rather than re-transcribing them.
+    #[must_use]
+    pub fn penalty_table(&self) -> &[[[f64; 20]; 4]; 4] {
+        &self.penalty
+    }
+
+    /// The PAM-tail weight table, indexed `[pam_pos1_2bit][pam_pos2_2bit]`
+    /// (the last two bases of the 3-bp PAM). Companion to
+    /// [`penalty_table`](Self::penalty_table) for the GPU table upload.
+    #[must_use]
+    pub fn pam_table(&self) -> &[[f64; 4]; 4] {
+        &self.pam_weight
+    }
+
     /// Score a single `(guide, off-target)` pair. **Both** sites must be
     /// encoded as 23-bp (20-nt protospacer + 3-nt PAM) — the layout
     /// produced by `Enzyme::spcas9_ngg()` and friends.

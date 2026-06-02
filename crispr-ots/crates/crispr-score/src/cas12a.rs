@@ -364,7 +364,8 @@ impl Cas12aCfd {
 /// `protospacer_len` is the length of the protospacer portion; total
 /// scan length is `4 + protospacer_len`. PAM bits sit at the highest
 /// used bits per the standard encoding.
-fn is_tttt_prefix(site: Site, protospacer_len: u32) -> bool {
+#[must_use]
+pub fn is_tttt_prefix(site: Site, protospacer_len: u32) -> bool {
     // Site position 3 (the variable N of TTTN) bit offset:
     //   scan_len = 4 + protospacer_len; bit_offset = (scan_len - 1 - 3) * 2
     //   = (protospacer_len) * 2
