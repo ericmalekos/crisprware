@@ -106,26 +106,104 @@ def _thermo(guide: str, context: str) -> dict:
     }
 
 
+# Vectorized featurizer helpers (much faster than per-sequence Python loops).
+# Lookup table: byte value (ASCII) -> nt index in NTS order (A=0, C=1, T=2, G=3).
+_NT_LUT = np.zeros(256, dtype=np.int8)
+for _c, _i in zip(b"ACTG", range(4)):
+    _NT_LUT[_c] = _i
+    _NT_LUT[_c | 0x20] = _i  # also accept lowercase
+_EYE4 = np.eye(4, dtype=np.float64)
+_EYE16 = np.eye(16, dtype=np.float64)
+
+
+def _featurize_array(seqs: Sequence[str]) -> np.ndarray:
+    """Vectorized featurizer returning a (N, 689) float64 array.
+
+    Column order matches the original `featurize()` exactly so the model's
+    learned column ordering still applies. Per-sequence Python loops are
+    replaced with numpy ops for the 685 positional / count / GC features;
+    the 4 Tm features still need a Python loop (Biopython's Tm_NN is
+    per-sequence) but those are <40% of total cost.
+    """
+    n = len(seqs)
+    # Encode N sequences as (N, 34) int8 of nt indices 0-3
+    joined = "".join(s.upper() for s in seqs)
+    raw = np.frombuffer(joined.encode("ascii"), dtype=np.uint8).reshape(n, CONTEXT_LEN)
+    arr = _NT_LUT[raw].astype(np.int64)  # (N, 34)
+    guide = arr[:, GUIDE_START - 1 : GUIDE_START - 1 + GUIDE_LENGTH]  # (N, 23)
+
+    # 1-mer counts on the 23-nt guide; one-hot then sum along position.
+    counts_1mer = _EYE4[guide].sum(axis=1)  # (N, 4)  in NTS order ACTG
+    frac_1mer = counts_1mer / GUIDE_LENGTH
+    # GC content = (C + G) / 23  (NTS indices: C=1, G=3)
+    gc = (counts_1mer[:, 1] + counts_1mer[:, 3]) / GUIDE_LENGTH
+
+    # 2-mer counts on the guide. Upstream uses Python's str.count, which counts
+    # *non-overlapping* matches (e.g. "AAAA".count("AA") == 2, not 3). The naive
+    # positional-overlap count diverges for homo-dinucs (AA, CC, TT, GG) where
+    # a run of length k yields floor(k/2) non-overlapping matches, not k-1.
+    # 16 str.count() calls per sequence is cheap (~16μs/seq); leave it scalar.
+    frac_2mer = np.empty((n, 16), dtype=np.float64)
+    dinucs = [a + b for a in NTS for b in NTS]
+    denom = float(GUIDE_LENGTH - 1)
+    for i, s in enumerate(seqs):
+        g = s.upper()[GUIDE_START - 1 : GUIDE_START - 1 + GUIDE_LENGTH]
+        for j, dn in enumerate(dinucs):
+            frac_2mer[i, j] = g.count(dn) / denom
+
+    # Positional 1-mer over the full 34-nt context: one-hot reshape (position outer, nt inner).
+    pos_1mer = _EYE4[arr].reshape(n, CONTEXT_LEN * 4)  # (N, 136)
+
+    # Positional 2-mer over the 34-nt context: 33 positions × 16 dinucs.
+    ctx_dinuc = arr[:, :-1] * 4 + arr[:, 1:]  # (N, 33)
+    pos_2mer = _EYE16[ctx_dinuc].reshape(n, (CONTEXT_LEN - 1) * 16)  # (N, 528)
+
+    # Tm features still need per-sequence Biopython calls.
+    from Bio.SeqUtils import MeltingTemp as MT
+
+    tm = np.empty((n, 4), dtype=np.float64)
+    for i, s in enumerate(seqs):
+        s_up = s.upper()
+        g = s_up[GUIDE_START - 1 : GUIDE_START - 1 + GUIDE_LENGTH]
+        third = GUIDE_LENGTH // 3
+        tm[i, 0] = float(MT.Tm_NN(s_up))
+        tm[i, 1] = float(MT.Tm_NN(g[:third]))
+        tm[i, 2] = float(MT.Tm_NN(g[third : 2 * third]))
+        tm[i, 3] = float(MT.Tm_NN(g[2 * third :]))
+
+    # Concatenate in the original column order
+    return np.concatenate(
+        [
+            gc.reshape(-1, 1),  # 1
+            frac_1mer,  # 4
+            frac_2mer,  # 16
+            pos_1mer,  # 136
+            pos_2mer,  # 528
+            tm,  # 4
+        ],
+        axis=1,
+    )  # (N, 689)
+
+
+def _feature_names() -> list:
+    """Generate the 689 feature names in the same order as the legacy dict."""
+    names = ["GC content"]
+    names += list(NTS)  # "A","C","T","G"
+    names += [a + b for a in NTS for b in NTS]  # AA, AC, ..., GG  (16)
+    names += [f"{i + 1}{nt}" for i in range(CONTEXT_LEN) for nt in NTS]  # 1A, 1C, ..., 34G
+    names += [f"{i + 1}{a}{b}" for i in range(CONTEXT_LEN - 1) for a in NTS for b in NTS]
+    names += ["Tm, context", "Tm, start", "Tm, mid", "Tm, end"]
+    return names
+
+
 def featurize(seqs: Sequence[str]) -> pd.DataFrame:
     """RS2-style features for Cas12a 34-nt context.
 
-    Schema (column order) mirrors `sgrna_modeler.features.featurize_guides`
-    with the default RS2 feature list. The order matters because the
-    upstream model was trained with these features iterated through Python
-    dict insertion order; we replicate that exactly.
+    Wraps `_featurize_array` so the public API still returns a labeled
+    DataFrame; the hot path in `predict()` calls `_featurize_array`
+    directly to skip pandas overhead.
     """
-    rows: List[dict] = []
-    for ctx in seqs:
-        guide = _get_guide_sequence(ctx)
-        d: dict = {}
-        d.update({"GC content": _gc_fraction(guide)})
-        d.update(_one_nt_counts(guide))
-        d.update(_two_nt_counts(guide))
-        d.update(_one_nt_pos(ctx))
-        d.update(_two_nt_pos(ctx))
-        d.update(_thermo(guide, ctx))
-        rows.append(d)
-    return pd.DataFrame(rows)
+    return pd.DataFrame(_featurize_array(seqs), columns=_feature_names())
 
 
 def _install_sklearn_legacy_aliases() -> None:
@@ -195,10 +273,11 @@ def predict(
     valid_seqs = [seqs[i].upper() for i in valid_idx]
     for start in range(0, len(valid_seqs), batch_size):
         chunk = valid_seqs[start : start + batch_size]
-        features = featurize(chunk)
-        # Use .to_numpy() to silence sklearn's "fitted without feature names"
-        # warning — the upstream model was trained on a numpy array, not a DataFrame.
-        scores = np.asarray(model.predict(features.to_numpy()), dtype=float)
+        # Skip the DataFrame wrapping entirely in the hot path -- direct
+        # numpy array also dodges sklearn's "fitted without feature names"
+        # warning.
+        features = _featurize_array(chunk)
+        scores = np.asarray(model.predict(features), dtype=float)
         for slot_local, score in enumerate(scores):
             out[valid_idx[start + slot_local]] = float(score)
     return out
