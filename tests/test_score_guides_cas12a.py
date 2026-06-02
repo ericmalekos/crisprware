@@ -54,9 +54,12 @@ def _make_args(grna_bed: str, output_directory: str, cas12a_scorer: str, cas12a_
         min_rs3=float("-inf"),
         cas12a_scorer=cas12a_scorer,
         cas12a_variant=cas12a_variant,
+        cas9_scorer=None,
         min_deepcpf1=float("-inf"),
         min_enpam_gb=float("-inf"),
         min_enseq_deepcpf1=float("-inf"),
+        min_deepspcas9=float("-inf"),
+        min_deephf=float("-inf"),
     )
 
 
@@ -181,6 +184,24 @@ def test_seq_deepcpf1variants_requires_variant():
     args = _make_args(grna_bed="dummy", output_directory="/tmp", cas12a_scorer="seq_deepcpf1variants")
     with pytest.raises(ValueError, match="--cas12a_variant is required"):
         score_guides.main(args)
+
+
+def test_multi_value_cas12a_scorer():
+    """Passing multiple values for --cas12a_scorer adds one column per scorer."""
+    pytest.importorskip("tensorflow")
+    from crisprware import score_guides
+
+    with tempfile.TemporaryDirectory() as tmp:
+        in_bed = _build_input_bed(tmp, n_rows=5)
+        out_dir = os.path.join(tmp, "out")
+        os.makedirs(out_dir, exist_ok=True)
+        # Mirror what argparse would produce: a list, not a single string.
+        args = _make_args(in_bed, out_dir, cas12a_scorer=["deepcpf1", "enseq_deepcpf1"])
+        score_guides.main(args)
+        df = _read_scored_output(out_dir)
+
+    assert "deepcpf1_score" in df.columns
+    assert "enseq_deepcpf1_score" in df.columns
 
 
 def test_seq_deepcpf1variants_AsCas12a_Ultra_branch_wired():
