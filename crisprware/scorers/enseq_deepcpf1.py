@@ -115,22 +115,37 @@ def context_34_to_31(ctx: str) -> str:
     return ctx[1:32]
 
 
+# Byte -> nt index lookup, Chen's ATCG ordering. Off-table -> 4 = N (all-zero row).
+_BYTE_TO_NT_ATCG = np.full(256, 4, dtype=np.int8)
+for _c, _i in zip(b"ATCG", range(4)):
+    _BYTE_TO_NT_ATCG[_c] = _i
+    _BYTE_TO_NT_ATCG[_c | 0x20] = _i  # lowercase
+
+
 def one_hot_encode_31(seqs_31: Sequence[str]) -> np.ndarray:
     """One-hot encode 31-nt strings to channels-last shape (N, 31, 4) float32.
 
     Encoding order is A=0, T=1, C=2, G=3 (Chen's convention, NOT DeepCpf1's
-    A=0, C=1, G=2, T=3 order).
+    A=0, C=1, G=2, T=3 order). Vectorized via numpy lookup table.
     """
     n = len(seqs_31)
-    arr = np.zeros((n, SEQ_LEN, 4), dtype=np.float32)
-    for i, seq in enumerate(seqs_31):
-        if not isinstance(seq, str) or len(seq) != SEQ_LEN:
-            continue
-        for j, ch in enumerate(seq):
-            idx = NT_INDEX.get(ch)
-            if idx is not None:
-                arr[i, j, idx] = 1.0
-    return arr
+    if n == 0:
+        return np.zeros((0, SEQ_LEN, 4), dtype=np.float32)
+    joined = "".join(seqs_31)
+    if len(joined) != n * SEQ_LEN:
+        # Ragged input -> fall back to scalar path.
+        arr = np.zeros((n, SEQ_LEN, 4), dtype=np.float32)
+        for i, seq in enumerate(seqs_31):
+            if not isinstance(seq, str) or len(seq) != SEQ_LEN:
+                continue
+            for j, ch in enumerate(seq):
+                idx = NT_INDEX.get(ch)
+                if idx is not None:
+                    arr[i, j, idx] = 1.0
+        return arr
+    raw = np.frombuffer(joined.encode("ascii"), dtype=np.uint8).reshape(n, SEQ_LEN)
+    nt_idx = _BYTE_TO_NT_ATCG[raw]
+    return (nt_idx[..., None] == np.arange(4, dtype=np.int8)).astype(np.float32)
 
 
 def predict(
