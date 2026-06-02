@@ -126,8 +126,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
     parser.add_argument(
         "--cas12a_scorer",
-        choices=["none", "enpam_gb", "deepcpf1", "enseq_deepcpf1",
-                 "seq_deepcpf1variants", "both"],
+        choices=["none", "enpam_gb", "deepcpf1", "enseq_deepcpf1", "seq_deepcpf1variants", "both"],
         default="none",
         help="Cas12a on-target scorer. enpam_gb for en(As)Cas12a; deepcpf1 \
             for wildtype AsCas12a/LbCas12a (Kim 2018); enseq_deepcpf1 for \
@@ -408,9 +407,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         args.skip_rs3 = True
 
     if args.cas12a_scorer == "seq_deepcpf1variants" and not args.cas12a_variant:
-        raise ValueError(
-            "\n\t--cas12a_variant is required when --cas12a_scorer is seq_deepcpf1variants.\n"
-        )
+        raise ValueError("\n\t--cas12a_variant is required when --cas12a_scorer is seq_deepcpf1variants.\n")
 
     if not args.skip_rs3 and not args.tracr:
         raise ValueError(
@@ -461,6 +458,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
 
     if args.cas12a_scorer in ("enpam_gb", "both"):
         from crisprware.scorers import enpam_gb as _enpam_gb
+
         print("\n\tBeginning enPAM+GB Cas12a on-target scoring\n")
         gRNADF["enpam_gb_score"] = _enpam_gb.compute_enpam_gb_scores(
             gRNADF["context"].tolist(), threads=args.threads, chunk_size=args.chunk_size
@@ -474,6 +472,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
 
     if args.cas12a_scorer in ("deepcpf1", "both"):
         from crisprware.scorers import deepcpf1 as _deepcpf1
+
         print("\n\tBeginning DeepCpf1 Cas12a on-target scoring\n")
         gRNADF["deepcpf1_score"] = _deepcpf1.compute_deepcpf1_scores(
             gRNADF["context"].tolist(), threads=args.threads, chunk_size=args.chunk_size
@@ -487,6 +486,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
 
     if args.cas12a_scorer == "enseq_deepcpf1":
         from crisprware.scorers import enseq_deepcpf1 as _enseq
+
         print("\n\tBeginning enseq-DeepCpf1 Cas12a on-target scoring\n")
         gRNADF["enseq_deepcpf1_score"] = _enseq.compute_enseq_deepcpf1_scores(
             gRNADF["context"].tolist(), threads=args.threads, chunk_size=args.chunk_size
@@ -495,11 +495,14 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         if args.min_enseq_deepcpf1 > float("-inf"):
             before = len(gRNADF)
             gRNADF = gRNADF[gRNADF["enseq_deepcpf1_score"] > args.min_enseq_deepcpf1]
-            print(f"\tAfter dropping enseq-DeepCpf1 scores below {args.min_enseq_deepcpf1}: {before} -> {len(gRNADF)}\n")
+            print(
+                f"\tAfter dropping enseq-DeepCpf1 scores below {args.min_enseq_deepcpf1}: {before} -> {len(gRNADF)}\n"
+            )
         final_columns += ["enseq_deepcpf1_score"]
 
     if args.cas12a_scorer == "seq_deepcpf1variants":
         from crisprware.scorers import seq_deepcpf1variants as _variants
+
         canonical = _variants._normalize_variant(args.cas12a_variant)
         col_name = f"seq_deepcpf1variants_{canonical.replace('-', '_')}_score"
         print(f"\n\tBeginning seq-DeepCpf1variants scoring (variant={canonical})\n")

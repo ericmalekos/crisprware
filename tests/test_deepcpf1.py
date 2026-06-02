@@ -1,4 +1,5 @@
 """Unit tests for crisprware.scorers.deepcpf1."""
+
 from __future__ import annotations
 
 import os
@@ -13,12 +14,8 @@ sys.path.insert(0, REPO_ROOT)
 
 from crisprware.scorers import deepcpf1
 
-GOLDEN_TSV = os.path.join(
-    REPO_ROOT, "tests", "test_data", "cas12a_scores", "deepcpf1_enpam_sgRNA.1.tsv"
-)
-WEIGHTS = os.path.join(
-    REPO_ROOT, "crisprware", "scorers", "weights", "Seq_deepCpf1_weights.h5"
-)
+GOLDEN_TSV = os.path.join(REPO_ROOT, "tests", "test_data", "cas12a_scores", "deepcpf1_enpam_sgRNA.1.tsv")
+WEIGHTS = os.path.join(REPO_ROOT, "crisprware", "scorers", "weights", "Seq_deepCpf1_weights.h5")
 
 
 def test_is_valid_seq():
@@ -60,15 +57,11 @@ def model():
 def test_load_legacy_weights_shapes(model):
     """Conv1D kernel must come out as (5, 4, 80); dense layers as documented."""
     # Find the Conv1D layer
-    conv_layers = [l for l in model.layers if l.__class__.__name__ == "Conv1D"]
+    conv_layers = [layer for layer in model.layers if layer.__class__.__name__ == "Conv1D"]
     assert len(conv_layers) == 1
     assert tuple(conv_layers[0].weights[0].shape) == (5, 4, 80)
     # Dense layers in order: 1200->80, 80->40, 40->40, 40->1
-    dense_shapes = [
-        tuple(l.weights[0].shape)
-        for l in model.layers
-        if l.__class__.__name__ == "Dense"
-    ]
+    dense_shapes = [tuple(layer.weights[0].shape) for layer in model.layers if layer.__class__.__name__ == "Dense"]
     assert dense_shapes == [(1200, 80), (80, 40), (40, 40), (40, 1)]
 
 
@@ -87,8 +80,7 @@ def test_predict_matches_golden_tsv(model):
     diffs = [abs(s - g) for s, g in zip(scored, golden)]
     max_diff = max(diffs)
     assert max_diff < 1e-2, (
-        f"DeepCpf1 port diverges from golden by {max_diff} on top-10 fixture. "
-        f"Scored={scored}, golden={golden}"
+        f"DeepCpf1 port diverges from golden by {max_diff} on top-10 fixture. Scored={scored}, golden={golden}"
     )
 
 

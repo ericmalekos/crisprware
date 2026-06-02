@@ -13,6 +13,7 @@ Run `tools/fetch_cas12a_data.py` first to populate `data/cas12a/kim_2018/`.
 Usage:
     python tools/benchmark_cas12a_baselines.py
 """
+
 import os
 import sys
 
@@ -29,17 +30,17 @@ KIM_DIR = os.path.join(REPO_ROOT, "data", "cas12a", "kim_2018")
 
 # (csv filename, label, indel-frequency column name)
 EVAL_SHEETS = [
-    ("hek_plasmid.csv",  "HEK-plasmid (55 endo)",  "indel_freq_subtracted_pct"),
-    ("hct_plasmid.csv",  "HCT-plasmid (66 endo)",  "indel_freq_subtracted_pct"),
-    ("hek_lenti.csv",    "HEK-lenti endogenous",   "indel_freq_endogenous_pct"),
-    ("hek_lenti.csv",    "HEK-lenti synthetic",    "indel_freq_synthetic_pct"),
-    ("kleinstiver_2016.csv", "Kleinstiver 2016 (22 endo)",   "indel_freq_pct"),
-    ("chari_2017.csv",       "Chari 2017 (18 endo)",         "indel_freq_pct"),
-    ("kim_2016.csv",         "Kim 2016 (10 endo)",           "indel_freq_pct"),
+    ("hek_plasmid.csv", "HEK-plasmid (55 endo)", "indel_freq_subtracted_pct"),
+    ("hct_plasmid.csv", "HCT-plasmid (66 endo)", "indel_freq_subtracted_pct"),
+    ("hek_lenti.csv", "HEK-lenti endogenous", "indel_freq_endogenous_pct"),
+    ("hek_lenti.csv", "HEK-lenti synthetic", "indel_freq_synthetic_pct"),
+    ("kleinstiver_2016.csv", "Kleinstiver 2016 (22 endo)", "indel_freq_pct"),
+    ("chari_2017.csv", "Chari 2017 (18 endo)", "indel_freq_pct"),
+    ("kim_2016.csv", "Kim 2016 (10 endo)", "indel_freq_pct"),
     # Held-out HT sets for reference (synthetic, not endogenous)
-    ("ht_1-2.csv",       "HT 1-2 (1292 synthetic, held-out)", "indel_freq_subtracted_pct"),
-    ("ht_2.csv",         "HT 2 (2963 synthetic, held-out)",  "indel_freq_subtracted_pct"),
-    ("ht_3.csv",         "HT 3 (1251 synthetic, held-out)",  "indel_freq_subtracted_pct"),
+    ("ht_1-2.csv", "HT 1-2 (1292 synthetic, held-out)", "indel_freq_subtracted_pct"),
+    ("ht_2.csv", "HT 2 (2963 synthetic, held-out)", "indel_freq_subtracted_pct"),
+    ("ht_3.csv", "HT 3 (1251 synthetic, held-out)", "indel_freq_subtracted_pct"),
 ]
 
 
@@ -97,19 +98,23 @@ def main():
         ep_rho, ep_r, _ = _metrics(ep_scores, truth)
         es_rho, es_r, _ = _metrics(es_scores, truth)
 
-        print(f"  {label:38s}  {len(df):>5d}   "
-              f"{dc_rho:>4.2f} | {ep_rho:>4.2f} | {es_rho:>4.2f}   "
-              f"{dc_r:>4.2f} | {ep_r:>4.2f} | {es_r:>4.2f}")
-        rows.append({
-            "sheet": label,
-            "n": len(df),
-            "deepcpf1_spearman": dc_rho,
-            "enpam_gb_spearman": ep_rho,
-            "enseq_deepcpf1_spearman": es_rho,
-            "deepcpf1_pearson": dc_r,
-            "enpam_gb_pearson": ep_r,
-            "enseq_deepcpf1_pearson": es_r,
-        })
+        print(
+            f"  {label:38s}  {len(df):>5d}   "
+            f"{dc_rho:>4.2f} | {ep_rho:>4.2f} | {es_rho:>4.2f}   "
+            f"{dc_r:>4.2f} | {ep_r:>4.2f} | {es_r:>4.2f}"
+        )
+        rows.append(
+            {
+                "sheet": label,
+                "n": len(df),
+                "deepcpf1_spearman": dc_rho,
+                "enpam_gb_spearman": ep_rho,
+                "enseq_deepcpf1_spearman": es_rho,
+                "deepcpf1_pearson": dc_r,
+                "enpam_gb_pearson": ep_r,
+                "enseq_deepcpf1_pearson": es_r,
+            }
+        )
 
     summary = pd.DataFrame(rows)
     out_path = os.path.join(REPO_ROOT, "data", "cas12a", "baseline_metrics.csv")

@@ -20,6 +20,7 @@ overlaps the protospacer tail / 3' flank. crisprware's standard Cas12a
 context is 34 nt (4 + 4 + 23 + 3); the right slice is `context[1:32]`,
 verified to equal Chen's `seq` column in the capsule's published datasets.
 """
+
 from __future__ import annotations
 
 import os
@@ -31,8 +32,14 @@ import numpy as np
 SEQ_LEN = 31
 CONTEXT_LEN = 34
 NT_INDEX = {
-    "A": 0, "T": 1, "C": 2, "G": 3,
-    "a": 0, "t": 1, "c": 2, "g": 3,
+    "A": 0,
+    "T": 1,
+    "C": 2,
+    "G": 3,
+    "a": 0,
+    "t": 1,
+    "c": 2,
+    "g": 3,
 }
 
 _DEFAULT_WEIGHTS = os.path.join("chen_2025", "enseq_deepcpf1.npz")
@@ -40,9 +47,9 @@ _DEFAULT_WEIGHTS = os.path.join("chen_2025", "enseq_deepcpf1.npz")
 _LAYER_KEYS = [
     ("conv1", "conv1_w", "conv1_b"),
     ("conv2", "conv2_w", "conv2_b"),
-    ("fc1",   "fc1_w",   "fc1_b"),
-    ("fc2",   "fc2_w",   "fc2_b"),
-    ("out",   "out_w",   "out_b"),
+    ("fc1", "fc1_w", "fc1_b"),
+    ("fc2", "fc2_w", "fc2_b"),
+    ("out", "out_w", "out_b"),
 ]
 
 
@@ -63,6 +70,7 @@ def _build_model():
     no row permutation needed.
     """
     import tensorflow as tf
+
     L = tf.keras.layers
 
     inp = L.Input(shape=(SEQ_LEN, 4), name="input")
@@ -175,7 +183,7 @@ def compute_enseq_deepcpf1_scores(
     model = load_model(weights_path)
     scores: List[float] = []
     for i in range(0, len(seqs), chunk_size):
-        scores.extend(predict(seqs[i:i + chunk_size], model=model))
+        scores.extend(predict(seqs[i : i + chunk_size], model=model))
     return scores
 
 

@@ -51,9 +51,11 @@ def main():
     model = wrapped.model
     print(f"Loaded model: {type(model).__module__}.{type(model).__name__}")
     print(f"  features default (RS2): {wrapped.features}")
-    print(f"  enzyme: guide_start={en.cas12a['guide_start']} "
-          f"guide_length={en.cas12a['guide_length']} "
-          f"context_length={en.cas12a['context_length']}")
+    print(
+        f"  enzyme: guide_start={en.cas12a['guide_start']} "
+        f"guide_length={en.cas12a['guide_length']} "
+        f"context_length={en.cas12a['context_length']}"
+    )
 
     if hasattr(model, "n_estimators_"):
         print(f"  n_estimators_: {model.n_estimators_}")
@@ -67,7 +69,7 @@ def main():
 
     print()
     print("Next: in the main crisprware env, run")
-    print(f"  pytest tests/test_enpam_gb.py -v")
+    print("  pytest tests/test_enpam_gb.py -v")
     return 0
 
 

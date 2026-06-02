@@ -3,6 +3,7 @@
 Tests requiring the joblib model auto-skip if `crisprware/scorers/weights/enpam_gb.joblib`
 hasn't been extracted yet. Run `python tools/extract_enpam_gb.py` once to populate it.
 """
+
 from __future__ import annotations
 
 import os
@@ -17,12 +18,8 @@ sys.path.insert(0, REPO_ROOT)
 
 from crisprware.scorers import enpam_gb
 
-GOLDEN_TSV = os.path.join(
-    REPO_ROOT, "tests", "test_data", "cas12a_scores", "deepcpf1_enpam_sgRNA.1.tsv"
-)
-WEIGHTS = os.path.join(
-    REPO_ROOT, "crisprware", "scorers", "weights", "enpam_gb.joblib"
-)
+GOLDEN_TSV = os.path.join(REPO_ROOT, "tests", "test_data", "cas12a_scores", "deepcpf1_enpam_sgRNA.1.tsv")
+WEIGHTS = os.path.join(REPO_ROOT, "crisprware", "scorers", "weights", "enpam_gb.joblib")
 
 weights_required = pytest.mark.skipif(
     not os.path.exists(WEIGHTS),
@@ -40,12 +37,12 @@ def test_is_valid_seq():
 def test_featurize_shape_and_keys():
     df = enpam_gb.featurize(["A" * 34])
     expected_n = (
-        1                              # GC content
-        + len(enpam_gb.NTS)            # Pos. Ind. 1mer  = 4
-        + len(enpam_gb.NTS) ** 2       # Pos. Ind. 2mer  = 16
-        + enpam_gb.CONTEXT_LEN * len(enpam_gb.NTS)              # Pos. Dep. 1mer = 34*4 = 136
-        + (enpam_gb.CONTEXT_LEN - 1) * len(enpam_gb.NTS) ** 2   # Pos. Dep. 2mer = 33*16 = 528
-        + 4                            # Tm
+        1  # GC content
+        + len(enpam_gb.NTS)  # Pos. Ind. 1mer  = 4
+        + len(enpam_gb.NTS) ** 2  # Pos. Ind. 2mer  = 16
+        + enpam_gb.CONTEXT_LEN * len(enpam_gb.NTS)  # Pos. Dep. 1mer = 34*4 = 136
+        + (enpam_gb.CONTEXT_LEN - 1) * len(enpam_gb.NTS) ** 2  # Pos. Dep. 2mer = 33*16 = 528
+        + 4  # Tm
     )
     assert df.shape == (1, expected_n), (df.shape, expected_n)
     assert "GC content" in df.columns
@@ -70,10 +67,7 @@ def test_predict_matches_golden_top10():
     scored = enpam_gb.predict(seqs)
     diffs = [abs(s - g) for s, g in zip(scored, golden)]
     max_diff = max(diffs)
-    assert max_diff < 1e-4, (
-        f"enPAM+GB port diverges from golden by {max_diff}. "
-        f"Scored={scored}, golden={golden}"
-    )
+    assert max_diff < 1e-4, f"enPAM+GB port diverges from golden by {max_diff}. Scored={scored}, golden={golden}"
 
 
 @weights_required
