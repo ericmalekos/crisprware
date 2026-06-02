@@ -171,6 +171,25 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
     parser.add_argument(
+        "--cas9_scorer",
+        choices=["none", "deepspcas9"],
+        default="none",
+        help="Additional SpCas9 on-target scorer to run alongside RS3. \
+            deepspcas9: Kim 2019 inception-CNN (Sci Adv); 30-nt context \
+            (4 + 20 protospacer + 3 PAM + 3 downstream); unbounded \
+            regression. Runs in parallel with --tracr (no mutex). \
+            [default: none]",
+    )
+
+    parser.add_argument(
+        "--min_deepspcas9",
+        type=float,
+        default=float("-inf"),
+        help="Minimum DeepSpCas9 score (unbounded regression, ~[0, 100]). \
+            Applied after scoring; analogous to --min_rs3. [default: None]",
+    )
+
+    parser.add_argument(
         "--chunk_size",
         type=int,
         default=100000,
@@ -518,6 +537,20 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             gRNADF = gRNADF[gRNADF[col_name] > args.min_enseq_deepcpf1]
             print(f"\tAfter dropping scores below {args.min_enseq_deepcpf1}: {before} -> {len(gRNADF)}\n")
         final_columns += [col_name]
+
+    if args.cas9_scorer == "deepspcas9":
+        from crisprware.scorers import deepspcas9 as _deepspcas9
+
+        print("\n\tBeginning DeepSpCas9 SpCas9 on-target scoring\n")
+        gRNADF["deepspcas9_score"] = _deepspcas9.compute_deepspcas9_scores(
+            gRNADF["context"].tolist(), threads=args.threads, chunk_size=args.chunk_size
+        )
+        gRNADF["deepspcas9_score"] = gRNADF["deepspcas9_score"].round(8)
+        if args.min_deepspcas9 > float("-inf"):
+            before = len(gRNADF)
+            gRNADF = gRNADF[gRNADF["deepspcas9_score"] > args.min_deepspcas9]
+            print(f"\tAfter dropping DeepSpCas9 scores below {args.min_deepspcas9}: {before} -> {len(gRNADF)}\n")
+        final_columns += ["deepspcas9_score"]
 
     gRNADF.loc[:, "id"] = gRNADF["id,sequence,pam,chromosome,position,sense"].str.split(",").str[0]
     guidescan_dfs = []
