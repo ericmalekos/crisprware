@@ -17,8 +17,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crispr_cli::discover::enzyme_from_name;
 use crispr_cli::{
-    run_build, run_discover_with, BuildConfig, DiscoverConfig, DiscoverInput, OutputFormat,
-    ScannerKind, ScoreMetric, SpecConvention,
+    run_build, run_discover_with, BuildConfig, DiscoverConfig, DiscoverInput, OtFormat, OutputFormat,
+    OutputMode, ScannerKind, ScoreMetric, SpecConvention,
 };
 use crispr_db::MmapDb;
 
@@ -152,6 +152,35 @@ struct EnumerateArgs {
     #[arg(short, long)]
     output: PathBuf,
 
+    // ── Scalable streaming scored output (`--output-mode`) ───────────────
+    /// Streaming scored-output mode (supersedes `--format` when set; requires
+    /// `--scanner gpu`). `aggregated` → one row per guide (id + specificity)
+    /// at `<output>`; `per-off-target` → one record per off-target
+    /// (guide_id, chrom, start, strand, CFD) at `<output>.ot.{bin,tsv}`;
+    /// `both` → both. A `<output>.guides.tsv` sidecar maps guide_id → on-target.
+    /// Streams to disk with bounded memory regardless of hit volume.
+    #[arg(long, value_enum)]
+    output_mode: Option<OutputModeArg>,
+
+    /// Encoding for the `per-off-target` file: `binary` (compact 12-byte
+    /// records, default), `tsv` (greppable, larger), or `both`.
+    #[arg(long, value_enum, default_value_t = OtFormatArg::Binary)]
+    ot_format: OtFormatArg,
+
+    /// CFD floor for the `per-off-target` file only (Mode 1 is never floored):
+    /// off-targets with CFD below this are dropped from disk. Default 0.023
+    /// (CRISPOR's "biologically irrelevant" cutoff); 0 keeps all.
+    #[arg(long, default_value_t = 0.023)]
+    cfd_threshold: f64,
+
+    /// Guides per streaming batch (0 = built-in default).
+    #[arg(long, default_value_t = 0)]
+    batch_size: usize,
+
+    /// Max predicted hits per streaming batch before flushing (memory bound).
+    #[arg(long, default_value_t = 64_000_000)]
+    hit_budget: u64,
+
     /// Per-(guide, mismatch-count) off-target cap. Once a bin reaches
     /// N distinct off-target sequences, additional sequences at that
     /// mismatch level for the same guide are dropped. Affects
@@ -162,14 +191,28 @@ struct EnumerateArgs {
     #[arg(long, default_value_t = 500, allow_hyphen_values = true)]
     max_off_targets_per_bin: i64,
 
-    // ── GuideScan2 compatibility surface ──────────────────────────────
-    /// Cap on per-guide off-target rows (-1 = uncapped). Accepted for
-    /// GuideScan2 CLI compatibility; today we always emit every
-    /// off-target up to `--mismatches`. See also
-    /// `--max-off-targets-per-bin` for our finer-grained per-mismatch
-    /// cap.
+    /// Per-guide off-target cap for streamed scored output (`--output-mode`),
+    /// applied on both the CPU and GPU backends. Once a guide accumulates this
+    /// many on+off-target hits, scoring stops and the guide is flagged
+    /// `saturated` (its specificity is ≈ 0 regardless). Bounds per-guide work
+    /// so a few homopolymer guides can't gate genome-scale wall time.
+    /// `-1` (default) or `0` = uncapped/exact. See also `--min-specificity`
+    /// (the principled, score-based cap); scanning stops on whichever fires
+    /// first.
     #[arg(long, default_value_t = -1, allow_hyphen_values = true)]
     max_off_targets: i64,
+
+    /// Specificity floor for streamed scored output (`--output-mode`), applied
+    /// on both the CPU and GPU backends. When > 0, a guide is flagged
+    /// `saturated` and scanning stops the instant its off-target CFD sum proves
+    /// specificity has fallen below this value — the principled, score-based cap
+    /// (a guide below, say, 0.001 is non-specific regardless of the exact value,
+    /// and the worst guides cross the floor almost immediately). Recommended
+    /// over the count-based `--max-off-targets`, which it complements (scanning
+    /// stops on whichever fires first). `-1` (default) or `0` = disabled (exact,
+    /// but the worst guides are slow); `0.01` is a good choice for genome-scale.
+    #[arg(long, default_value_t = -1.0, allow_hyphen_values = true)]
+    min_specificity: f64,
 
     /// Discard guides whose nearest *off*-target (excluding the on-target
     /// site) has mismatch ≤ this value. -1 disables filtering. Matches
@@ -242,6 +285,43 @@ impl From<ScannerArg> for ScannerKind {
         match arg {
             ScannerArg::Cpu => Self::Cpu,
             ScannerArg::Gpu => Self::Gpu,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputModeArg {
+    /// Mode 1: one row per guide — id + aggregated specificity (no CFD floor).
+    Aggregated,
+    /// Mode 2: one record per (guide, off-target) — chrom/start/strand/CFD.
+    PerOffTarget,
+    /// Both Mode 1 and Mode 2 from one streaming pass.
+    Both,
+}
+
+impl From<OutputModeArg> for OutputMode {
+    fn from(arg: OutputModeArg) -> Self {
+        match arg {
+            OutputModeArg::Aggregated => Self::Aggregated,
+            OutputModeArg::PerOffTarget => Self::PerOffTarget,
+            OutputModeArg::Both => Self::Both,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OtFormatArg {
+    Binary,
+    Tsv,
+    Both,
+}
+
+impl From<OtFormatArg> for OtFormat {
+    fn from(arg: OtFormatArg) -> Self {
+        match arg {
+            OtFormatArg::Binary => Self::Binary,
+            OtFormatArg::Tsv => Self::Tsv,
+            OtFormatArg::Both => Self::Both,
         }
     }
 }
@@ -364,6 +444,21 @@ fn run_enumerate_cmd(args: EnumerateArgs) -> Result<()> {
                     .expect("--max-off-targets-per-bin fits in u32"),
             )
         },
+        output_mode: args.output_mode.map_or(OutputMode::None, Into::into),
+        ot_format: args.ot_format.into(),
+        cfd_threshold: args.cfd_threshold,
+        batch_size: if args.batch_size == 0 {
+            None
+        } else {
+            Some(args.batch_size)
+        },
+        hit_budget: args.hit_budget,
+        max_off_targets: if args.max_off_targets <= 0 {
+            0
+        } else {
+            u32::try_from(args.max_off_targets).unwrap_or(u32::MAX)
+        },
+        min_specificity: args.min_specificity.max(0.0),
     };
     run_discover_with(&mmap, &config, args.scanner.into()).context("enumerate failed")
 }

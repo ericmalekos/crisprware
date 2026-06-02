@@ -226,6 +226,247 @@ extern "C" __global__ void scan_count_prefilter_kernel(
     }
 }
 
+// ---- Bin-prefilter HIT-EMIT path ----
+// Same per-guide candidate-bin traversal as scan_count_prefilter_kernel, but
+// each match is APPENDED to the output buffer (guide, entry, mm) via a global
+// atomic counter — the fast genome-scale equivalent of the brute-force
+// scan_kernel. The emitted hit set is identical to scan_kernel's (the prefilter
+// only skips bins that cannot contain a match); it's just found ~40x faster by
+// not touching the ~99% of non-candidate bins.
+struct EmitCtx {
+    const unsigned long long* entries;
+    const unsigned int* bin_off;
+    unsigned long long e_low, e_high, mask_low, mask_high;
+    unsigned int max_mm;
+    unsigned int gi;
+    unsigned int* out_count;
+    unsigned int out_cap;
+    unsigned int* out_guide;
+    unsigned int* out_entry;
+    unsigned int* out_mm;
+};
+
+__device__ void process_bin_emit(const EmitCtx* c, unsigned int key) {
+    const unsigned int start = c->bin_off[2u * key];
+    const unsigned int count = c->bin_off[2u * key + 1u];
+    const unsigned long long UPPER = 0xAAAAAAAAAAAAAAAAULL;
+    for (unsigned int j = 0; j < count; ++j) {
+        const unsigned long long idx = (unsigned long long)(start + j);
+        const unsigned long long o_low = c->entries[3 * idx];
+        const unsigned long long o_high = c->entries[3 * idx + 1];
+        const unsigned long long cl = (o_low ^ c->e_low) & c->mask_low;
+        const unsigned long long ch = (o_high ^ c->e_high) & c->mask_high;
+        const unsigned long long il = (cl & UPPER) | ((cl << 1) & UPPER);
+        const unsigned long long ih = (ch & UPPER) | ((ch << 1) & UPPER);
+        const unsigned int mm = __popcll(il) + __popcll(ih);
+        if (mm <= c->max_mm) {
+            const unsigned int slot = atomicAdd(c->out_count, 1u);
+            if (slot < c->out_cap) {
+                c->out_guide[slot] = c->gi;
+                c->out_entry[slot] = (unsigned int)idx;
+                c->out_mm[slot] = mm;
+            }
+        }
+    }
+}
+
+__device__ void visit_bins_emit(
+    const EmitCtx* c, unsigned int key, int w, int k_rem, int start_pos)
+{
+    process_bin_emit(c, key);
+    if (k_rem == 0) return;
+    for (int p = start_pos; p < w; ++p) {
+        const unsigned int shift = 2u * (unsigned int)p;
+        for (unsigned int delta = 1u; delta <= 3u; ++delta) {
+            visit_bins_emit(c, key ^ (delta << shift), w, k_rem - 1, p + 1);
+        }
+    }
+}
+
+extern "C" __global__ void scan_prefilter_emit_kernel(
+    const unsigned long long* __restrict__ entries,
+    const unsigned int* __restrict__ bin_off,
+    const unsigned long long* __restrict__ guide_low,
+    const unsigned long long* __restrict__ guide_high,
+    const unsigned int n_guides,
+    const unsigned long long mask_low, const unsigned long long mask_high,
+    const unsigned int max_mm, const unsigned int bin_w,
+    const unsigned int bin_start_bit,
+    unsigned int* __restrict__ out_count, const unsigned int out_cap,
+    unsigned int* __restrict__ out_guide,
+    unsigned int* __restrict__ out_entry,
+    unsigned int* __restrict__ out_mm)
+{
+    const unsigned int gi = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gi >= n_guides) return;
+    const unsigned long long g_low = guide_low[gi];
+    const unsigned long long g_high = guide_high[gi];
+
+    EmitCtx c;
+    c.entries = entries;
+    c.bin_off = bin_off;
+    c.e_low = g_low;
+    c.e_high = g_high;
+    c.mask_low = mask_low;
+    c.mask_high = mask_high;
+    c.max_mm = max_mm;
+    c.gi = gi;
+    c.out_count = out_count;
+    c.out_cap = out_cap;
+    c.out_guide = out_guide;
+    c.out_entry = out_entry;
+    c.out_mm = out_mm;
+
+    const unsigned int key = bin_key_of(g_low, g_high, bin_start_bit, 2u * bin_w);
+    visit_bins_emit(&c, key, (int)bin_w, (int)max_mm, 0);
+}
+
+// ---- Bin-prefilter CFD-ACCUMULATION path (Mode-1 specificity) ----
+// Same per-guide candidate-bin traversal as scan_count_prefilter_kernel, but
+// instead of bucketing counts it computes the SpCas9 CFD of each off-target on
+// the fly and accumulates, per guide, the off-target CFD sum, the max CFD, and
+// the on-target (mm==0) multiplicity — in registers, no atomics. Output is
+// 3 scalars per guide regardless of hit volume, so NO hit list ever leaves the
+// GPU: this is the only path that scales Mode-1 to a full genome of repeat-rich
+// guides (hundreds of billions of hits would otherwise overflow the emit
+// buffer). CFD itself is a verbatim port of crispr_score::Cfd::score_pair: a
+// 23-bp Cas9 site lives entirely in the `low` word, so only `o_low`/`g_low`
+// feed the score; the penalty[4][4][20] and pam[4][4] tables are uploaded once
+// and passed as read-only pointers (flattened g*80+o*20+p and b1*4+b2).
+
+__device__ __forceinline__ double cfd_score_pair(
+    unsigned long long g_low, unsigned long long o_low,
+    const double* __restrict__ penalty, const double* __restrict__ pam)
+{
+    double s = 1.0;
+    for (unsigned int p = 0; p < 20u; ++p) {
+        const unsigned int bit = (22u - p) * 2u;
+        const unsigned int g = (unsigned int)((g_low >> bit) & 3ULL);
+        const unsigned int o = (unsigned int)((o_low >> bit) & 3ULL);
+        s *= penalty[g * 80u + o * 20u + p];
+    }
+    const unsigned int pam1 = (unsigned int)((o_low >> 2) & 3ULL);
+    const unsigned int pam2 = (unsigned int)(o_low & 3ULL);
+    return s * pam[pam1 * 4u + pam2];
+}
+
+struct CfdCtx {
+    const unsigned long long* entries;
+    const unsigned int* bin_off;
+    const double* penalty;
+    const double* pam;
+    unsigned long long g_low, g_high, mask_low, mask_high;
+    unsigned int max_mm;
+    double off_sum;
+    double max_cfd;
+    unsigned int on_count;
+    unsigned int off_count;
+    unsigned int cap;        // 0 = unlimited; else saturate at on+off >= cap
+    double off_sum_cap;      // 0 = disabled; else saturate once off_sum > this
+                             //   (= 1/min_specificity - 1: spec provably below floor)
+    unsigned int saturated;  // 1 once either cap was hit (partial sums; flagged)
+};
+
+// __noinline__ keeps this (heavy) leaf out of the recursive cfd_visit frame, so
+// the per-thread stack that accumulates with recursion depth stays as small as
+// the count kernel's — it is called and returns before each recursive descent.
+__device__ __noinline__ void cfd_process_bin(CfdCtx* c, unsigned int key) {
+    const unsigned int start = c->bin_off[2u * key];
+    const unsigned int count = c->bin_off[2u * key + 1u];
+    const unsigned long long UPPER = 0xAAAAAAAAAAAAAAAAULL;
+    for (unsigned int j = 0; j < count; ++j) {
+        const unsigned long long idx = (unsigned long long)(start + j);
+        const unsigned long long o_low = c->entries[3 * idx];
+        const unsigned long long o_high = c->entries[3 * idx + 1];
+        const unsigned long long cl = (o_low ^ c->g_low) & c->mask_low;
+        const unsigned long long ch = (o_high ^ c->g_high) & c->mask_high;
+        const unsigned long long il = (cl & UPPER) | ((cl << 1) & UPPER);
+        const unsigned long long ih = (ch & UPPER) | ((ch << 1) & UPPER);
+        const unsigned int mm = __popcll(il) + __popcll(ih);
+        if (mm <= c->max_mm) {
+            if (mm == 0u) {
+                c->on_count += 1u;
+            } else {
+                const double v = cfd_score_pair(c->g_low, o_low, c->penalty, c->pam);
+                c->off_sum += v;
+                if (v > c->max_cfd) c->max_cfd = v;
+                c->off_count += 1u;
+            }
+            // Bound per-guide work + flag provably non-specific guides. Stop on
+            // EITHER: too many hits (count cap), or the off-target CFD sum so
+            // high that specificity is already below the floor (off_sum cap —
+            // the principled cut; exits the worst guides almost immediately).
+            // Partial sums; host reports the guide as saturated (inexact).
+            if ((c->cap != 0u && (c->on_count + c->off_count) >= c->cap) ||
+                (c->off_sum_cap > 0.0 && c->off_sum > c->off_sum_cap)) {
+                c->saturated = 1u;
+                return;
+            }
+        }
+    }
+}
+
+__device__ void cfd_visit(
+    CfdCtx* c, unsigned int key, int w, int k_rem, int start_pos)
+{
+    if (c->saturated) return;
+    cfd_process_bin(c, key);
+    if (k_rem == 0 || c->saturated) return;
+    for (int p = start_pos; p < w; ++p) {
+        const unsigned int shift = 2u * (unsigned int)p;
+        for (unsigned int delta = 1u; delta <= 3u; ++delta) {
+            cfd_visit(c, key ^ (delta << shift), w, k_rem - 1, p + 1);
+            if (c->saturated) return;
+        }
+    }
+}
+
+extern "C" __global__ void scan_cfd_prefilter_kernel(
+    const unsigned long long* __restrict__ entries,
+    const unsigned int* __restrict__ bin_off,
+    const unsigned long long* __restrict__ guide_low,
+    const unsigned long long* __restrict__ guide_high,
+    const unsigned int n_guides,
+    const unsigned long long mask_low, const unsigned long long mask_high,
+    const unsigned int max_mm, const unsigned int bin_w,
+    const unsigned int bin_start_bit,
+    const double* __restrict__ penalty, const double* __restrict__ pam,
+    const unsigned int cap, const double off_sum_cap,
+    double* __restrict__ out_sum, double* __restrict__ out_max,
+    unsigned int* __restrict__ out_on, unsigned int* __restrict__ out_off,
+    unsigned int* __restrict__ out_sat)
+{
+    const unsigned int gi = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gi >= n_guides) return;
+
+    CfdCtx c;
+    c.entries = entries;
+    c.bin_off = bin_off;
+    c.penalty = penalty;
+    c.pam = pam;
+    c.g_low = guide_low[gi];
+    c.g_high = guide_high[gi];
+    c.mask_low = mask_low;
+    c.mask_high = mask_high;
+    c.max_mm = max_mm;
+    c.off_sum = 0.0;
+    c.max_cfd = 0.0;
+    c.on_count = 0u;
+    c.off_count = 0u;
+    c.cap = cap;
+    c.off_sum_cap = off_sum_cap;
+    c.saturated = 0u;
+
+    const unsigned int key = bin_key_of(c.g_low, c.g_high, bin_start_bit, 2u * bin_w);
+    cfd_visit(&c, key, (int)bin_w, (int)max_mm, 0);
+
+    out_sum[gi] = c.off_sum;
+    out_max[gi] = c.max_cfd;
+    out_on[gi] = c.on_count;
+    out_off[gi] = c.off_count;
+    out_sat[gi] = c.saturated;
+}
+
 // ---- Bin-pair-tiled self-scan (all-vs-all) ----
 // One block per guide bin B. Because every guide in B shares the bin-key B, the
 // candidate-bin enumeration is done ONCE per bin (amortised over its ~66
@@ -334,11 +575,40 @@ const INITIAL_OUTPUT_CAP: u32 = 16 << 20;
 
 /// Raw kernel output: the total match count plus the (guide index, entry
 /// index, mismatch) columns, truncated to whatever fit in the output buffer.
-struct ScanRaw {
-    count: u32,
-    guide: Vec<u32>,
-    entry: Vec<u32>,
-    mm: Vec<u32>,
+///
+/// `guide` indices are relative to the `&[Guide]` slice passed to the scan;
+/// `entry` indices address the resident database and decode to a `Site` +
+/// `Position` via [`GpuScanner::entry`]. When `count > guide.len()` the buffer
+/// overflowed and the caller should retry with a larger `out_cap`.
+#[derive(Debug, Clone)]
+pub struct ScanRaw {
+    pub count: u32,
+    pub guide: Vec<u32>,
+    pub entry: Vec<u32>,
+    pub mm: Vec<u32>,
+}
+
+/// Per-guide CFD aggregates from [`GpuScanner::scan_cfd_specificity`] — the
+/// raw quantities needed to form a specificity score on the host, computed
+/// entirely on the GPU without ever materializing a hit list.
+///
+/// `off_sum` = Σ CFD over off-targets (`mm > 0`); `max_cfd` = the largest
+/// single off-target CFD; `on_count` = number of on-target (`mm == 0`)
+/// positions; `off_count` = number of off-target (`mm > 0`) positions. The
+/// host turns these into FlashFry `1/(1+off_sum)` or GuideScan
+/// `1/(on_count+off_sum)` specificity.
+///
+/// `saturated` is set when the per-guide off-target cap was hit: the traversal
+/// stopped early so the sums are **partial** (an upper bound on specificity —
+/// such a guide is already specificity ≈ 0). Bounds the kernel's per-guide work
+/// so a handful of homopolymer guides can't gate genome-scale wall time.
+#[derive(Debug, Clone, Copy)]
+pub struct CfdAgg {
+    pub off_sum: f64,
+    pub max_cfd: f64,
+    pub on_count: u32,
+    pub off_count: u32,
+    pub saturated: bool,
 }
 
 /// Errors from GPU setup. `scan` itself is infallible (the `Scanner` trait
@@ -383,6 +653,12 @@ pub struct GpuScanner {
     func_count: CudaFunction,
     /// Per-guide bin-prefilter count kernel (`scan_count_prefilter_kernel`).
     func_prefilter: CudaFunction,
+    /// Per-guide bin-prefilter HIT-EMIT kernel (`scan_prefilter_emit_kernel`) —
+    /// the fast genome-scale hit path used by streaming scored output.
+    func_prefilter_emit: CudaFunction,
+    /// Per-guide bin-prefilter CFD-accumulation kernel
+    /// (`scan_cfd_prefilter_kernel`) — Mode-1 specificity with no hit download.
+    func_cfd: CudaFunction,
     /// Bin-pair-tiled all-vs-all self-scan kernel (`tiled_self_scan_kernel`).
     func_tiled: CudaFunction,
     /// Database entries on the device (resident), as a flat `u64` array
@@ -401,6 +677,11 @@ pub struct GpuScanner {
     bin_w: u32,
     /// Bit offset of the bin key within a `Site` (mirrors `MmapDb::bin_key`).
     bin_key_start_bit: u32,
+    /// Resident CFD mismatch-penalty table, flattened `[g*80 + o*20 + p]`
+    /// (320 f64), for `scan_cfd_prefilter_kernel`.
+    d_cfd_penalty: CudaSlice<f64>,
+    /// Resident CFD PAM-tail table, flattened `[b1*4 + b2]` (16 f64).
+    d_cfd_pam: CudaSlice<f64>,
 }
 
 impl std::fmt::Debug for GpuScanner {
@@ -475,6 +756,16 @@ impl GpuScanner {
         let flat_s = t_flat.elapsed().as_secs_f64();
 
         let ctx = CudaContext::new(ordinal)?;
+        // The bin-prefilter kernels recurse over candidate bins (depth ≤ max_mm).
+        // The CFD-accumulation kernel's frame is heavier than the count kernel's
+        // (inlined `cfd_score_pair` with f64 accumulators), so the default
+        // ~1 KB per-thread stack overruns → CUDA_ERROR_ILLEGAL_ADDRESS. Raise it
+        // to a generous fixed size; a few-KB stack over the resident thread set
+        // is negligible next to the multi-GB resident index.
+        ctx.set_limit(
+            cudarc::driver::sys::CUlimit::CU_LIMIT_STACK_SIZE,
+            16 * 1024,
+        )?;
         let stream = ctx.default_stream();
 
         // Compile for an Ampere baseline (compute_80); the driver JITs to the
@@ -489,8 +780,31 @@ impl GpuScanner {
         let func = module.load_function("scan_kernel")?;
         let func_count = module.load_function("scan_count_kernel")?;
         let func_prefilter = module.load_function("scan_count_prefilter_kernel")?;
+        let func_prefilter_emit = module.load_function("scan_prefilter_emit_kernel")?;
+        let func_cfd = module.load_function("scan_cfd_prefilter_kernel")?;
         let func_tiled = module.load_function("tiled_self_scan_kernel")?;
         let compile_s = t_compile.elapsed().as_secs_f64();
+
+        // Flatten the CFD tables in the exact layout `scan_cfd_prefilter_kernel`
+        // indexes (`penalty[g*80 + o*20 + p]`, `pam[b1*4 + b2]`) straight from
+        // crispr-score, so the GPU scores byte-for-byte what the CPU does.
+        let cfd = crispr_score::Cfd::new();
+        let pen = cfd.penalty_table();
+        let mut penalty_flat: Vec<f64> = Vec::with_capacity(320);
+        for g in 0..4 {
+            for o in 0..4 {
+                for p in 0..20 {
+                    penalty_flat.push(pen[g][o][p]);
+                }
+            }
+        }
+        let pam = cfd.pam_table();
+        let mut pam_flat: Vec<f64> = Vec::with_capacity(16);
+        for b1 in 0..4 {
+            for b2 in 0..4 {
+                pam_flat.push(pam[b1][b2]);
+            }
+        }
 
         // Upload the entries, reinterpreted as a flat u64 slice (PackedEntry
         // is `Pod`, 3×u64). This is the one-time cost amortised across every
@@ -499,6 +813,8 @@ impl GpuScanner {
         let t_up = std::time::Instant::now();
         let d_entries = stream.clone_htod(entries_u64)?;
         let d_bin_offsets = stream.clone_htod(&bin_offsets)?;
+        let d_cfd_penalty = stream.clone_htod(&penalty_flat)?;
+        let d_cfd_pam = stream.clone_htod(&pam_flat)?;
         stream.synchronize()?;
         let up_s = t_up.elapsed().as_secs_f64();
         if trace {
@@ -514,6 +830,8 @@ impl GpuScanner {
             func,
             func_count,
             func_prefilter,
+            func_prefilter_emit,
+            func_cfd,
             func_tiled,
             d_entries,
             d_bin_offsets,
@@ -522,6 +840,8 @@ impl GpuScanner {
             compare_mask,
             bin_w,
             bin_key_start_bit,
+            d_cfd_penalty,
+            d_cfd_pam,
         })
     }
 
@@ -788,6 +1108,245 @@ impl GpuScanner {
             entry,
             mm,
         })
+    }
+
+    /// Upload `guides`, run a single bounded hit-emission pass against the
+    /// resident index, and return the raw `(guide, entry, mismatch)` columns.
+    ///
+    /// `out_cap` bounds the device output buffer: if the true hit count
+    /// exceeds it, [`ScanRaw::count`] reports the full count but the columns
+    /// are truncated to `out_cap`. Size it via [`Self::scan_counts_prefilter`]
+    /// (sum the per-guide counts) to emit every hit in one pass with no retry.
+    ///
+    /// This is the building block for streaming/batched scoring: hold the
+    /// index resident, call `scan_raw` on each guide batch, decode + process
+    /// its hits, then move on — peak host memory stays `O(batch hits)`.
+    ///
+    /// # Errors
+    /// Returns [`GpuError`] on any CUDA failure (upload, launch, download).
+    pub fn scan_raw(
+        &self,
+        guides: &[Guide],
+        max_mismatches: u8,
+        out_cap: u32,
+    ) -> Result<ScanRaw, GpuError> {
+        if guides.is_empty() || self.n_entries == 0 {
+            return Ok(ScanRaw {
+                count: 0,
+                guide: Vec::new(),
+                entry: Vec::new(),
+                mm: Vec::new(),
+            });
+        }
+        let n_guides = u32::try_from(guides.len()).expect("guide count fits in u32");
+        let glow: Vec<u64> = guides.iter().map(|g| g.site.low).collect();
+        let ghigh: Vec<u64> = guides.iter().map(|g| g.site.high).collect();
+        let d_glow = self.stream.clone_htod(&glow)?;
+        let d_ghigh = self.stream.clone_htod(&ghigh)?;
+        self.run_once(&d_glow, &d_ghigh, n_guides, max_mismatches, out_cap)
+    }
+
+    /// Decode a database entry index (as returned in [`ScanRaw::entry`]) into
+    /// its packed `Site` + `Position` from the resident host copy. Cheap — a
+    /// single `Vec` index, no device round-trip.
+    ///
+    /// # Panics
+    /// Panics if `entry_index` is out of range (`>= entry_count()`).
+    #[must_use]
+    pub fn entry(&self, entry_index: u32) -> PackedEntry {
+        self.entries[entry_index as usize]
+    }
+
+    /// Like [`Self::scan_raw`] but emits hits via the bin-prefilter kernel —
+    /// each guide visits only its candidate bins, ~40× faster than the
+    /// brute-force path at genome scale, with a byte-identical hit set. Size
+    /// `out_cap` from [`Self::scan_counts_prefilter`] (sum the per-guide
+    /// counts) to emit every hit in one pass with no retry.
+    ///
+    /// # Errors
+    /// Returns [`GpuError`] on any CUDA failure (upload, launch, download).
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn scan_prefilter_raw(
+        &self,
+        guides: &[Guide],
+        max_mismatches: u8,
+        out_cap: u32,
+    ) -> Result<ScanRaw, GpuError> {
+        if guides.is_empty() || self.n_entries == 0 {
+            return Ok(ScanRaw {
+                count: 0,
+                guide: Vec::new(),
+                entry: Vec::new(),
+                mm: Vec::new(),
+            });
+        }
+        let stream = &self.stream;
+        let n_guides = u32::try_from(guides.len()).expect("guide count fits in u32");
+        let glow: Vec<u64> = guides.iter().map(|g| g.site.low).collect();
+        let ghigh: Vec<u64> = guides.iter().map(|g| g.site.high).collect();
+        let d_glow = stream.clone_htod(&glow)?;
+        let d_ghigh = stream.clone_htod(&ghigh)?;
+        let mut d_count = stream.alloc_zeros::<u32>(1)?;
+        let mut d_guide = stream.alloc_zeros::<u32>(out_cap as usize)?;
+        let mut d_entry = stream.alloc_zeros::<u32>(out_cap as usize)?;
+        let mut d_mm = stream.alloc_zeros::<u32>(out_cap as usize)?;
+
+        let mask_low = self.compare_mask.low;
+        let mask_high = self.compare_mask.high;
+        let max_mm_u32 = u32::from(max_mismatches);
+        let bin_w = self.bin_w;
+        let bin_start_bit = self.bin_key_start_bit;
+        let cfg = LaunchConfig {
+            grid_dim: (n_guides.div_ceil(BLOCK_DIM), 1, 1),
+            block_dim: (BLOCK_DIM, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        {
+            let mut lb = stream.launch_builder(&self.func_prefilter_emit);
+            lb.arg(&self.d_entries);
+            lb.arg(&self.d_bin_offsets);
+            lb.arg(&d_glow);
+            lb.arg(&d_ghigh);
+            lb.arg(&n_guides);
+            lb.arg(&mask_low);
+            lb.arg(&mask_high);
+            lb.arg(&max_mm_u32);
+            lb.arg(&bin_w);
+            lb.arg(&bin_start_bit);
+            lb.arg(&mut d_count);
+            lb.arg(&out_cap);
+            lb.arg(&mut d_guide);
+            lb.arg(&mut d_entry);
+            lb.arg(&mut d_mm);
+            // SAFETY: the 15 arguments match scan_prefilter_emit_kernel's
+            // parameter list in count, type, and order.
+            unsafe { lb.launch(cfg)? };
+        }
+        stream.synchronize()?;
+
+        let count_v = stream.clone_dtoh(&d_count)?;
+        let mut guide = stream.clone_dtoh(&d_guide)?;
+        let mut entry = stream.clone_dtoh(&d_entry)?;
+        let mut mm = stream.clone_dtoh(&d_mm)?;
+        stream.synchronize()?;
+
+        let count = count_v[0];
+        let kept = count.min(out_cap) as usize;
+        guide.truncate(kept);
+        entry.truncate(kept);
+        mm.truncate(kept);
+        Ok(ScanRaw {
+            count,
+            guide,
+            entry,
+            mm,
+        })
+    }
+
+    /// Mode-1 specificity path: for each guide, compute its off-target CFD
+    /// **sum**, **max**, and on-target multiplicity entirely on the GPU
+    /// (bin-prefilter traversal + on-the-fly `Cfd::score_pair`, register
+    /// accumulation) and return one [`CfdAgg`] per guide. **No hit list is
+    /// ever materialized or downloaded**, so memory and bandwidth are
+    /// `O(#guides)` regardless of off-target volume — the only path that
+    /// scales SpCas9 Mode-1 scoring to a full genome of repeat-rich guides.
+    ///
+    /// SpCas9-only: CFD is defined for 20-nt protospacer + NGG. For Cas12a or
+    /// per-off-target output, use the [`scan_prefilter_raw`](Self::scan_prefilter_raw)
+    /// emit path instead.
+    ///
+    /// # Errors
+    /// Returns [`GpuError`] on any CUDA failure (upload, launch, download).
+    pub fn scan_cfd_specificity(
+        &self,
+        guides: &[Guide],
+        max_mismatches: u8,
+        ot_cap: u32,
+        off_sum_cap: f64,
+    ) -> Result<Vec<CfdAgg>, GpuError> {
+        if guides.is_empty() || self.n_entries == 0 {
+            return Ok(vec![
+                CfdAgg {
+                    off_sum: 0.0,
+                    max_cfd: 0.0,
+                    on_count: 0,
+                    off_count: 0,
+                    saturated: false,
+                };
+                guides.len()
+            ]);
+        }
+        let trace = std::env::var_os("CRISPR_OTS_TRACE").is_some();
+        let t = std::time::Instant::now();
+        let stream = &self.stream;
+        let n_guides = u32::try_from(guides.len()).expect("guide count fits in u32");
+        let glow: Vec<u64> = guides.iter().map(|g| g.site.low).collect();
+        let ghigh: Vec<u64> = guides.iter().map(|g| g.site.high).collect();
+        let d_glow = stream.clone_htod(&glow)?;
+        let d_ghigh = stream.clone_htod(&ghigh)?;
+        let mut d_sum = stream.alloc_zeros::<f64>(guides.len())?;
+        let mut d_max = stream.alloc_zeros::<f64>(guides.len())?;
+        let mut d_on = stream.alloc_zeros::<u32>(guides.len())?;
+        let mut d_off = stream.alloc_zeros::<u32>(guides.len())?;
+        let mut d_sat = stream.alloc_zeros::<u32>(guides.len())?;
+
+        let mask_low = self.compare_mask.low;
+        let mask_high = self.compare_mask.high;
+        let max_mm_u32 = u32::from(max_mismatches);
+        let bin_w = self.bin_w;
+        let bin_start_bit = self.bin_key_start_bit;
+        let cfg = LaunchConfig {
+            grid_dim: (n_guides.div_ceil(BLOCK_DIM), 1, 1),
+            block_dim: (BLOCK_DIM, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        {
+            let mut lb = stream.launch_builder(&self.func_cfd);
+            lb.arg(&self.d_entries);
+            lb.arg(&self.d_bin_offsets);
+            lb.arg(&d_glow);
+            lb.arg(&d_ghigh);
+            lb.arg(&n_guides);
+            lb.arg(&mask_low);
+            lb.arg(&mask_high);
+            lb.arg(&max_mm_u32);
+            lb.arg(&bin_w);
+            lb.arg(&bin_start_bit);
+            lb.arg(&self.d_cfd_penalty);
+            lb.arg(&self.d_cfd_pam);
+            lb.arg(&ot_cap);
+            lb.arg(&off_sum_cap);
+            lb.arg(&mut d_sum);
+            lb.arg(&mut d_max);
+            lb.arg(&mut d_on);
+            lb.arg(&mut d_off);
+            lb.arg(&mut d_sat);
+            // SAFETY: the 19 arguments match scan_cfd_prefilter_kernel's
+            // parameter list in count, type, and order.
+            unsafe { lb.launch(cfg)? };
+        }
+        stream.synchronize()?;
+        let sum = stream.clone_dtoh(&d_sum)?;
+        let max = stream.clone_dtoh(&d_max)?;
+        let on = stream.clone_dtoh(&d_on)?;
+        let off = stream.clone_dtoh(&d_off)?;
+        let sat = stream.clone_dtoh(&d_sat)?;
+        stream.synchronize()?;
+        if trace {
+            eprintln!(
+                "[trace] gpu scan_cfd_specificity: {n_guides} guides, kernel+I/O {:.3}s (resident)",
+                t.elapsed().as_secs_f64()
+            );
+        }
+        Ok((0..guides.len())
+            .map(|i| CfdAgg {
+                off_sum: sum[i],
+                max_cfd: max[i],
+                on_count: on[i],
+                off_count: off[i],
+                saturated: sat[i] != 0,
+            })
+            .collect())
     }
 }
 

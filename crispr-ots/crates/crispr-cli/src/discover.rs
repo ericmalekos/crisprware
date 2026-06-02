@@ -65,6 +65,39 @@ pub enum OutputFormat {
     Both,
 }
 
+/// Scalable streaming scored-output modes (`--output-mode`). Unlike the legacy
+/// [`OutputFormat`] CSV/TSV (which materialize every hit in memory before
+/// writing), these stream guide batches to disk with bounded memory.
+/// [`OutputMode::None`] (default) keeps the legacy `--format` path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputMode {
+    /// Use the legacy `--format` path (no streaming).
+    #[default]
+    None,
+    /// Mode 1: one row per guide with the aggregated specificity, computed
+    /// over *all* off-targets (no CFD floor).
+    Aggregated,
+    /// Mode 2: one record per (guide, off-target) — chrom/start/strand/CFD —
+    /// floored at `--cfd-threshold` for disk control.
+    PerOffTarget,
+    /// Both Mode 1 and Mode 2, from a single streaming pass.
+    Both,
+}
+
+/// On-disk encoding for the Mode-2 per-off-target file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OtFormat {
+    /// Compact 12-byte binary records (default) — smallest on disk; read with
+    /// the bundled aggregator.
+    #[default]
+    Binary,
+    /// Plain TSV rows (`guide_id\tchrom\tstart\tstrand\tcfd`) — greppable,
+    /// ~2-3× larger.
+    Tsv,
+    /// Both binary and TSV.
+    Both,
+}
+
 /// Which scan backend to run the off-target search on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScannerKind {
@@ -112,6 +145,58 @@ pub struct DiscoverConfig {
     /// only). Useful for taming low-complexity guides that explode to
     /// 100k+ off-targets at high mismatch counts.
     pub max_per_bin: Option<u32>,
+    /// Streaming scored-output mode (`--output-mode`). [`OutputMode::None`]
+    /// (default) routes to the legacy `--format` path; any other value runs
+    /// the batched [`run_discover_streaming`] driver (GPU backend).
+    pub output_mode: OutputMode,
+    /// Encoding for the Mode-2 per-off-target file (`--ot-format`).
+    pub ot_format: OtFormat,
+    /// CFD floor applied to the Mode-2 file *only* (Mode 1 is never floored):
+    /// off-targets with CFD below this are dropped from disk. `0.0` keeps all.
+    pub cfd_threshold: f64,
+    /// Guides per streaming batch ceiling (`None`/`Some(0)` = a built-in
+    /// default).
+    pub batch_size: Option<usize>,
+    /// Max predicted hits per streaming batch before flushing — the real
+    /// memory bound (host buffer ≈ `hit_budget × 12 B`).
+    pub hit_budget: u64,
+    /// Per-guide off-target cap for streamed scored output (`--max-off-targets`),
+    /// applied on every backend (CPU, GPU-emit, GPU-CFD-kernel). Once a guide
+    /// accumulates this many on+off-target hits, scoring stops and the guide is
+    /// flagged `saturated` (its specificity is ≈ 0 regardless). Bounds per-guide
+    /// work so a few homopolymer guides can't gate genome-scale wall time.
+    /// `0` = unlimited (exact, but a handful of guides can be very slow).
+    pub max_off_targets: u32,
+    /// Specificity floor for streamed scored output (`--min-specificity`),
+    /// applied on every backend. When `> 0`, a guide is flagged `saturated` and
+    /// scanning stops the moment its off-target CFD sum proves specificity has
+    /// dropped below this value (`off_sum > 1/min_specificity - 1`). The
+    /// principled cap: cuts on the score itself, and exits the worst guides
+    /// almost immediately. `0` = disabled. Acts together with `max_off_targets`
+    /// (stop on either).
+    pub min_specificity: f64,
+}
+
+impl Default for DiscoverConfig {
+    fn default() -> Self {
+        Self {
+            input: DiscoverInput::KmersCsv(PathBuf::new()),
+            max_mismatches: 4,
+            scores: Vec::new(),
+            output: PathBuf::new(),
+            format: OutputFormat::Csv,
+            spec_convention: SpecConvention::Guidescan,
+            threshold: None,
+            max_per_bin: Some(500),
+            output_mode: OutputMode::None,
+            ot_format: OtFormat::Binary,
+            cfd_threshold: 0.023,
+            batch_size: None,
+            hit_budget: 64_000_000,
+            max_off_targets: 0,
+            min_specificity: 0.0,
+        }
+    }
 }
 
 /// Errors surfaced by the discover pipeline. Downstream layers wrap with
@@ -213,6 +298,11 @@ pub fn run_discover_with(
             site: g.site,
         })
         .collect();
+    // ---- Streaming scored-output modes bypass the in-memory hit path. ----
+    if config.output_mode != OutputMode::None {
+        return run_discover_streaming(source, config, &guide_records, &guides, scanner);
+    }
+
     let t_scan = std::time::Instant::now();
     let hits = match scanner {
         ScannerKind::Cpu => BinScanner::new(source).scan(&guides, config.max_mismatches),
@@ -423,6 +513,479 @@ fn scan_on_gpu(
     Err(DiscoverError::Gpu(
         "this crispr-ots binary was built without GPU support; rebuild with \
          `cargo build --features gpu` to use `--scanner gpu`"
+            .to_string(),
+    ))
+}
+
+// ======================================================================
+// Streaming scored-output driver (`--output-mode`)
+// ======================================================================
+
+/// Per-guide CFD accumulators for the streaming driver (Mode 1).
+struct Accum {
+    /// Σ cfd over off-targets (Cas9), or Σ TTTN (Cas12a).
+    off_sum: Vec<f64>,
+    /// Σ over off-targets whose PAM ≠ TTTT (Cas12a TTTV only).
+    tttv_sum: Vec<f64>,
+    /// Largest off-target CFD seen per guide.
+    max_cfd: Vec<f64>,
+    /// On-target (mm == 0) multiplicity per guide.
+    on_count: Vec<u32>,
+    /// Off-target (mm > 0) position count per guide.
+    off_count: Vec<u32>,
+    /// Set when a per-guide cap was hit (any backend) — the guide's sums are
+    /// partial (specificity is an upper bound, ≈ 0).
+    saturated: Vec<bool>,
+}
+
+/// Mode-2 streaming writers (binary and/or TSV).
+struct OtWriters {
+    bin: Option<crate::ot_stream::OtBinaryWriter>,
+    tsv: Option<crate::ot_stream::OtTsvWriter>,
+}
+
+/// Apply one off-target hit: accumulate into Mode-1 sums (no floor) and, if
+/// per-off-target output is on and the CFD clears the floor, write its
+/// Mode-2 record(s).
+#[allow(clippy::too_many_arguments)]
+fn accumulate_hit(
+    abs_guide: usize,
+    guide_site: Site,
+    ot_site: Site,
+    ot_pos: Position,
+    mm: u8,
+    cfd: Option<&Cfd>,
+    cas12a: Option<&Cas12aCfd>,
+    proto_len: u32,
+    cfd_threshold: f64,
+    ot_cap: u32,
+    off_sum_cap: f64,
+    acc: &mut Accum,
+    writers: &mut OtWriters,
+    source: &dyn BinSource,
+) -> Result<(), DiscoverError> {
+    // Once capped, stop accumulating + writing Mode-2 records for this guide —
+    // mirrors the GPU CFD kernel's early-exit so every backend agrees.
+    if acc.saturated[abs_guide] {
+        return Ok(());
+    }
+    if mm == 0 {
+        acc.on_count[abs_guide] += 1;
+        flag_if_saturated(acc, abs_guide, ot_cap, off_sum_cap);
+        return Ok(());
+    }
+    let (cfd_val, is_tttt) = if let Some(c) = cas12a {
+        (
+            c.score_pair_with_len(guide_site, ot_site, proto_len),
+            crispr_score::is_tttt_prefix(ot_site, proto_len),
+        )
+    } else if let Some(c) = cfd {
+        (c.score_pair(guide_site, ot_site), false)
+    } else {
+        (0.0, false)
+    };
+    acc.off_sum[abs_guide] += cfd_val;
+    acc.off_count[abs_guide] += 1;
+    if cas12a.is_some() && !is_tttt {
+        acc.tttv_sum[abs_guide] += cfd_val;
+    }
+    if cfd_val > acc.max_cfd[abs_guide] {
+        acc.max_cfd[abs_guide] = cfd_val;
+    }
+    if (writers.bin.is_some() || writers.tsv.is_some()) && cfd_val >= cfd_threshold {
+        let gid = u32::try_from(abs_guide).unwrap_or(u32::MAX);
+        let strand_rev = matches!(ot_pos.strand, Strand::Reverse);
+        if let Some(w) = writers.bin.as_mut() {
+            w.write_record(crate::ot_stream::OtRecord {
+                guide_id: gid,
+                contig: u16::try_from(ot_pos.contig_id).unwrap_or(u16::MAX),
+                offset: ot_pos.offset,
+                strand_reverse: strand_rev,
+                cfd_q: crate::ot_stream::OtRecord::quantize_cfd(cfd_val),
+            })?;
+        }
+        if let Some(w) = writers.tsv.as_mut() {
+            let chrom = source.contig_name(ot_pos.contig_id).unwrap_or("");
+            w.write_row(gid, chrom, ot_pos.offset, strand_rev, cfd_val)?;
+        }
+    }
+    flag_if_saturated(acc, abs_guide, ot_cap, off_sum_cap);
+    Ok(())
+}
+
+/// Flag a guide `saturated` once either per-guide cap is hit: count
+/// (`on + off >= ot_cap`) or off-target CFD sum (`off_sum > off_sum_cap`,
+/// where `off_sum_cap = 1/min_specificity - 1`). `0` / `0.0` disable the
+/// respective cap. Shared by the CPU and GPU-emit accumulation paths so they
+/// agree with the GPU CFD kernel's in-kernel early-exit.
+fn flag_if_saturated(acc: &mut Accum, g: usize, ot_cap: u32, off_sum_cap: f64) {
+    if (ot_cap != 0 && acc.on_count[g] + acc.off_count[g] >= ot_cap)
+        || (off_sum_cap > 0.0 && acc.off_sum[g] > off_sum_cap)
+    {
+        acc.saturated[g] = true;
+    }
+}
+
+/// SpCas9 specificity from the off-target CFD sum + on-target multiplicity.
+fn specificity(convention: SpecConvention, off_sum: f64, on_count: u32) -> f64 {
+    match convention {
+        SpecConvention::Flashfry => {
+            if off_sum > 0.0 {
+                1.0 / (1.0 + off_sum)
+            } else {
+                1.0
+            }
+        }
+        SpecConvention::Guidescan => {
+            let on = if on_count == 0 { 1.0 } else { f64::from(on_count) };
+            let denom = on + off_sum;
+            if denom > 0.0 {
+                1.0 / denom
+            } else {
+                1.0
+            }
+        }
+    }
+}
+
+/// `<output>.<suffix>` (e.g. `scored.csv` → `scored.csv.ot.bin`).
+fn suffix_path(output: &Path, suffix: &str) -> PathBuf {
+    let mut s = output.as_os_str().to_owned();
+    s.push(".");
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
+/// Streaming/batched scored-output driver. Scans `guides` in batches against
+/// the resident (GPU) or mmap'd (CPU) index and streams the aggregated
+/// (Mode 1) and/or per-off-target (Mode 2) outputs to disk; peak memory is
+/// `O(#guides + batch hits)`, independent of total hit volume.
+fn run_discover_streaming(
+    source: &dyn BinSource,
+    config: &DiscoverConfig,
+    guide_records: &[GuideRecord],
+    guides: &[Guide],
+    scanner: ScannerKind,
+) -> Result<(), DiscoverError> {
+    let enzyme = source.enzyme();
+    let proto_len = u32::from(enzyme.protospacer_len);
+
+    let cfd = if config.scores.contains(&ScoreMetric::Cfd) {
+        Some(Cfd::new())
+    } else {
+        None
+    };
+    let cas12a = if config.scores.contains(&ScoreMetric::Cas12aTwoXNls) {
+        Some(Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls).expect("bundled 2xNLS matrix parses"))
+    } else if config.scores.contains(&ScoreMetric::Cas12aEnCas12a) {
+        Some(Cas12aCfd::from_matrix(Cas12aMatrix::EnCas12a).expect("bundled enCas12a matrix parses"))
+    } else {
+        None
+    };
+    let is_cas12a = cas12a.is_some();
+
+    let n = guide_records.len();
+    let mut acc = Accum {
+        off_sum: vec![0.0; n],
+        tttv_sum: vec![0.0; n],
+        max_cfd: vec![0.0; n],
+        on_count: vec![0; n],
+        off_count: vec![0; n],
+        saturated: vec![false; n],
+    };
+
+    let want_agg = matches!(config.output_mode, OutputMode::Aggregated | OutputMode::Both);
+    let want_ot = matches!(config.output_mode, OutputMode::PerOffTarget | OutputMode::Both);
+    let mut writers = OtWriters {
+        bin: if want_ot && matches!(config.ot_format, OtFormat::Binary | OtFormat::Both) {
+            Some(crate::ot_stream::OtBinaryWriter::create(
+                &suffix_path(&config.output, "ot.bin"),
+                crate::ot_stream::OtHeader {
+                    max_mm: config.max_mismatches,
+                    cfd_threshold: config.cfd_threshold,
+                    n_guides: u64::try_from(n).unwrap_or(u64::MAX),
+                },
+            )?)
+        } else {
+            None
+        },
+        tsv: if want_ot && matches!(config.ot_format, OtFormat::Tsv | OtFormat::Both) {
+            Some(crate::ot_stream::OtTsvWriter::create(&suffix_path(
+                &config.output,
+                "ot.tsv",
+            ))?)
+        } else {
+            None
+        },
+    };
+
+    let default_batch = 50_000usize;
+    let batch_cap = config.batch_size.filter(|&b| b > 0).unwrap_or(default_batch);
+    // Per-guide saturation caps, applied uniformly across the CPU, GPU-emit, and
+    // GPU-CFD-kernel paths. `0` / `0.0` = disabled (the default). off_sum_cap is
+    // the off-target CFD sum above which specificity is below --min-specificity.
+    let ot_cap = config.max_off_targets;
+    let off_sum_cap = if config.min_specificity > 0.0 {
+        1.0 / config.min_specificity - 1.0
+    } else {
+        0.0
+    };
+    match scanner {
+        ScannerKind::Cpu => {
+            let mut base = 0usize;
+            while base < guides.len() {
+                let end = (base + batch_cap).min(guides.len());
+                let hits = BinScanner::new(source).scan(&guides[base..end], config.max_mismatches);
+                for h in &hits {
+                    let abs = base + h.guide_index as usize;
+                    accumulate_hit(
+                        abs,
+                        guides[abs].site,
+                        h.off_target,
+                        h.position,
+                        h.mismatches,
+                        cfd.as_ref(),
+                        cas12a.as_ref(),
+                        proto_len,
+                        config.cfd_threshold,
+                        ot_cap,
+                        off_sum_cap,
+                        &mut acc,
+                        &mut writers,
+                        source,
+                    )?;
+                }
+                base = end;
+            }
+        }
+        ScannerKind::Gpu => {
+            // Mode-1-only SpCas9: accumulate CFD specificity on the GPU with no
+            // hit download — the only path that scales aggregated scoring to a
+            // full genome of repeat-rich guides (hundreds of billions of hits
+            // would otherwise overflow the emit buffer). Any per-off-target
+            // output, or Cas12a, needs the hit identities → emit path.
+            if !want_ot && cfd.is_some() && !is_cas12a {
+                streaming_gpu_cfd_mode1(
+                    source,
+                    guides,
+                    config.max_mismatches,
+                    ot_cap,
+                    off_sum_cap,
+                    &mut acc,
+                )?;
+            } else {
+                streaming_gpu_loop(
+                    source,
+                    guides,
+                    batch_cap,
+                    config.max_mismatches,
+                    config.cfd_threshold,
+                    ot_cap,
+                    off_sum_cap,
+                    cfd.as_ref(),
+                    cas12a.as_ref(),
+                    proto_len,
+                    &mut acc,
+                    &mut writers,
+                )?;
+            }
+        }
+    }
+
+    // ---- write Mode 1 + sidecar ----
+    if want_agg {
+        let mut agg = crate::ot_stream::AggWriter::create(&config.output, is_cas12a)?;
+        for (i, rec) in guide_records.iter().enumerate() {
+            if is_cas12a {
+                let tttn = if acc.off_sum[i] > 0.0 {
+                    1.0 / acc.off_sum[i]
+                } else {
+                    1.0
+                };
+                let tttv = if acc.tttv_sum[i] > 0.0 {
+                    1.0 / acc.tttv_sum[i]
+                } else {
+                    1.0
+                };
+                agg.write_cas12a(
+                    &rec.id,
+                    tttn,
+                    tttv,
+                    acc.max_cfd[i],
+                    acc.off_count[i],
+                    acc.saturated[i],
+                )?;
+            } else {
+                let spec = specificity(config.spec_convention, acc.off_sum[i], acc.on_count[i]);
+                agg.write_cas9(
+                    &rec.id,
+                    spec,
+                    acc.max_cfd[i],
+                    acc.off_count[i],
+                    acc.saturated[i],
+                )?;
+            }
+        }
+        agg.finish()?;
+    }
+    if let Some(w) = writers.bin.take() {
+        w.finish()?;
+    }
+    if let Some(w) = writers.tsv.take() {
+        w.finish()?;
+    }
+    if want_ot {
+        let mut side =
+            crate::ot_stream::GuidesSidecarWriter::create(&suffix_path(&config.output, "guides.tsv"))?;
+        for (i, rec) in guide_records.iter().enumerate() {
+            side.write_row(
+                u32::try_from(i).unwrap_or(u32::MAX),
+                &rec.id,
+                &rec.contig_name,
+                rec.offset,
+                matches!(rec.strand, Strand::Reverse),
+                &rec.sequence_for_output,
+                acc.on_count[i],
+            )?;
+        }
+        side.finish()?;
+    }
+    Ok(())
+}
+
+/// GPU streaming loop: build the resident scanner once, then two-pass each
+/// batch — `scan_counts_prefilter` to size the output buffer exactly, then
+/// `scan_raw` to emit — and accumulate via [`accumulate_hit`].
+#[cfg(feature = "gpu")]
+#[allow(clippy::too_many_arguments)]
+fn streaming_gpu_loop(
+    source: &dyn BinSource,
+    guides: &[Guide],
+    batch_cap: usize,
+    max_mm: u8,
+    cfd_threshold: f64,
+    ot_cap: u32,
+    off_sum_cap: f64,
+    cfd: Option<&Cfd>,
+    cas12a: Option<&Cas12aCfd>,
+    proto_len: u32,
+    acc: &mut Accum,
+    writers: &mut OtWriters,
+) -> Result<(), DiscoverError> {
+    let scanner =
+        crispr_scan_gpu::GpuScanner::new(source).map_err(|e| DiscoverError::Gpu(e.to_string()))?;
+    let mut base = 0usize;
+    while base < guides.len() {
+        let end = (base + batch_cap).min(guides.len());
+        let batch = &guides[base..end];
+        let counts = scanner.scan_counts_prefilter(batch, max_mm);
+        let predicted: u64 = counts.iter().map(|&c| u64::from(c)).sum();
+        let out_cap = u32::try_from(predicted).unwrap_or(u32::MAX);
+        // Fast genome-scale hit emission (candidate bins only); identical hit
+        // set to brute-force scan_raw, sized exactly by the count pass above.
+        let raw = scanner
+            .scan_prefilter_raw(batch, max_mm, out_cap)
+            .map_err(|e| DiscoverError::Gpu(e.to_string()))?;
+        for k in 0..raw.guide.len() {
+            let abs = base + raw.guide[k] as usize;
+            let e = scanner.entry(raw.entry[k]);
+            let mm = u8::try_from(raw.mm[k]).unwrap_or(u8::MAX);
+            accumulate_hit(
+                abs,
+                guides[abs].site,
+                e.site(),
+                e.position(),
+                mm,
+                cfd,
+                cas12a,
+                proto_len,
+                cfd_threshold,
+                ot_cap,
+                off_sum_cap,
+                acc,
+                writers,
+                source,
+            )?;
+        }
+        base = end;
+    }
+    Ok(())
+}
+
+/// Stub for non-GPU builds: streaming with `--scanner gpu` needs the feature.
+#[cfg(not(feature = "gpu"))]
+#[allow(clippy::too_many_arguments)]
+fn streaming_gpu_loop(
+    _source: &dyn BinSource,
+    _guides: &[Guide],
+    _batch_cap: usize,
+    _max_mm: u8,
+    _cfd_threshold: f64,
+    _ot_cap: u32,
+    _off_sum_cap: f64,
+    _cfd: Option<&Cfd>,
+    _cas12a: Option<&Cas12aCfd>,
+    _proto_len: u32,
+    _acc: &mut Accum,
+    _writers: &mut OtWriters,
+) -> Result<(), DiscoverError> {
+    Err(DiscoverError::Gpu(
+        "streaming --output-mode with --scanner gpu requires a binary built \
+         with `cargo build --features gpu`"
+            .to_string(),
+    ))
+}
+
+/// Mode-1 fast path (SpCas9 only): fill the per-guide CFD accumulators
+/// straight from the GPU CFD-accumulation kernel. No hits ever leave the
+/// device — output is `O(#guides)` — so this is the path that scales
+/// aggregated specificity to a full genome of repeat-rich guides. Guides are
+/// processed in large chunks (there is no hit buffer to bound; the chunk only
+/// caps the per-launch guide upload).
+#[cfg(feature = "gpu")]
+fn streaming_gpu_cfd_mode1(
+    source: &dyn BinSource,
+    guides: &[Guide],
+    max_mm: u8,
+    ot_cap: u32,
+    off_sum_cap: f64,
+    acc: &mut Accum,
+) -> Result<(), DiscoverError> {
+    const CFD_CHUNK: usize = 1 << 20; // ~1M guides/launch
+    let scanner =
+        crispr_scan_gpu::GpuScanner::new(source).map_err(|e| DiscoverError::Gpu(e.to_string()))?;
+    let mut base = 0usize;
+    while base < guides.len() {
+        let end = (base + CFD_CHUNK).min(guides.len());
+        let aggs = scanner
+            .scan_cfd_specificity(&guides[base..end], max_mm, ot_cap, off_sum_cap)
+            .map_err(|e| DiscoverError::Gpu(e.to_string()))?;
+        for (j, a) in aggs.iter().enumerate() {
+            let abs = base + j;
+            acc.off_sum[abs] = a.off_sum;
+            acc.max_cfd[abs] = a.max_cfd;
+            acc.on_count[abs] = a.on_count;
+            acc.off_count[abs] = a.off_count;
+            acc.saturated[abs] = a.saturated;
+        }
+        base = end;
+    }
+    Ok(())
+}
+
+/// Stub for non-GPU builds.
+#[cfg(not(feature = "gpu"))]
+fn streaming_gpu_cfd_mode1(
+    _source: &dyn BinSource,
+    _guides: &[Guide],
+    _max_mm: u8,
+    _ot_cap: u32,
+    _off_sum_cap: f64,
+    _acc: &mut Accum,
+) -> Result<(), DiscoverError> {
+    Err(DiscoverError::Gpu(
+        "streaming --output-mode aggregated with --scanner gpu requires a binary \
+         built with `cargo build --features gpu`"
             .to_string(),
     ))
 }
@@ -766,6 +1329,7 @@ mod tests {
                 spec_convention: SpecConvention::Flashfry,
                 threshold: None,
                 max_per_bin: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -814,6 +1378,7 @@ mod tests {
                 spec_convention: SpecConvention::Guidescan,
                 threshold: None,
                 max_per_bin: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -873,6 +1438,7 @@ mod tests {
                 spec_convention: SpecConvention::Guidescan,
                 threshold: None,
                 max_per_bin: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -924,6 +1490,7 @@ mod tests {
                 spec_convention: SpecConvention::Flashfry,
                 threshold: Some(1),
                 max_per_bin: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -975,6 +1542,7 @@ mod tests {
                 spec_convention: SpecConvention::Flashfry,
                 threshold: Some(0),
                 max_per_bin: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1036,6 +1604,7 @@ mod tests {
                 spec_convention: SpecConvention::Flashfry,
                 threshold: None,
                 max_per_bin: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1064,6 +1633,7 @@ mod tests {
                 spec_convention: SpecConvention::Flashfry,
                 threshold: None,
                 max_per_bin: Some(2),
+                ..Default::default()
             },
         )
         .unwrap();
