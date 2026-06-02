@@ -274,6 +274,32 @@ def featurize(seqs: Sequence[str]) -> pd.DataFrame:
     return pd.DataFrame(_featurize_array(seqs), columns=_feature_names())
 
 
+class PortableSquaredLoss:
+    """sklearn-version-independent stub for `GradientBoostingRegressor.loss_`.
+
+    Replaces `sklearn.ensemble._gb_losses.LeastSquaresError`, which was
+    removed in sklearn 1.2. GBR.predict() reads `loss_` only to call
+    `get_init_raw_predictions(X, init_)`, which for least-squares
+    regression is just `init_.predict(X)` reshaped + cast.
+
+    Lives in `crisprware.scorers.enpam_gb` so the re-saved joblib
+    pickle references this module (which always exists) instead of
+    sklearn's private `_gb_losses` module (which doesn't, on modern
+    sklearn). Bit-exact replacement -- predictions are unchanged.
+
+    Attributes mimic the upstream class enough that sklearn's GBR
+    internals never crash on attribute access:
+      - K = 1                 (regression has one output)
+      - is_multi_class = False
+    """
+
+    K = 1
+    is_multi_class = False
+
+    def get_init_raw_predictions(self, X, estimator):
+        return estimator.predict(X).reshape(-1, 1).astype(np.float64)
+
+
 def _install_sklearn_legacy_aliases() -> None:
     """Map sklearn 0.21.x module paths onto current sklearn so the upstream
     enPAM+GB pickle (pickled with sklearn 0.21.2) can unpickle in sklearn 1.x.
