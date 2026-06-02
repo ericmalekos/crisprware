@@ -225,6 +225,51 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "-o", "--output_directory", help="Path to output. [default: current directory]", type=str, default=""
     )
 
+    # --- UCSC Genome Browser Cas12a track output (alternative output path) ---
+    ucsc = parser.add_argument_group("UCSC browser track (Cas12a)")
+    ucsc.add_argument(
+        "--ucscgb",
+        type=str,
+        default=None,
+        help="Alternative output path: write a UCSC Genome Browser Cas12a track "
+        "(minimumCas12A.bb, crisprDetails.tab.gz + .gzi, cas12aTargets.as) to this "
+        "directory. Runs the selected --cas12a_scorer on-target models plus a "
+        "streaming crispr-ots off-target pass (--output-mode both, skipping "
+        "off-targets for perfect-match guides) against the first -i index. "
+        "Implies Cas12a mode and retains duplicate guides. [default: None]",
+    )
+    ucsc.add_argument(
+        "--chrom_sizes",
+        type=str,
+        default=None,
+        help="chrom.sizes file (chrom<TAB>size) for bedToBigBed when --ucscgb is set.",
+    )
+    ucsc.add_argument(
+        "--crispr_ots_bin",
+        type=str,
+        default="crispr-ots",
+        help="Path to the crispr-ots binary used for the --ucscgb streaming pass "
+        "(must support --output-mode/--scanner; default: 'crispr-ots' on PATH).",
+    )
+    ucsc.add_argument(
+        "--ucscgb_scanner", choices=["gpu", "cpu"], default="gpu",
+        help="Scanner for the --ucscgb off-target pass [default: gpu].",
+    )
+    ucsc.add_argument(
+        "--ucscgb_cfd_threshold", type=float, default=0.023,
+        help="CFD floor for the off-target list written to crisprDetails (counts "
+        "are unaffected — they come from the unfloored Mode-1 totals). [default: 0.023]",
+    )
+    ucsc.add_argument(
+        "--ucscgb_list_cap", type=int, default=100,
+        help="Max off-targets listed per guide in crisprDetails (top by score) [default: 100].",
+    )
+    ucsc.add_argument(
+        "--ucscgb_blank_threshold", type=int, default=2000,
+        help="Guides with more than this many off-targets get an empty list (counts "
+        "kept) — the viewer shows 'Too many off-targets'. [default: 2000]",
+    )
+
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scores gRNAs from generate_guides.")
@@ -423,13 +468,81 @@ def get_alt_pams(pams: List[str]) -> str:
     return pamstr
 
 
+def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
+    """Off-target streaming pass + UCSC Cas12a track assembly.
+
+    `gRNADF` is the on-target-scored guide table (still carrying the composite
+    `id,sequence,pam,chromosome,position,sense` column and `context`). Runs
+    `crispr-ots enumerate --output-mode both --threshold 0 --keep-dropped`
+    (skip off-targets for perfect-match guides; keep them for on-target +
+    `_offset 0`), then assembles the three track files.
+    """
+    import os
+
+    from crisprware import ucsc_track
+
+    if not args.guidescan2_indices:
+        raise ValueError("\n\t--ucscgb requires an off-target index via -i/--guidescan2_indices.\n")
+    index = args.guidescan2_indices[0]
+    outdir = args.ucscgb
+    os.makedirs(outdir, exist_ok=True)
+    composite = "id,sequence,pam,chromosome,position,sense"
+
+    kmers_path = os.path.join(outdir, "guides.kmers.csv")
+    gRNADF[[composite]].to_csv(kmers_path, sep="\t", index=False)
+
+    enum_out = os.path.join(outdir, "offtargets.csv")
+    cmd = [
+        args.crispr_ots_bin, "enumerate",
+        "--scanner", args.ucscgb_scanner,
+        "--threads", str(args.threads),
+        "--score", "cfd-cas12a:encas12a",
+        "--mismatches", str(args.mismatches),
+        "--output-mode", "both", "--ot-format", "tsv",
+        "--threshold", "0", "--keep-dropped",
+        "--cfd-threshold", str(args.ucscgb_cfd_threshold),
+        "--kmers-file", kmers_path, "--output", enum_out, index,
+    ]
+    print("\n\tUCSC track: crispr-ots off-target pass\n\t" + " ".join(cmd) + "\n")
+    subprocess.run(cmd, check=True)
+
+    comp = gRNADF[composite].str.split(",", expand=True)
+    guide_df = pd.DataFrame(
+        {
+            "id": comp[0].to_numpy(),
+            "chrom": gRNADF["#chr"].to_numpy(),
+            "start": gRNADF["start"].to_numpy(),
+            "stop": gRNADF["stop"].to_numpy(),
+            "strand": gRNADF["strand"].to_numpy(),
+            "guideSeq": comp[1].to_numpy(),
+            "pam": gRNADF["context"].str.slice(4, 8).to_numpy(),  # 4nt PAM after the 4nt 5' flank
+        }
+    )
+    for c in ("deepcpf1_score", "enpam_gb_score", "enseq_deepcpf1_score"):
+        if c in gRNADF.columns:
+            guide_df[c] = gRNADF[c].to_numpy()
+
+    art = ucsc_track.build_track(
+        guide_df, enum_out, outdir,
+        chrom_sizes=args.chrom_sizes,
+        list_cap=args.ucscgb_list_cap,
+        blank_threshold=args.ucscgb_blank_threshold,
+        run_tools=True,
+    )
+    print("\n\tUCSC Cas12a track written:")
+    for k, v in art.items():
+        print(f"\t  {k}: {v}")
+
+
 def main(args: Optional[argparse.Namespace] = None) -> None:
 
     if args is None:
         args = parse_arguments()
 
     # print("ALT PAMS" + args.alt_pams)
-    if not args.skip_gs2:
+    # --ucscgb runs its own streaming crispr-ots pass (not the guidescan-style
+    # gscan_scoring path), so skip its index-file precheck.
+    if not args.skip_gs2 and not args.ucscgb:
         for index in args.guidescan2_indices:
             check_files_exist(index)
 
@@ -451,6 +564,15 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
     # 'none' is meaningless if any real scorer is also requested
     cas12a_scorers.discard("none")
     cas9_scorers.discard("none")
+
+    if args.ucscgb:
+        # Track mode: keep non-unique guides (still on-target scored, _offset 0).
+        args.drop_duplicates = False
+        if not cas12a_scorers:
+            raise ValueError(
+                "\n\t--ucscgb writes a Cas12a track; pass --cas12a_scorer "
+                "(e.g. deepcpf1 enpam_gb enseq_deepcpf1).\n"
+            )
 
     if cas12a_scorers:
         if args.tracr:
@@ -621,6 +743,12 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
                 gRNADF = gRNADF[gRNADF[col_name] > args.min_deephf]
                 print(f"\tAfter dropping DeepHF scores below {args.min_deephf}: {before} -> {len(gRNADF)}\n")
             final_columns += [col_name]
+
+    # Alternative output path: UCSC browser Cas12a track (streaming off-target
+    # pass + bigBed/bgzip assembly). On-target scores are already on gRNADF.
+    if args.ucscgb:
+        run_ucscgb_track(args, gRNADF)
+        return
 
     gRNADF.loc[:, "id"] = gRNADF["id,sequence,pam,chromosome,position,sense"].str.split(",").str[0]
     guidescan_dfs = []
