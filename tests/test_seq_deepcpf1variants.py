@@ -4,6 +4,7 @@ Validates that variant-specific models load + score with the same EnCas12a
 architecture as enseq-DeepCpf1, and that the AsCas12a variant agrees with
 the per-variant fixtures shipped in the Code Ocean capsule.
 """
+
 from __future__ import annotations
 
 import os
@@ -19,9 +20,7 @@ sys.path.insert(0, REPO_ROOT)
 from crisprware.scorers import seq_deepcpf1variants as variants
 
 
-VARIANTS_DIR = os.path.join(
-    REPO_ROOT, "crisprware", "scorers", "weights", "chen_2025", "variants"
-)
+VARIANTS_DIR = os.path.join(REPO_ROOT, "crisprware", "scorers", "weights", "chen_2025", "variants")
 
 
 def test_variant_list_matches_files():
@@ -59,8 +58,7 @@ def test_load_model_for_each_variant():
     """Sanity: every variant's weights file is loadable (smoke test, no scoring)."""
     pytest.importorskip("tensorflow")
     # Test a representative sample to keep test time bounded
-    sample = ["AsCas12a", "AsCas12a_Ultra", "enAsCas12a-HF1", "LbCas12a",
-              "HyperFi-AsCas12a", "iCas12a_mut2C-W"]
+    sample = ["AsCas12a", "AsCas12a_Ultra", "enAsCas12a-HF1", "LbCas12a", "HyperFi-AsCas12a", "iCas12a_mut2C-W"]
     for v in sample:
         m = variants.load_model(v)
         # Architecture should be identical -- ~609k params
@@ -84,8 +82,7 @@ def test_ascas12a_predictions_match_capsule_fixture(ascas12a_model):
     """Parity: per-variant AsCas12a predictions should match the capsule's
     AsCas12a-only test fixture (if shipped)."""
     capsule_csv = os.path.join(
-        REPO_ROOT, "capsule-9398276", "data", "EnDeepCpf1", "dataset",
-        "Cas12a_variants", "AsCas12a.test.csv"
+        REPO_ROOT, "capsule-9398276", "data", "EnDeepCpf1", "dataset", "Cas12a_variants", "AsCas12a.test.csv"
     )
     if not os.path.exists(capsule_csv):
         pytest.skip(f"missing capsule fixture at {capsule_csv}")
@@ -93,8 +90,7 @@ def test_ascas12a_predictions_match_capsule_fixture(ascas12a_model):
     # The capsule CSV uses Chen's 31-nt 'seq' column.
     seqs_31 = df["seq"].tolist()
     scored = np.array(
-        variants.predict(seqs_31, variant="AsCas12a",
-                         model=ascas12a_model, input_length=31),
+        variants.predict(seqs_31, variant="AsCas12a", model=ascas12a_model, input_length=31),
         dtype=float,
     )
     assert np.all(np.isfinite(scored))

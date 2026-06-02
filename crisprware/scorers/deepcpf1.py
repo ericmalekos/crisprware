@@ -16,6 +16,7 @@ otherwise from the h5 group keys.
 Public surface mirrors `rs3` (see `score_guides.compute_rs3_scores`):
     one_hot_encode, predict, compute_deepcpf1_scores, score_file.
 """
+
 from __future__ import annotations
 
 import os
@@ -41,6 +42,7 @@ def _weights_path() -> str:
 def _build_model():
     """Build the Seq-deepCpf1 architecture in TF2 / Keras 2.x."""
     import tensorflow as tf
+
     L = tf.keras.layers
 
     inp = L.Input(shape=(SEQ_LEN, 4), name="input_1")
@@ -115,7 +117,7 @@ def _load_legacy_h5(model, path: str) -> None:
     """
     import h5py
 
-    target_layers = [l for l in model.layers if l.weights]
+    target_layers = [layer for layer in model.layers if layer.weights]
     target_iter = iter(target_layers)
 
     with h5py.File(path, "r") as f:

@@ -17,6 +17,7 @@ Emits two files in cwd:
 
 Usage: make_guides_cpf1.py <reference.fa[.gz]>
 """
+
 import gzip
 import random
 import re
@@ -77,16 +78,14 @@ def main():
     csv.write("id,sequence,pam,chromosome,position,sense\n")
     for idx in chosen_idx:
         chrom, start, s27 = candidates[idx]
-        pam = s27[:4]                # TTTN
-        protospacer = s27[4:]        # 23 bp
+        pam = s27[:4]  # TTTN
+        protospacer = s27[4:]  # 23 bp
         guide_id = f"{chrom}:{start}:+"
         fa.write(f">{guide_id}\n{s27}\n")
         csv.write(f"{guide_id},{protospacer},TTTN,{chrom},{start + 1},+\n")
     fa.close()
     csv.close()
-    sys.stderr.write(
-        f"Wrote {N_GUIDES} guides to random_1000_cpf1.fasta and random_1000_cpf1.kmers.csv\n"
-    )
+    sys.stderr.write(f"Wrote {N_GUIDES} guides to random_1000_cpf1.fasta and random_1000_cpf1.kmers.csv\n")
 
 
 if __name__ == "__main__":

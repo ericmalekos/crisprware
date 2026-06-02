@@ -18,6 +18,7 @@ Source: Kim et al. 2018, Nat Biotechnol 36:239,
     Supplementary Table 1:
     https://static-content.springer.com/esm/art%3A10.1038%2Fnbt.4061/MediaObjects/41587_2018_BFnbt4061_MOESM39_ESM.xlsx
 """
+
 import argparse
 import os
 import sys
@@ -41,16 +42,16 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   kind = "ref"  -> third-party reference set (Kleinstiver/Chari/Kim 2016);
 #                    same shape as "endo" with Source column.
 SHEETS = [
-    ("Data set HT 1-1",       "ht_1-1.csv",       "ht"),
-    ("Data set HT 1-2",       "ht_1-2.csv",       "ht"),
-    ("Data set HT 2",         "ht_2.csv",         "ht"),
-    ("Data set HT 3",         "ht_3.csv",         "ht"),
-    ("Data set HEK-lenti",    "hek_lenti.csv",    "endo_lenti"),
-    ("Data set HEK-plasmid",  "hek_plasmid.csv",  "endo"),
-    ("Data set HCT-plasmid",  "hct_plasmid.csv",  "endo"),
-    ("Kleinstiver 2016",      "kleinstiver_2016.csv", "ref"),
-    ("Chari 2017",            "chari_2017.csv",   "ref"),
-    ("Kim 2016",              "kim_2016.csv",     "ref"),
+    ("Data set HT 1-1", "ht_1-1.csv", "ht"),
+    ("Data set HT 1-2", "ht_1-2.csv", "ht"),
+    ("Data set HT 2", "ht_2.csv", "ht"),
+    ("Data set HT 3", "ht_3.csv", "ht"),
+    ("Data set HEK-lenti", "hek_lenti.csv", "endo_lenti"),
+    ("Data set HEK-plasmid", "hek_plasmid.csv", "endo"),
+    ("Data set HCT-plasmid", "hct_plasmid.csv", "endo"),
+    ("Kleinstiver 2016", "kleinstiver_2016.csv", "ref"),
+    ("Chari 2017", "chari_2017.csv", "ref"),
+    ("Kim 2016", "kim_2016.csv", "ref"),
 ]
 
 

@@ -15,6 +15,7 @@ Usage:
         [--capsule <path>]       # default: ./capsule-9398276
         [--variants]             # also extract the 23 per-variant models
 """
+
 import argparse
 import os
 import sys
@@ -26,16 +27,16 @@ WEIGHTS_DIR = os.path.join(REPO_ROOT, "crisprware", "scorers", "weights", "chen_
 # Maps the EnCas12a (sequence-only) state_dict keys to friendly numpy names.
 # Layer order matches the model code (model.py:EnCas12a).
 KEY_MAP_ENCAS12A = {
-    "layer1.0.weight":    "conv1_w",   # (128, 4, 5) PyTorch -> (5, 4, 128) TF
-    "layer1.0.bias":      "conv1_b",   # (128,)
-    "conv1ds.0.0.weight": "conv2_w",   # (128, 128, 5) -> (5, 128, 128)
-    "conv1ds.0.0.bias":   "conv2_b",   # (128,)
-    "layer2.0.weight":    "fc1_w",     # (128, 3968) -> (3968, 128)
-    "layer2.0.bias":      "fc1_b",     # (128,)
-    "fcs.0.0.weight":     "fc2_w",     # (128, 128) -> (128, 128)
-    "fcs.0.0.bias":       "fc2_b",     # (128,)
-    "out.0.weight":       "out_w",     # (1, 128) -> (128, 1)
-    "out.0.bias":         "out_b",     # (1,)
+    "layer1.0.weight": "conv1_w",  # (128, 4, 5) PyTorch -> (5, 4, 128) TF
+    "layer1.0.bias": "conv1_b",  # (128,)
+    "conv1ds.0.0.weight": "conv2_w",  # (128, 128, 5) -> (5, 128, 128)
+    "conv1ds.0.0.bias": "conv2_b",  # (128,)
+    "layer2.0.weight": "fc1_w",  # (128, 3968) -> (3968, 128)
+    "layer2.0.bias": "fc1_b",  # (128,)
+    "fcs.0.0.weight": "fc2_w",  # (128, 128) -> (128, 128)
+    "fcs.0.0.bias": "fc2_b",  # (128,)
+    "out.0.weight": "out_w",  # (1, 128) -> (128, 1)
+    "out.0.bias": "out_b",  # (1,)
 }
 
 
@@ -60,16 +61,20 @@ def convert(pth_path, npz_path):
 
     os.makedirs(os.path.dirname(npz_path), exist_ok=True)
     np.savez(npz_path, **out)
-    print(f"  {os.path.basename(pth_path):40s} -> {os.path.relpath(npz_path, REPO_ROOT)}  "
-          f"({sum(a.nbytes for a in out.values()):,} bytes)")
+    print(
+        f"  {os.path.basename(pth_path):40s} -> {os.path.relpath(npz_path, REPO_ROOT)}  "
+        f"({sum(a.nbytes for a in out.values()):,} bytes)"
+    )
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--capsule", default=os.path.join(REPO_ROOT, "capsule-9398276"),
-                   help="Path to the cloned Code Ocean capsule")
-    p.add_argument("--variants", action="store_true",
-                   help="Also extract the 23 per-variant seq-DeepCpf1variants models")
+    p.add_argument(
+        "--capsule", default=os.path.join(REPO_ROOT, "capsule-9398276"), help="Path to the cloned Code Ocean capsule"
+    )
+    p.add_argument(
+        "--variants", action="store_true", help="Also extract the 23 per-variant seq-DeepCpf1variants models"
+    )
     args = p.parse_args()
 
     pth_root = os.path.join(args.capsule, "code", "EnDeepCpf1", "trained_model")

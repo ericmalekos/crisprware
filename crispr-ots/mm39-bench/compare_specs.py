@@ -14,8 +14,8 @@ is the kmers CSV used to bridge `id` ↔ `target` (defaults to
 
 Emits a brief diff summary suitable for pasting into BENCHMARKS.md.
 """
+
 import sys
-from pathlib import Path
 
 
 def load_crispr_ots_csv(path):
@@ -110,10 +110,7 @@ def summarize_diff(label, a, b, tol):
             worst = d
         if d > tol:
             drift += 1
-    print(
-        f"  {label}: {len(common)} common, max |Δ| = {worst:.3e}, "
-        f"# > {tol:.0e} = {drift}"
-    )
+    print(f"  {label}: {len(common)} common, max |Δ| = {worst:.3e}, # > {tol:.0e} = {drift}")
 
 
 def main(argv):

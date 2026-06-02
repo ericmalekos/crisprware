@@ -4,6 +4,7 @@ Drives the full pipeline against the golden Cas12a fixture (S. cerevisiae chrI
 guides with pre-computed enpam_gb / deepcpf1 scores) and asserts the new flag
 wiring produces matching output.
 """
+
 from __future__ import annotations
 
 import os
@@ -18,12 +19,8 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-GOLDEN_TSV = os.path.join(
-    REPO_ROOT, "tests", "test_data", "cas12a_scores", "deepcpf1_enpam_sgRNA.1.tsv"
-)
-ENPAM_GB_WEIGHTS = os.path.join(
-    REPO_ROOT, "crisprware", "scorers", "weights", "enpam_gb.joblib"
-)
+GOLDEN_TSV = os.path.join(REPO_ROOT, "tests", "test_data", "cas12a_scores", "deepcpf1_enpam_sgRNA.1.tsv")
+ENPAM_GB_WEIGHTS = os.path.join(REPO_ROOT, "crisprware", "scorers", "weights", "enpam_gb.joblib")
 
 
 def _build_input_bed(tmpdir: str, n_rows: int = 5) -> str:
@@ -35,8 +32,7 @@ def _build_input_bed(tmpdir: str, n_rows: int = 5) -> str:
     return in_path
 
 
-def _make_args(grna_bed: str, output_directory: str, cas12a_scorer: str,
-               cas12a_variant=None) -> Namespace:
+def _make_args(grna_bed: str, output_directory: str, cas12a_scorer: str, cas12a_variant=None) -> Namespace:
     """Build the Namespace score_guides.main() expects."""
     return Namespace(
         grna_bed=grna_bed,
@@ -182,8 +178,7 @@ def test_seq_deepcpf1variants_requires_variant():
     """`seq_deepcpf1variants` without --cas12a_variant must raise."""
     from crisprware import score_guides
 
-    args = _make_args(grna_bed="dummy", output_directory="/tmp",
-                      cas12a_scorer="seq_deepcpf1variants")
+    args = _make_args(grna_bed="dummy", output_directory="/tmp", cas12a_scorer="seq_deepcpf1variants")
     with pytest.raises(ValueError, match="--cas12a_variant is required"):
         score_guides.main(args)
 
@@ -199,9 +194,7 @@ def test_seq_deepcpf1variants_AsCas12a_Ultra_branch_wired():
         out_dir = os.path.join(tmp, "out")
         os.makedirs(out_dir, exist_ok=True)
 
-        args = _make_args(in_bed, out_dir,
-                          cas12a_scorer="seq_deepcpf1variants",
-                          cas12a_variant="AsCas12a_Ultra")
+        args = _make_args(in_bed, out_dir, cas12a_scorer="seq_deepcpf1variants", cas12a_variant="AsCas12a_Ultra")
         score_guides.main(args)
         df = _read_scored_output(out_dir)
 

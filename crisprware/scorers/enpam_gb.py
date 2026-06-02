@@ -14,6 +14,7 @@ Architecture: scikit-learn `GradientBoostingRegressor`, RS2 features
 Tm) on the 34-nt Cas12a context with `guide_start=9` (1-indexed),
 `guide_length=23`.
 """
+
 from __future__ import annotations
 
 import os
@@ -52,7 +53,7 @@ def is_valid_seq(s: object) -> bool:
 
 
 def _get_guide_sequence(context: str) -> str:
-    return context[(GUIDE_START - 1):(GUIDE_START - 1 + GUIDE_LENGTH)]
+    return context[(GUIDE_START - 1) : (GUIDE_START - 1 + GUIDE_LENGTH)]
 
 
 def _gc_fraction(guide: str) -> float:
@@ -85,7 +86,7 @@ def _two_nt_pos(context: str) -> dict:
     out = {}
     for i in range(len(context) - 1):
         pos_key = str(i + 1)
-        pair = context[i:i + 2]
+        pair = context[i : i + 2]
         for a in NTS:
             for b in NTS:
                 key = pos_key + a + b
@@ -100,8 +101,8 @@ def _thermo(guide: str, context: str) -> dict:
     return {
         "Tm, context": MeltingTemp.Tm_NN(context),
         "Tm, start": MeltingTemp.Tm_NN(guide[:third]),
-        "Tm, mid": MeltingTemp.Tm_NN(guide[third:2 * third]),
-        "Tm, end": MeltingTemp.Tm_NN(guide[2 * third:]),
+        "Tm, mid": MeltingTemp.Tm_NN(guide[third : 2 * third]),
+        "Tm, end": MeltingTemp.Tm_NN(guide[2 * third :]),
     }
 
 
@@ -135,13 +136,16 @@ def _install_sklearn_legacy_aliases() -> None:
     the tree data structures didn't change, only the module layout did.
     """
     import sys
+
     try:
         import sklearn.ensemble._gb
+
         sys.modules.setdefault("sklearn.ensemble.gradient_boosting", sklearn.ensemble._gb)
     except ImportError:
         pass
     try:
         import sklearn.tree._classes
+
         sys.modules.setdefault("sklearn.tree.tree", sklearn.tree._classes)
     except ImportError:
         pass
@@ -155,8 +159,7 @@ def load_model(weights_path: Optional[str] = None):
     path = weights_path or _weights_path()
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"enPAM+GB weights not found at {path}. "
-            f"Run `python tools/extract_enpam_gb.py` once to populate it."
+            f"enPAM+GB weights not found at {path}. Run `python tools/extract_enpam_gb.py` once to populate it."
         )
 
     _install_sklearn_legacy_aliases()
@@ -166,6 +169,7 @@ def load_model(weights_path: Optional[str] = None):
         warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
         try:
             from sklearn.exceptions import InconsistentVersionWarning
+
             warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
         except ImportError:
             pass
@@ -190,7 +194,7 @@ def predict(
 
     valid_seqs = [seqs[i].upper() for i in valid_idx]
     for start in range(0, len(valid_seqs), batch_size):
-        chunk = valid_seqs[start:start + batch_size]
+        chunk = valid_seqs[start : start + batch_size]
         features = featurize(chunk)
         # Use .to_numpy() to silence sklearn's "fitted without feature names"
         # warning — the upstream model was trained on a numpy array, not a DataFrame.
@@ -211,7 +215,7 @@ def compute_enpam_gb_scores(
     model = load_model(weights_path)
     scores: List[float] = []
     for i in range(0, len(seqs), chunk_size):
-        scores.extend(predict(seqs[i:i + chunk_size], model=model))
+        scores.extend(predict(seqs[i : i + chunk_size], model=model))
     return scores
 
 

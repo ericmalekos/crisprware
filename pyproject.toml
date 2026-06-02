@@ -78,3 +78,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "scripts/*" = ["F401", "F841"]  # utility scripts may have intentional unused imports/vars
 "parasol_scripts/DeepCpf1_seq.py" = ["E741"]  # third-party adapted code
+"tools/*" = ["E402", "F841"]    # tool scripts intentionally sys.path.insert before importing crisprware
+"tests/*" = ["E402"]            # tests do the same path-insert dance
+"crispr-ots/mm39-bench/*" = ["E741", "F841"]  # benchmark helpers: `l` line index, intentionally-assigned PAM kept for readability

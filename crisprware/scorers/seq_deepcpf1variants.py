@@ -21,21 +21,17 @@ Variants (matching the .npz filenames in weights/chen_2025/variants/):
     CeCas12a, EbCas12a, enEbCas12a,
     iCas12a_mut2C-W, iCas12a_mut2C-WF.
 """
+
 from __future__ import annotations
 
 import os
 from importlib import resources
 from typing import Iterable, List, Optional, Sequence
 
-import numpy as np
 
 from crisprware.scorers import enseq_deepcpf1
 from crisprware.scorers.enseq_deepcpf1 import (
     CONTEXT_LEN,
-    SEQ_LEN,
-    context_34_to_31,
-    is_valid_seq,
-    one_hot_encode_31,
 )
 
 VARIANTS = (
@@ -70,12 +66,7 @@ def _normalize_variant(name: str) -> str:
 
     Accepts case-insensitive input and allows ' '/'-'/'_' / '('/')' interchange.
     """
-    norm = (
-        name.strip()
-            .replace(" ", "_")
-            .replace("(", "_")
-            .replace(")", "")
-    )
+    norm = name.strip().replace(" ", "_").replace("(", "_").replace(")", "")
     canon_map = {v.lower(): v for v in VARIANTS}
     if norm.lower() in canon_map:
         return canon_map[norm.lower()]
@@ -84,10 +75,7 @@ def _normalize_variant(name: str) -> str:
     for v in VARIANTS:
         if v.replace("-", "").lower() == no_dash:
             return v
-    raise ValueError(
-        f"Unknown Cas12a variant {name!r}. "
-        f"Available: {', '.join(VARIANTS)}"
-    )
+    raise ValueError(f"Unknown Cas12a variant {name!r}. Available: {', '.join(VARIANTS)}")
 
 
 def _weights_path(variant: str) -> str:
@@ -96,9 +84,7 @@ def _weights_path(variant: str) -> str:
     try:
         return str(resources.files(enseq_deepcpf1.__package__).joinpath("weights", sub))
     except (AttributeError, ModuleNotFoundError):
-        return os.path.join(
-            os.path.dirname(enseq_deepcpf1.__file__), "weights", sub
-        )
+        return os.path.join(os.path.dirname(enseq_deepcpf1.__file__), "weights", sub)
 
 
 def load_model(variant: str, weights_path: Optional[str] = None):
@@ -118,9 +104,7 @@ def predict(
     """Score sequences with the variant-specific seq-DeepCpf1variants model."""
     if model is None:
         model = load_model(variant, weights_path=weights_path)
-    return enseq_deepcpf1.predict(
-        seqs, model=model, batch_size=batch_size, input_length=input_length
-    )
+    return enseq_deepcpf1.predict(seqs, model=model, batch_size=batch_size, input_length=input_length)
 
 
 def compute_variant_scores(
@@ -135,7 +119,7 @@ def compute_variant_scores(
     model = load_model(variant, weights_path=weights_path)
     scores: List[float] = []
     for i in range(0, len(seqs), chunk_size):
-        scores.extend(predict(seqs[i:i + chunk_size], variant=variant, model=model))
+        scores.extend(predict(seqs[i : i + chunk_size], variant=variant, model=model))
     return scores
 
 

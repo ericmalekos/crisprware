@@ -27,6 +27,7 @@ Run `tools/fetch_cas12a_data.py` first to populate data/cas12a/kim_2018/.
 Usage:
     python tools/train_cas12a_v1.py [--quick]
 """
+
 import argparse
 import os
 import sys
@@ -44,15 +45,15 @@ from crisprware.scorers import deepcpf1, enpam_gb
 KIM_DIR = os.path.join(REPO_ROOT, "data", "cas12a", "kim_2018")
 
 EVAL_SHEETS = [
-    ("hek_plasmid.csv",       "HEK-plasmid (endo)",    "indel_freq_subtracted_pct"),
-    ("hct_plasmid.csv",       "HCT-plasmid (endo)",    "indel_freq_subtracted_pct"),
-    ("hek_lenti.csv",         "HEK-lenti endo",        "indel_freq_endogenous_pct"),
-    ("hek_lenti.csv",         "HEK-lenti synthetic",   "indel_freq_synthetic_pct"),
-    ("kleinstiver_2016.csv",  "Kleinstiver 2016",      "indel_freq_pct"),
-    ("chari_2017.csv",        "Chari 2017",            "indel_freq_pct"),
-    ("kim_2016.csv",          "Kim 2016",              "indel_freq_pct"),
-    ("ht_2.csv",              "HT 2 (synthetic)",      "indel_freq_subtracted_pct"),
-    ("ht_3.csv",              "HT 3 (synthetic)",      "indel_freq_subtracted_pct"),
+    ("hek_plasmid.csv", "HEK-plasmid (endo)", "indel_freq_subtracted_pct"),
+    ("hct_plasmid.csv", "HCT-plasmid (endo)", "indel_freq_subtracted_pct"),
+    ("hek_lenti.csv", "HEK-lenti endo", "indel_freq_endogenous_pct"),
+    ("hek_lenti.csv", "HEK-lenti synthetic", "indel_freq_synthetic_pct"),
+    ("kleinstiver_2016.csv", "Kleinstiver 2016", "indel_freq_pct"),
+    ("chari_2017.csv", "Chari 2017", "indel_freq_pct"),
+    ("kim_2016.csv", "Kim 2016", "indel_freq_pct"),
+    ("ht_2.csv", "HT 2 (synthetic)", "indel_freq_subtracted_pct"),
+    ("ht_3.csv", "HT 3 (synthetic)", "indel_freq_subtracted_pct"),
 ]
 
 
@@ -85,6 +86,7 @@ def _featurize(seqs):
 
 def train_sklearn_gbr(X, y, quick=False):
     from sklearn.ensemble import GradientBoostingRegressor
+
     n = 50 if quick else 500
     model = GradientBoostingRegressor(
         n_estimators=n,
@@ -102,6 +104,7 @@ def train_sklearn_gbr(X, y, quick=False):
 
 def train_lightgbm(X, y, X_val, y_val, quick=False):
     import lightgbm as lgb
+
     n = 100 if quick else 2000
     model = lgb.LGBMRegressor(
         n_estimators=n,
@@ -115,7 +118,8 @@ def train_lightgbm(X, y, X_val, y_val, quick=False):
         verbose=-1,
     )
     model.fit(
-        X, y,
+        X,
+        y,
         eval_set=[(X_val, y_val)],
         callbacks=[lgb.early_stopping(50, verbose=False)],
     )
@@ -124,6 +128,7 @@ def train_lightgbm(X, y, X_val, y_val, quick=False):
 
 def train_xgboost(X, y, X_val, y_val, quick=False):
     import xgboost as xgb
+
     n = 100 if quick else 2000
     model = xgb.XGBRegressor(
         n_estimators=n,
@@ -141,8 +146,7 @@ def train_xgboost(X, y, X_val, y_val, quick=False):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--quick", action="store_true",
-                   help="Use fewer iterations for fast turnaround")
+    p.add_argument("--quick", action="store_true", help="Use fewer iterations for fast turnaround")
     args = p.parse_args()
 
     print("Loading training data (Kim 2018 HT 1-1)...")
@@ -157,28 +161,28 @@ def main():
     t0 = time.time()
     X_train = _featurize(train_df["context"].tolist())
     y_train = train_df["indel_freq_subtracted_pct"].to_numpy(dtype=float)
-    print(f"  X_train: {X_train.shape}  ({time.time()-t0:.1f}s)")
+    print(f"  X_train: {X_train.shape}  ({time.time() - t0:.1f}s)")
 
     t0 = time.time()
     X_val = _featurize(val_df["context"].tolist())
     y_val = val_df["indel_freq_subtracted_pct"].to_numpy(dtype=float)
-    print(f"  X_val: {X_val.shape}  ({time.time()-t0:.1f}s)")
+    print(f"  X_val: {X_val.shape}  ({time.time() - t0:.1f}s)")
 
     # --- Train ---
     print("\nTraining sklearn GradientBoostingRegressor...")
     t0 = time.time()
     sk_model = train_sklearn_gbr(X_train, y_train, quick=args.quick)
-    print(f"  fit: {time.time()-t0:.1f}s  iters used: {sk_model.n_estimators_}")
+    print(f"  fit: {time.time() - t0:.1f}s  iters used: {sk_model.n_estimators_}")
 
     print("Training LightGBM...")
     t0 = time.time()
     lgb_model = train_lightgbm(X_train, y_train, X_val, y_val, quick=args.quick)
-    print(f"  fit: {time.time()-t0:.1f}s  iters used: {lgb_model.best_iteration_}")
+    print(f"  fit: {time.time() - t0:.1f}s  iters used: {lgb_model.best_iteration_}")
 
     print("Training XGBoost...")
     t0 = time.time()
     xgb_model = train_xgboost(X_train, y_train, X_val, y_val, quick=args.quick)
-    print(f"  fit: {time.time()-t0:.1f}s  iters used: {xgb_model.best_iteration}")
+    print(f"  fit: {time.time() - t0:.1f}s  iters used: {xgb_model.best_iteration}")
 
     # --- Load baselines once ---
     print("\nLoading DeepCpf1 + enPAM+GB baselines...")
@@ -186,10 +190,9 @@ def main():
     enpam_model = enpam_gb.load_model()
 
     # --- Evaluate ---
-    header = (f"\n  {'Sheet':28s}  {'N':>5s}   "
-              f"{'DC':>4s}  {'eP':>4s} | "
-              f"{'sk':>4s}  {'lgb':>4s}  {'xgb':>4s}    "
-              f"(Spearman)")
+    header = (
+        f"\n  {'Sheet':28s}  {'N':>5s}   {'DC':>4s}  {'eP':>4s} | {'sk':>4s}  {'lgb':>4s}  {'xgb':>4s}    (Spearman)"
+    )
     print(header)
     print("  " + "-" * (len(header) - 2))
     rows = []
@@ -217,9 +220,11 @@ def main():
             "xgboost": _spearman(xg, y_true),
         }
         rows.append(ro)
-        print(f"  {label:28s}  {ro['n']:>5d}   "
-              f"{ro['deepcpf1']:>4.2f}  {ro['enpam_gb']:>4.2f} | "
-              f"{ro['sk_gbr']:>4.2f}  {ro['lightgbm']:>4.2f}  {ro['xgboost']:>4.2f}")
+        print(
+            f"  {label:28s}  {ro['n']:>5d}   "
+            f"{ro['deepcpf1']:>4.2f}  {ro['enpam_gb']:>4.2f} | "
+            f"{ro['sk_gbr']:>4.2f}  {ro['lightgbm']:>4.2f}  {ro['xgboost']:>4.2f}"
+        )
 
     summary = pd.DataFrame(rows)
     out = os.path.join(REPO_ROOT, "data", "cas12a", "v1_metrics.csv")

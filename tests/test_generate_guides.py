@@ -62,8 +62,8 @@ class TestGenerateGuides(unittest.TestCase):
         sgRNA, pos, context = sgRNAs[0]
         self.assertEqual(len(context), 34, f"expected 34-nt Cas12a context, got {len(context)}")
         # Layout asserts: upstream(4) + PAM(4) + protospacer(23) + downstream(3)
-        self.assertEqual(context[4:8], "TTTA")     # PAM at positions 4-7
-        self.assertEqual(context[8:31], sgRNA)     # protospacer at positions 8-30
+        self.assertEqual(context[4:8], "TTTA")  # PAM at positions 4-7
+        self.assertEqual(context[8:31], sgRNA)  # protospacer at positions 8-30
         self.assertEqual(len(sgRNA), 23)
 
     def test_output_bed_line(self):
