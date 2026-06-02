@@ -24,6 +24,7 @@ emitted by `generate_guides` with `--context_window 4 3 --pam NGG
 Output is an unbounded regression value (~[0, 100]) representing
 predicted on-target activity. NOT normalized to [0, 1].
 """
+
 from __future__ import annotations
 
 import os
@@ -34,8 +35,14 @@ import numpy as np
 
 SEQ_LEN = 30
 NT_INDEX = {
-    "A": 0, "C": 1, "G": 2, "T": 3,
-    "a": 0, "c": 1, "g": 2, "t": 3,
+    "A": 0,
+    "C": 1,
+    "G": 2,
+    "T": 3,
+    "a": 0,
+    "c": 1,
+    "g": 2,
+    "t": 3,
 }
 
 _DEFAULT_WEIGHTS = os.path.join("kim_2019_deepspcas9", "deepspcas9.npz")
@@ -44,9 +51,9 @@ _LAYER_KEYS = [
     ("conv1", "conv1_w", "conv1_b"),
     ("conv2", "conv2_w", "conv2_b"),
     ("conv3", "conv3_w", "conv3_b"),
-    ("fc1",   "fc1_w",   "fc1_b"),
-    ("fc2",   "fc2_w",   "fc2_b"),
-    ("out",   "out_w",   "out_b"),
+    ("fc1", "fc1_w", "fc1_b"),
+    ("fc2", "fc2_w", "fc2_b"),
+    ("out", "out_w", "out_b"),
 ]
 
 
@@ -60,18 +67,20 @@ def _weights_path(name: str = _DEFAULT_WEIGHTS) -> str:
 def _build_model():
     """Build the TF2 Keras inception-CNN matching Kim 2019's DeepCas9 class."""
     import tensorflow as tf
+
     L = tf.keras.layers
 
     inp = L.Input(shape=(1, SEQ_LEN, 4), name="input")
     branches = []
     for kernel, n_filters, conv_name in [(3, 100, "conv1"), (5, 70, "conv2"), (7, 40, "conv3")]:
         x = L.Conv2D(
-            n_filters, (1, kernel),
-            padding="valid", activation="relu", name=conv_name,
+            n_filters,
+            (1, kernel),
+            padding="valid",
+            activation="relu",
+            name=conv_name,
         )(inp)
-        x = L.AveragePooling2D(
-            (1, 2), strides=(1, 2), padding="same", name=f"pool_{conv_name[-1]}"
-        )(x)
+        x = L.AveragePooling2D((1, 2), strides=(1, 2), padding="same", name=f"pool_{conv_name[-1]}")(x)
         x = L.Flatten(name=f"flat_{conv_name[-1]}")(x)
         branches.append(x)
     concat = L.Concatenate(axis=-1, name="concat")(branches)
@@ -87,8 +96,7 @@ def load_model(weights_path: Optional[str] = None):
     path = weights_path or _weights_path()
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"DeepSpCas9 weights not found at {path}. "
-            f"Run `tools/extract_deepspcas9_weights.py` once to populate it."
+            f"DeepSpCas9 weights not found at {path}. Run `tools/extract_deepspcas9_weights.py` once to populate it."
         )
     w = np.load(path)
     for layer_name, w_key, b_key in _LAYER_KEYS:
@@ -154,7 +162,7 @@ def compute_deepspcas9_scores(
     model = load_model(weights_path)
     scores: List[float] = []
     for i in range(0, len(seqs), chunk_size):
-        scores.extend(predict(seqs[i:i + chunk_size], model=model))
+        scores.extend(predict(seqs[i : i + chunk_size], model=model))
     return scores
 
 

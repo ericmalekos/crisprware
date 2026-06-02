@@ -5,6 +5,8 @@
 
 CRISPRware is a comprehensive toolkit designed to preprocess NGS data and identify, score, and rank guide RNAs (gRNAs) for CRISPR experiments. It supports RNASeq, RiboSeq, ATACSeq, DNASESeq, ChIPSeq, and other genomic preprocessing techniques.
 
+**v0.2 highlights**: 12 new in-tree on-target scorers spanning SpCas9 (DeepSpCas9, DeepHF × 3 variants) and Cas12a (DeepCpf1, enPAM+GB, enseq-DeepCpf1, seq-DeepCpf1variants × 23 variants including AsCas12a Ultra / 2xNLS), all bit-equivalence-tested against their upstream reference implementations. Off-target scoring is now driven by an in-tree Rust backend (`crispr-ots`, ~6× faster than the previous `guidescan` shell-out) with bundled Cas12a CFD matrices. `--cas9_scorer` and `--cas12a_scorer` accept multiple values, so a single CLI call can emit any combination of scores. See [Additional scoring methods](#additional-scoring-methods).
+
 ## Table of Contents
 1. [Installation](#installation)
 2. [Tutorials](#tutorials)
@@ -225,68 +227,48 @@ For Cas12A guide selection change `crisprware generate_guides` settings to
 ```
 crisprware generate_guides \
 -f <fasta> \
---pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 8 3
+--pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 4 3
 ```
 
 
 ![plot](./images/TTTV_cleavage.png)
 
-Here the pam is 5-prime to the protospacer so `--pam_5_prime` flag is set and the length is increased 23. The window is resized for compatibility with DeepCpf1 and EnPAMGB scoring and final sequence should be 34 nts long.
+Here the pam is 5-prime to the protospacer so `--pam_5_prime` flag is set and the length is increased to 23. With `-w 4 3` the emitted 34-nt context covers 4 upstream + 4 PAM + 23 protospacer + 3 downstream, matching what DeepCpf1, enPAM+GB, and enseq-DeepCpf1 all expect. (Pre-0.2 releases required `-w 8 3` to compensate for the PAM being excluded from the emitted context; that workaround is no longer needed.)
 
 ### Additional scoring methods
 
-For additional on-target scoring, including of Cas12A/Cpf1 guides, first install [crisprScore](https://github.com/crisprVerse/crisprScore) (recommendation: install in a new conda environment). Once installed the `crisprScore_multi.R` script can be used to score guides. The scoring methods have different requirements related to the 5'/3' flanking sequence lengths of the input which is set in the `--context_window` argument of `generate_guides`. As long as the flank sequence is equal to or longer than the required flank length then the method can be applied. Any number of scoring methods can be applied in a single run in which case you want the context window to be the legnth of the longest required input. Here is an example of finding and scoring all gRNAs of the exons of the genes ITGA2B and ITGB3, with a 50bp buffer around each exon. Assuming you have a human genome fasta and GTF in the current directory:
+Starting in v0.2, `score_guides` ships with deep-learning on-target scorers built directly into the Python package — no external R / crisprScore install required. Pick scorers via `--cas9_scorer` (for SpCas9 alongside the existing `--tracr` RuleSet3) or `--cas12a_scorer` (for Cas12a, mutually exclusive with `--tracr`). Both accept multiple values.
+
+| Flag value | Scorer | Use case |
+|---|---|---|
+| `--tracr Chen2013` / `Hsu2013` / `both` | RuleSet3 ([`rs3`](https://github.com/gpp-rnd/rs3)) | SpCas9, default |
+| `--cas9_scorer deepspcas9` | DeepSpCas9 (Kim 2019) | SpCas9, modern CNN |
+| `--cas9_scorer deephf_wt_u6` | DeepHF wildtype SpCas9 / U6 (Wang 2019) | SpCas9 with U6 promoter |
+| `--cas9_scorer deephf_esp` | DeepHF eSpCas9-1.1 | enhanced-specificity SpCas9 |
+| `--cas9_scorer deephf_hf` | DeepHF SpCas9-HF1 | high-fidelity SpCas9 |
+| `--cas12a_scorer deepcpf1` | DeepCpf1 (Kim 2018) | wildtype AsCas12a / LbCas12a |
+| `--cas12a_scorer enpam_gb` | enPAM+GB (Luo 2020) | enAsCas12a |
+| `--cas12a_scorer enseq_deepcpf1` | enseq-DeepCpf1 (Chen 2025) | wildtype AsCas12a, modern |
+| `--cas12a_scorer seq_deepcpf1variants --cas12a_variant <name>` | Chen 2025 per-variant model | 23 variants incl. AsCas12a_Ultra (2xNLS), enAsCas12a-HF1, HyperFi-AsCas12a, the LbCas12a / FnCas12a / iCas12a / Lb2Cas12a / Eb / Ce families |
+
+Multiple scorers can be combined in one invocation, one column per scorer in the output BED:
 
 ```
-# extract a bed of gene exons, +/- 50 bps
+# Cas9 example: RS3 (both tracrs) + DeepSpCas9 + all three DeepHF variants in one call
+crisprware score_guides -b sgRNAs.bed \
+  --tracr both --skip_gs2 \
+  --cas9_scorer deepspcas9 deephf_wt_u6 deephf_esp deephf_hf
 
-awk 'BEGIN{FS=OFS="\t"} $0!~/^#/ && $3=="exon" && $9~/gene_name "(ITGA2B|ITGB3)";/ {s=$4-1-50; if(s<0)s=0; e=$5+50; print $1,s,e}' gencode.v49.primary_assembly.annotation.gtf \
-| sort -k1,1 -k2,2n \
-| bedtools merge -i - > itga2b_itgb3_exons_50bpBuffer.merged.bed
-
-# generate guide RNAs with a 13-bp 5' flank and 32-bp 3' flank which includes the NGG PAM. 
-
-crisprware generate_guides -f GRCh38.primary_assembly.genome.fa \
--k itga2b_itgb3_exons_50bpBuffer.merged.bed \
---coords_as_active_site \
---context_window 13 32
-
-# score with Cas9 methods, notice the last two inputs are the flanks - now excluding the PAM length
-
-crisprscore_multi.R sgRNAs/sgRNAs.bed 1,2,3,4,5,6,7,8,9,10,11,12,13,14 sgRNAs_scored.bed Cas9 13 29
-
-# Perform off-target scoring and formatting of bed for rank_guides
-# turn off --drop_duplicates and set --threshold=-1 to retain all gRNAs
-
-crisprware score_guides -b sgRNAs_scored.bed \
--i Hg38_Index/Hg38_index \
---skip_rs3 \
---drop_duplicates \
---threshold=-1
+# Cas12a example: DeepCpf1 + enPAM+GB + enseq-DeepCpf1 + the AsCas12a Ultra (2xNLS) variant model
+crisprware score_guides -b Cas12asgRNAs.bed \
+  --skip_rs3 --skip_gs2 \
+  --cas12a_scorer deepcpf1 enpam_gb enseq_deepcpf1 seq_deepcpf1variants \
+  --cas12a_variant AsCas12a_Ultra
 ```
 
-Example usage for Cas12a
+Each scorer also has a corresponding `--min_<scorer>` flag (e.g. `--min_deepspcas9 0.3`) to drop low-scoring guides before off-target scoring.
 
-```
-# generate Cas12a guides
-
-crisprware generate_guides \
--f GRCh38.primary_assembly.genome.fa \
--k itga2b_itgb3_exons_50bpBuffer.merged.bed \
---pam TTTV --pam_5_prime -5 19 -3 23 -l 23 -w 8 3 \
---coords_as_active_site \
--o Cas12a
-
-# score with Cas12a methods, note the 5' prime context goes 8->4, removing the PAM length
-
-crisprscore_multi.R  Cas12asgRNAs/Cas12asgRNAs.bed 15,16,17 scored_Cas12asgRNAs.bed Cas12a 4 3
-
-# format for rank_guides
-
-crisprware score_guides -b scored_Cas12asgRNAs.bed --skip_rs3 --skip_gs2
-```
-
-Guidescan2 is not compatible with PAMs 5' to protospacers, for off-target scoring in these cases I suggest [FlashFry](https://github.com/mckennalab/FlashFry?tab=readme-ov-file). I am working on a tutorial for FlashFry off-target scoring.
+Cas12a CFD-like off-target scoring (against the in-tree `crispr-ots` Rust backend) ships with bundled `enCas12a` and `2xNLS-Cas12a` matrices — appropriate for both AsCas12a and the 2xNLS-Cas12a Ultra variant.
 
 
 ## Full Commands
@@ -523,6 +505,25 @@ options:
                         available in rank_guides.py. Applying at this stage
                         can increase speed by filtering before off-target
                         scoring. [default: None]
+  --cas12a_scorer       One or more Cas12a on-target scorers (space-separated).
+                        Choices: none, enpam_gb, deepcpf1, enseq_deepcpf1,
+                        seq_deepcpf1variants, both (legacy alias for
+                        'enpam_gb deepcpf1'). Mutually exclusive with --tracr;
+                        implies --skip_rs3. [default: none]
+  --cas12a_variant      Cas12a variant name, required when --cas12a_scorer
+                        includes seq_deepcpf1variants. 23 variants supported;
+                        names are case- and separator-insensitive. e.g.
+                        AsCas12a_Ultra, enAsCas12a-HF1, LbCas12a.
+  --cas9_scorer         One or more additional SpCas9 on-target scorers
+                        (space-separated) to run alongside RS3. Choices: none,
+                        deepspcas9, deephf_wt_u6, deephf_esp, deephf_hf.
+                        Runs in parallel with --tracr (no mutex). [default: none]
+  --min_deepcpf1        Minimum DeepCpf1 score threshold. [default: None]
+  --min_enpam_gb        Minimum enPAM+GB score threshold. [default: None]
+  --min_enseq_deepcpf1  Minimum enseq-DeepCpf1 / seq-DeepCpf1variants score
+                        threshold. [default: None]
+  --min_deepspcas9      Minimum DeepSpCas9 score threshold. [default: None]
+  --min_deephf          Minimum DeepHF score threshold. [default: None]
   --chunk_size CHUNK_SIZE
                         Number of sgRNAs to hold in memory for cleavage
                         scoring and off-target filtering. Reduce if memory

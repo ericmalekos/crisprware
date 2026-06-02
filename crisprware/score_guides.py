@@ -587,9 +587,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             print(f"\tAfter dropping DeepSpCas9 scores below {args.min_deepspcas9}: {before} -> {len(gRNADF)}\n")
         final_columns += ["deepspcas9_score"]
 
-    deephf_variants = sorted(
-        s.removeprefix("deephf_") for s in cas9_scorers if s.startswith("deephf_")
-    )
+    deephf_variants = sorted(s.removeprefix("deephf_") for s in cas9_scorers if s.startswith("deephf_"))
     if deephf_variants:
         from crisprware.scorers import deephf as _deephf
 
@@ -606,7 +604,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             i = ctx.find(pro)
             if i < 0 or i + 23 > len(ctx):
                 return None
-            return ctx[i:i + 23]
+            return ctx[i : i + 23]
 
         tmp_df = pd.DataFrame({"protospacer": protospacers.tolist(), "context": gRNADF["context"].tolist()})
         seq23 = tmp_df.apply(_extract_23, axis=1).tolist()
