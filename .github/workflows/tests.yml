@@ -25,13 +25,15 @@ jobs:
       - name: Install conda dependencies
         run: |
           conda install -y -c conda-forge -c bioconda \
-            biopython pybedtools pybigwig pandas numpy
+            biopython pybedtools pybigwig pandas numpy scipy h5py joblib scikit-learn
 
       - name: Install pip dependencies
-        run: pip install lightgbm==3.3.5 "rs3>=0.0.15"
+        run: |
+          pip install lightgbm==3.3.5 "rs3>=0.0.15" pytest
+          pip install "tensorflow==2.15.*"
 
       - name: Install package
         run: pip install -e . --no-deps
 
       - name: Run tests
-        run: python -m unittest discover tests/ -v
+        run: pytest tests/ -v
