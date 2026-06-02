@@ -739,30 +739,26 @@ fn run_discover_streaming(
         0.0
     };
 
-    // Optional pre-screen: --threshold t drops guides with an off-target within
-    // t mismatches via a cheap mm≤t count scan (candidate bins explode with the
-    // mismatch budget, so this is far cheaper than the full scan); the full CFD
-    // scan then runs only on the survivors. `abs_map` maps a survivor's
-    // scan-slice index back to its absolute guide index (`None` = no screen).
-    let dropped: Vec<bool> = if let Some(t) = config.threshold {
-        screen_dropped(source, guides, t, scanner)?
-    } else {
-        vec![false; n]
-    };
-    let survivor_abs: Vec<usize> = if config.threshold.is_some() {
-        (0..n).filter(|&i| !dropped[i]).collect()
-    } else {
-        Vec::new()
-    };
-    let survivor_guides: Vec<Guide> = survivor_abs.iter().map(|&i| guides[i].clone()).collect();
-    let (scan_guides, abs_map): (&[Guide], Option<&[usize]>) = if config.threshold.is_some() {
-        (&survivor_guides, Some(survivor_abs.as_slice()))
-    } else {
-        (guides, None)
-    };
-
+    // Optional pre-screen + scan. --threshold t drops guides that have an
+    // off-target within t mismatches; the full CFD scan then runs only on the
+    // survivors. On GPU one resident index serves both the screen (early-exit
+    // scan_screen) and the full pass — no second upload. `abs_map` maps a
+    // survivor's scan-slice index back to its absolute guide index.
+    let mut dropped = vec![false; n];
+    let screened = config.threshold.is_some();
     match scanner {
         ScannerKind::Cpu => {
+            if let Some(t) = config.threshold {
+                dropped = screen_dropped_cpu(source, guides, t);
+            }
+            let survivor_abs = survivor_indices(&dropped, screened);
+            let survivor_guides: Vec<Guide> =
+                survivor_abs.iter().map(|&i| guides[i].clone()).collect();
+            let (scan_guides, abs_map): (&[Guide], Option<&[usize]>) = if screened {
+                (&survivor_guides, Some(survivor_abs.as_slice()))
+            } else {
+                (guides, None)
+            };
             let mut base = 0usize;
             while base < scan_guides.len() {
                 let end = (base + batch_cap).min(scan_guides.len());
@@ -792,38 +788,24 @@ fn run_discover_streaming(
             }
         }
         ScannerKind::Gpu => {
-            // Mode-1-only SpCas9: accumulate CFD specificity on the GPU with no
-            // hit download — the only path that scales aggregated scoring to a
-            // full genome of repeat-rich guides (hundreds of billions of hits
-            // would otherwise overflow the emit buffer). Any per-off-target
-            // output, or Cas12a, needs the hit identities → emit path.
-            if !want_ot && cfd.is_some() && !is_cas12a {
-                streaming_gpu_cfd_mode1(
-                    source,
-                    scan_guides,
-                    abs_map,
-                    config.max_mismatches,
-                    ot_cap,
-                    off_sum_cap,
-                    &mut acc,
-                )?;
-            } else {
-                streaming_gpu_loop(
-                    source,
-                    scan_guides,
-                    abs_map,
-                    batch_cap,
-                    config.max_mismatches,
-                    config.cfd_threshold,
-                    ot_cap,
-                    off_sum_cap,
-                    cfd.as_ref(),
-                    cas12a.as_ref(),
-                    proto_len,
-                    &mut acc,
-                    &mut writers,
-                )?;
-            }
+            streaming_gpu(
+                source,
+                guides,
+                config.threshold,
+                want_ot,
+                is_cas12a,
+                batch_cap,
+                config.max_mismatches,
+                config.cfd_threshold,
+                ot_cap,
+                off_sum_cap,
+                cfd.as_ref(),
+                cas12a.as_ref(),
+                proto_len,
+                &mut acc,
+                &mut writers,
+                &mut dropped,
+            )?;
         }
     }
 
@@ -905,91 +887,42 @@ fn run_discover_streaming(
 /// budget, so a mm≤2 screen is far cheaper than the full mm≤`max_mismatches`
 /// scan; dropping these guides up front means the full CFD scan runs only on the
 /// survivors. Returns one flag per guide (`true` = drop, i.e. non-specific).
-fn screen_dropped(
-    source: &dyn BinSource,
-    guides: &[Guide],
-    t: u8,
-    scanner: ScannerKind,
-) -> Result<Vec<bool>, DiscoverError> {
+fn screen_dropped_cpu(source: &dyn BinSource, guides: &[Guide], t: u8) -> Vec<bool> {
     let n = guides.len();
     let mut dropped = vec![false; n];
-    if n == 0 {
-        return Ok(dropped);
-    }
-    match scanner {
-        ScannerKind::Cpu => {
-            let batch = 50_000usize;
-            let mut base = 0usize;
-            while base < n {
-                let end = (base + batch).min(n);
-                // BinScanner at max_mm = t returns only mm ≤ t hits.
-                let hits = BinScanner::new(source).scan(&guides[base..end], t);
-                let mut on = vec![0u32; end - base];
-                let mut close = vec![false; end - base];
-                for h in &hits {
-                    let r = h.guide_index as usize;
-                    if h.mismatches == 0 {
-                        on[r] += 1;
-                    } else {
-                        close[r] = true;
-                    }
-                }
-                for r in 0..(end - base) {
-                    if on[r] > 1 || close[r] {
-                        dropped[base + r] = true;
-                    }
-                }
-                base = end;
+    let batch = 50_000usize;
+    let mut base = 0usize;
+    while base < n {
+        let end = (base + batch).min(n);
+        // BinScanner at max_mm = t returns only mm ≤ t hits.
+        let hits = BinScanner::new(source).scan(&guides[base..end], t);
+        let mut on = vec![0u32; end - base];
+        let mut close = vec![false; end - base];
+        for h in &hits {
+            let r = h.guide_index as usize;
+            if h.mismatches == 0 {
+                on[r] += 1;
+            } else {
+                close[r] = true;
             }
         }
-        ScannerKind::Gpu => screen_dropped_gpu(source, guides, t, &mut dropped)?,
-    }
-    Ok(dropped)
-}
-
-/// GPU pre-screen via `scan_counts_prefilter(max_mm = t)` (per-guide counts at
-/// mm 0..=t, no hit download). Drops a guide if it has a 0-mm duplicate
-/// (`counts[0] > 1`) or any `1..=t`-mm off-target.
-#[cfg(feature = "gpu")]
-fn screen_dropped_gpu(
-    source: &dyn BinSource,
-    guides: &[Guide],
-    t: u8,
-    dropped: &mut [bool],
-) -> Result<(), DiscoverError> {
-    let scanner =
-        crispr_scan_gpu::GpuScanner::new(source).map_err(|e| DiscoverError::Gpu(e.to_string()))?;
-    let stride = t as usize + 1;
-    const SCREEN_CHUNK: usize = 1 << 20;
-    let mut base = 0usize;
-    while base < guides.len() {
-        let end = (base + SCREEN_CHUNK).min(guides.len());
-        let counts = scanner.scan_counts_prefilter(&guides[base..end], t);
         for r in 0..(end - base) {
-            let c0 = counts[r * stride];
-            let close = (1..=t as usize).any(|m| counts[r * stride + m] > 0);
-            if c0 > 1 || close {
+            if on[r] > 1 || close[r] {
                 dropped[base + r] = true;
             }
         }
         base = end;
     }
-    Ok(())
+    dropped
 }
 
-/// Stub for non-GPU builds.
-#[cfg(not(feature = "gpu"))]
-fn screen_dropped_gpu(
-    _source: &dyn BinSource,
-    _guides: &[Guide],
-    _t: u8,
-    _dropped: &mut [bool],
-) -> Result<(), DiscoverError> {
-    Err(DiscoverError::Gpu(
-        "streaming --output-mode with --scanner gpu requires a binary built \
-         with `cargo build --features gpu`"
-            .to_string(),
-    ))
+/// Survivor (non-dropped) absolute guide indices, or empty when no screen ran.
+fn survivor_indices(dropped: &[bool], screened: bool) -> Vec<usize> {
+    if screened {
+        (0..dropped.len()).filter(|&i| !dropped[i]).collect()
+    } else {
+        Vec::new()
+    }
 }
 
 /// GPU streaming loop: build the resident scanner once, then two-pass each
@@ -997,7 +930,8 @@ fn screen_dropped_gpu(
 /// `scan_raw` to emit — and accumulate via [`accumulate_hit`].
 #[cfg(feature = "gpu")]
 #[allow(clippy::too_many_arguments)]
-fn streaming_gpu_loop(
+fn gpu_emit_pass(
+    scanner: &crispr_scan_gpu::GpuScanner,
     source: &dyn BinSource,
     guides: &[Guide],
     abs_map: Option<&[usize]>,
@@ -1012,8 +946,6 @@ fn streaming_gpu_loop(
     acc: &mut Accum,
     writers: &mut OtWriters,
 ) -> Result<(), DiscoverError> {
-    let scanner =
-        crispr_scan_gpu::GpuScanner::new(source).map_err(|e| DiscoverError::Gpu(e.to_string()))?;
     let mut base = 0usize;
     while base < guides.len() {
         let end = (base + batch_cap).min(guides.len());
@@ -1053,40 +985,14 @@ fn streaming_gpu_loop(
     Ok(())
 }
 
-/// Stub for non-GPU builds: streaming with `--scanner gpu` needs the feature.
-#[cfg(not(feature = "gpu"))]
-#[allow(clippy::too_many_arguments)]
-fn streaming_gpu_loop(
-    _source: &dyn BinSource,
-    _guides: &[Guide],
-    _abs_map: Option<&[usize]>,
-    _batch_cap: usize,
-    _max_mm: u8,
-    _cfd_threshold: f64,
-    _ot_cap: u32,
-    _off_sum_cap: f64,
-    _cfd: Option<&Cfd>,
-    _cas12a: Option<&Cas12aCfd>,
-    _proto_len: u32,
-    _acc: &mut Accum,
-    _writers: &mut OtWriters,
-) -> Result<(), DiscoverError> {
-    Err(DiscoverError::Gpu(
-        "streaming --output-mode with --scanner gpu requires a binary built \
-         with `cargo build --features gpu`"
-            .to_string(),
-    ))
-}
-
-/// Mode-1 fast path (SpCas9 only): fill the per-guide CFD accumulators
-/// straight from the GPU CFD-accumulation kernel. No hits ever leave the
-/// device — output is `O(#guides)` — so this is the path that scales
-/// aggregated specificity to a full genome of repeat-rich guides. Guides are
-/// processed in large chunks (there is no hit buffer to bound; the chunk only
-/// caps the per-launch guide upload).
+/// Mode-1 fast path (SpCas9 only): fill the per-guide CFD accumulators straight
+/// from the GPU CFD-accumulation kernel using the shared resident `scanner`. No
+/// hits ever leave the device — output is `O(#guides)` — so this is the path
+/// that scales aggregated specificity to a full genome. Guides are processed in
+/// large chunks (the chunk only caps the per-launch guide upload).
 #[cfg(feature = "gpu")]
-fn streaming_gpu_cfd_mode1(
-    source: &dyn BinSource,
+fn gpu_cfd_pass(
+    scanner: &crispr_scan_gpu::GpuScanner,
     guides: &[Guide],
     abs_map: Option<&[usize]>,
     max_mm: u8,
@@ -1095,8 +1001,6 @@ fn streaming_gpu_cfd_mode1(
     acc: &mut Accum,
 ) -> Result<(), DiscoverError> {
     const CFD_CHUNK: usize = 1 << 20; // ~1M guides/launch
-    let scanner =
-        crispr_scan_gpu::GpuScanner::new(source).map_err(|e| DiscoverError::Gpu(e.to_string()))?;
     let mut base = 0usize;
     while base < guides.len() {
         let end = (base + CFD_CHUNK).min(guides.len());
@@ -1116,20 +1020,79 @@ fn streaming_gpu_cfd_mode1(
     Ok(())
 }
 
-/// Stub for non-GPU builds.
+/// GPU streaming driver: build ONE resident index, run the optional early-exit
+/// pre-screen (`scan_screen`) and the full scan against it (no second upload),
+/// and fill `dropped`. Dispatches to the no-download CFD kernel for Mode-1-only
+/// SpCas9, else the hit-emit path.
+#[cfg(feature = "gpu")]
+#[allow(clippy::too_many_arguments)]
+fn streaming_gpu(
+    source: &dyn BinSource,
+    guides: &[Guide],
+    threshold: Option<u8>,
+    want_ot: bool,
+    is_cas12a: bool,
+    batch_cap: usize,
+    max_mm: u8,
+    cfd_threshold: f64,
+    ot_cap: u32,
+    off_sum_cap: f64,
+    cfd: Option<&Cfd>,
+    cas12a: Option<&Cas12aCfd>,
+    proto_len: u32,
+    acc: &mut Accum,
+    writers: &mut OtWriters,
+    dropped: &mut [bool],
+) -> Result<(), DiscoverError> {
+    let scanner =
+        crispr_scan_gpu::GpuScanner::new(source).map_err(|e| DiscoverError::Gpu(e.to_string()))?;
+    let screened = threshold.is_some();
+    if let Some(t) = threshold {
+        for (i, f) in scanner.scan_screen(guides, t).into_iter().enumerate() {
+            dropped[i] = f != 0;
+        }
+    }
+    let survivor_abs = survivor_indices(dropped, screened);
+    let survivor_guides: Vec<Guide> = survivor_abs.iter().map(|&i| guides[i].clone()).collect();
+    let (sg, am): (&[Guide], Option<&[usize]>) = if screened {
+        (&survivor_guides, Some(survivor_abs.as_slice()))
+    } else {
+        (guides, None)
+    };
+    if !want_ot && cfd.is_some() && !is_cas12a {
+        gpu_cfd_pass(&scanner, sg, am, max_mm, ot_cap, off_sum_cap, acc)
+    } else {
+        gpu_emit_pass(
+            &scanner, source, sg, am, batch_cap, max_mm, cfd_threshold, ot_cap, off_sum_cap, cfd,
+            cas12a, proto_len, acc, writers,
+        )
+    }
+}
+
+/// Stub for non-GPU builds: streaming with `--scanner gpu` needs the feature.
 #[cfg(not(feature = "gpu"))]
-fn streaming_gpu_cfd_mode1(
+#[allow(clippy::too_many_arguments)]
+fn streaming_gpu(
     _source: &dyn BinSource,
     _guides: &[Guide],
-    _abs_map: Option<&[usize]>,
+    _threshold: Option<u8>,
+    _want_ot: bool,
+    _is_cas12a: bool,
+    _batch_cap: usize,
     _max_mm: u8,
+    _cfd_threshold: f64,
     _ot_cap: u32,
     _off_sum_cap: f64,
+    _cfd: Option<&Cfd>,
+    _cas12a: Option<&Cas12aCfd>,
+    _proto_len: u32,
     _acc: &mut Accum,
+    _writers: &mut OtWriters,
+    _dropped: &mut [bool],
 ) -> Result<(), DiscoverError> {
     Err(DiscoverError::Gpu(
-        "streaming --output-mode aggregated with --scanner gpu requires a binary \
-         built with `cargo build --features gpu`"
+        "streaming --output-mode with --scanner gpu requires a binary built \
+         with `cargo build --features gpu`"
             .to_string(),
     ))
 }

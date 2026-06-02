@@ -467,6 +467,89 @@ extern "C" __global__ void scan_cfd_prefilter_kernel(
     out_sat[gi] = c.saturated;
 }
 
+// ---- Bin-prefilter SCREEN path (early-exit specificity pre-screen) ----
+// One thread per guide; traverse candidate bins at mm<=t and BAIL the instant
+// the guide is proven non-specific: a 0-mm DUPLICATE (>=2 zero-mismatch hits —
+// the on-target plus at least one more copy) or ANY 1..=t-mm off-target. Most
+// non-specific guides exit almost immediately (a near-match sits in their own
+// d=0 bin), so this is far cheaper than counting every hit. Output: per guide,
+// 1 = drop (non-specific), 0 = keep.
+struct ScreenCtx {
+    const unsigned long long* entries;
+    const unsigned int* bin_off;
+    unsigned long long g_low, g_high, mask_low, mask_high;
+    unsigned int max_mm;     // = t
+    unsigned int on_count;   // zero-mismatch hits seen so far
+    unsigned int dropped;    // 1 once proven non-specific
+};
+
+__device__ __noinline__ void screen_process_bin(ScreenCtx* c, unsigned int key) {
+    const unsigned int start = c->bin_off[2u * key];
+    const unsigned int count = c->bin_off[2u * key + 1u];
+    const unsigned long long UPPER = 0xAAAAAAAAAAAAAAAAULL;
+    for (unsigned int j = 0; j < count; ++j) {
+        const unsigned long long idx = (unsigned long long)(start + j);
+        const unsigned long long o_low = c->entries[3 * idx];
+        const unsigned long long o_high = c->entries[3 * idx + 1];
+        const unsigned long long cl = (o_low ^ c->g_low) & c->mask_low;
+        const unsigned long long ch = (o_high ^ c->g_high) & c->mask_high;
+        const unsigned long long il = (cl & UPPER) | ((cl << 1) & UPPER);
+        const unsigned long long ih = (ch & UPPER) | ((ch << 1) & UPPER);
+        const unsigned int mm = __popcll(il) + __popcll(ih);
+        if (mm <= c->max_mm) {
+            if (mm == 0u) {
+                c->on_count += 1u;
+                if (c->on_count >= 2u) { c->dropped = 1u; return; }
+            } else {
+                c->dropped = 1u; // any 1..=t-mm off-target ⇒ non-specific
+                return;
+            }
+        }
+    }
+}
+
+__device__ void screen_visit(
+    ScreenCtx* c, unsigned int key, int w, int k_rem, int start_pos)
+{
+    if (c->dropped) return;
+    screen_process_bin(c, key);
+    if (k_rem == 0 || c->dropped) return;
+    for (int p = start_pos; p < w; ++p) {
+        const unsigned int shift = 2u * (unsigned int)p;
+        for (unsigned int delta = 1u; delta <= 3u; ++delta) {
+            screen_visit(c, key ^ (delta << shift), w, k_rem - 1, p + 1);
+            if (c->dropped) return;
+        }
+    }
+}
+
+extern "C" __global__ void scan_screen_kernel(
+    const unsigned long long* __restrict__ entries,
+    const unsigned int* __restrict__ bin_off,
+    const unsigned long long* __restrict__ guide_low,
+    const unsigned long long* __restrict__ guide_high,
+    const unsigned int n_guides,
+    const unsigned long long mask_low, const unsigned long long mask_high,
+    const unsigned int max_mm, const unsigned int bin_w,
+    const unsigned int bin_start_bit, unsigned int* __restrict__ out_dropped)
+{
+    const unsigned int gi = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gi >= n_guides) return;
+    ScreenCtx c;
+    c.entries = entries;
+    c.bin_off = bin_off;
+    c.g_low = guide_low[gi];
+    c.g_high = guide_high[gi];
+    c.mask_low = mask_low;
+    c.mask_high = mask_high;
+    c.max_mm = max_mm;
+    c.on_count = 0u;
+    c.dropped = 0u;
+    const unsigned int key = bin_key_of(c.g_low, c.g_high, bin_start_bit, 2u * bin_w);
+    screen_visit(&c, key, (int)bin_w, (int)max_mm, 0);
+    out_dropped[gi] = c.dropped;
+}
+
 // ---- Bin-pair-tiled self-scan (all-vs-all) ----
 // One block per guide bin B. Because every guide in B shares the bin-key B, the
 // candidate-bin enumeration is done ONCE per bin (amortised over its ~66
@@ -659,6 +742,10 @@ pub struct GpuScanner {
     /// Per-guide bin-prefilter CFD-accumulation kernel
     /// (`scan_cfd_prefilter_kernel`) — Mode-1 specificity with no hit download.
     func_cfd: CudaFunction,
+    /// Per-guide early-exit pre-screen kernel (`scan_screen_kernel`) — flags
+    /// guides with any off-target within a mismatch threshold, bailing at the
+    /// first one.
+    func_screen: CudaFunction,
     /// Bin-pair-tiled all-vs-all self-scan kernel (`tiled_self_scan_kernel`).
     func_tiled: CudaFunction,
     /// Database entries on the device (resident), as a flat `u64` array
@@ -782,6 +869,7 @@ impl GpuScanner {
         let func_prefilter = module.load_function("scan_count_prefilter_kernel")?;
         let func_prefilter_emit = module.load_function("scan_prefilter_emit_kernel")?;
         let func_cfd = module.load_function("scan_cfd_prefilter_kernel")?;
+        let func_screen = module.load_function("scan_screen_kernel")?;
         let func_tiled = module.load_function("tiled_self_scan_kernel")?;
         let compile_s = t_compile.elapsed().as_secs_f64();
 
@@ -832,6 +920,7 @@ impl GpuScanner {
             func_prefilter,
             func_prefilter_emit,
             func_cfd,
+            func_screen,
             func_tiled,
             d_entries,
             d_bin_offsets,
@@ -984,6 +1073,69 @@ impl GpuScanner {
             );
         }
         counts
+    }
+
+    /// Early-exit pre-screen: per guide, return `1` if it has any off-target
+    /// within `threshold` mismatches (a 0-mm duplicate — `>= 2` zero-mismatch
+    /// hits — or any `1..=threshold`-mm match), else `0`. Bails at the first
+    /// such hit, so non-specific guides are far cheaper than counting all of
+    /// them. No hit download; the index stays VRAM-resident across calls.
+    ///
+    /// # Panics
+    /// Panics on any CUDA error.
+    #[must_use]
+    pub fn scan_screen(&self, guides: &[Guide], threshold: u8) -> Vec<u32> {
+        if guides.is_empty() || self.n_entries == 0 {
+            return vec![0; guides.len()];
+        }
+        let trace = std::env::var_os("CRISPR_OTS_TRACE").is_some();
+        let t = std::time::Instant::now();
+        let n_guides = u32::try_from(guides.len()).expect("guide count fits in u32");
+        let glow: Vec<u64> = guides.iter().map(|g| g.site.low).collect();
+        let ghigh: Vec<u64> = guides.iter().map(|g| g.site.high).collect();
+        let stream = &self.stream;
+        let d_glow = stream.clone_htod(&glow).expect("upload guide lows");
+        let d_ghigh = stream.clone_htod(&ghigh).expect("upload guide highs");
+        let mut d_drop = stream
+            .alloc_zeros::<u32>(guides.len())
+            .expect("alloc screen buffer");
+
+        let mask_low = self.compare_mask.low;
+        let mask_high = self.compare_mask.high;
+        let max_mm_u32 = u32::from(threshold);
+        let bin_w = self.bin_w;
+        let bin_start_bit = self.bin_key_start_bit;
+        let cfg = LaunchConfig {
+            grid_dim: (n_guides.div_ceil(BLOCK_DIM), 1, 1),
+            block_dim: (BLOCK_DIM, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        {
+            let mut lb = stream.launch_builder(&self.func_screen);
+            lb.arg(&self.d_entries);
+            lb.arg(&self.d_bin_offsets);
+            lb.arg(&d_glow);
+            lb.arg(&d_ghigh);
+            lb.arg(&n_guides);
+            lb.arg(&mask_low);
+            lb.arg(&mask_high);
+            lb.arg(&max_mm_u32);
+            lb.arg(&bin_w);
+            lb.arg(&bin_start_bit);
+            lb.arg(&mut d_drop);
+            // SAFETY: the 11 arguments match scan_screen_kernel's parameter list.
+            unsafe { lb.launch(cfg).expect("launch screen kernel") };
+        }
+        stream.synchronize().expect("sync screen kernel");
+        let dropped = stream.clone_dtoh(&d_drop).expect("download screen flags");
+        stream.synchronize().expect("sync screen download");
+        if trace {
+            eprintln!(
+                "[trace] gpu scan_screen: {n_guides} guides, kernel+I/O {:.3}s (resident)",
+                t.elapsed().as_secs_f64()
+            );
+        }
+        dropped
     }
 
     /// Bin-pair-tiled all-vs-all self-scan: treats every index entry in bins
