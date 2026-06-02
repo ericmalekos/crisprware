@@ -242,7 +242,7 @@ def predict(
     seqs: Sequence[str],
     variant: str = "wt_u6",
     model=None,
-    batch_size: int = 1024,
+    batch_size: int = 4096,
     weights_path: Optional[str] = None,
 ) -> List[float]:
     """Score 23-nt protospacer+PAM sequences. Invalid sequences return NaN."""
@@ -288,7 +288,7 @@ def score_file(
     variant: str = "wt_u6",
     seq_col: str = "sequence",
     out_col: Optional[str] = None,
-    batch_size: int = 1024,
+    batch_size: int = 4096,
 ) -> None:
     """Read a TSV, score `seq_col` with DeepHF, append `out_col`."""
     import pandas as pd

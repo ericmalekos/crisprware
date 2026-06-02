@@ -97,7 +97,7 @@ def predict(
     seqs: Sequence[str],
     variant: str,
     model=None,
-    batch_size: int = 1024,
+    batch_size: int = 4096,
     weights_path: Optional[str] = None,
     input_length: int = CONTEXT_LEN,
 ) -> List[float]:
@@ -129,7 +129,7 @@ def score_file(
     variant: str,
     seq_col: str = "context",
     out_col: Optional[str] = None,
-    batch_size: int = 1024,
+    batch_size: int = 4096,
 ) -> None:
     """Read a TSV, score `seq_col` with the variant model, append `out_col`."""
     import pandas as pd

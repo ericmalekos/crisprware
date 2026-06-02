@@ -215,7 +215,7 @@ def one_hot_encode(seqs: Sequence[str]) -> np.ndarray:
 def predict(
     seqs: Sequence[str],
     model=None,
-    batch_size: int = 1024,
+    batch_size: int = 4096,
     weights_path: Optional[str] = None,
 ) -> List[float]:
     """Score sequences. Invalid (non-34-nt-ACGT) sequences return NaN."""
@@ -262,7 +262,7 @@ def score_file(
     output_path: str,
     seq_col: str = "context",
     out_col: str = "deepcpf1_score",
-    batch_size: int = 1024,
+    batch_size: int = 4096,
 ) -> None:
     """Read a TSV, score `seq_col` with DeepCpf1, append `out_col`, write TSV.
 
