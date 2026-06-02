@@ -241,10 +241,13 @@ impl OtTsvWriter {
 #[derive(Debug)]
 pub struct AggWriter {
     w: BufWriter<File>,
+    cas12a: bool,
 }
 
 impl AggWriter {
     /// Create the file and write the header. `cas12a` selects the column set.
+    /// Trailing `dropped` column flags guides removed by the `--threshold`
+    /// pre-screen (only present, as `1`, when `--keep-dropped` is set).
     ///
     /// # Errors
     /// I/O failure.
@@ -253,12 +256,12 @@ impl AggWriter {
         if cas12a {
             writeln!(
                 w,
-                "id,specificity_tttn,specificity_tttv,max_cfd,off_target_count,saturated"
+                "id,specificity_tttn,specificity_tttv,max_cfd,off_target_count,saturated,dropped"
             )?;
         } else {
-            writeln!(w, "id,specificity,max_cfd,off_target_count,saturated")?;
+            writeln!(w, "id,specificity,max_cfd,off_target_count,saturated,dropped")?;
         }
-        Ok(Self { w })
+        Ok(Self { w, cas12a })
     }
 
     /// SpCas9 row. `saturated` marks a guide whose off-target cap was hit, so
@@ -277,7 +280,7 @@ impl AggWriter {
     ) -> io::Result<()> {
         writeln!(
             self.w,
-            "{id},{specificity:.6},{max_cfd:.6},{off_target_count},{}",
+            "{id},{specificity:.6},{max_cfd:.6},{off_target_count},{},0",
             u8::from(saturated)
         )
     }
@@ -297,9 +300,23 @@ impl AggWriter {
     ) -> io::Result<()> {
         writeln!(
             self.w,
-            "{id},{tttn:.6},{tttv:.6},{max_cfd:.6},{off_target_count},{}",
+            "{id},{tttn:.6},{tttv:.6},{max_cfd:.6},{off_target_count},{},0",
             u8::from(saturated)
         )
+    }
+
+    /// A guide dropped by the `--threshold` pre-screen: scored columns are left
+    /// empty and `dropped` is `1` (it has an off-target within the threshold, so
+    /// it was never scored). Column count matches the header's enzyme set.
+    ///
+    /// # Errors
+    /// I/O failure.
+    pub fn write_dropped(&mut self, id: &str) -> io::Result<()> {
+        if self.cas12a {
+            writeln!(self.w, "{id},,,,,0,1")
+        } else {
+            writeln!(self.w, "{id},,,,0,1")
+        }
     }
 
     /// Flush and close.

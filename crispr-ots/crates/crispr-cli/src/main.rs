@@ -214,11 +214,22 @@ struct EnumerateArgs {
     #[arg(long, default_value_t = -1.0, allow_hyphen_values = true)]
     min_specificity: f64,
 
-    /// Discard guides whose nearest *off*-target (excluding the on-target
-    /// site) has mismatch ≤ this value. -1 disables filtering. Matches
-    /// `guidescan enumerate --threshold`.
+    /// Discard guides that have an off-target within this many mismatches
+    /// (a 0-mm duplicate or any 1..=t-mm match). -1 disables. Matches
+    /// `guidescan enumerate --threshold`. In the streaming `--output-mode`
+    /// path this is a *pre-screen*: a cheap mm≤t count scan (≈90× cheaper
+    /// than the full mm≤`--mismatches` scan) drops non-specific guides up
+    /// front, so the full CFD scan runs only on the survivors — a large
+    /// speedup when most guides are non-specific.
     #[arg(long, default_value_t = -1, allow_hyphen_values = true)]
     threshold: i32,
+
+    /// Keep pre-screened (dropped) guides in the Mode-1 output with a
+    /// `dropped` marker instead of omitting them, so the output is a
+    /// complete record of every input guide. Only affects runs with
+    /// `--threshold`. Default: omit dropped guides (survivors only).
+    #[arg(long, default_value_t = false)]
+    keep_dropped: bool,
 
     /// GuideScan2's `--mode succinct|complete`. Accepted as a no-op: we
     /// always enumerate every off-target up to `--mismatches`, which
@@ -459,6 +470,7 @@ fn run_enumerate_cmd(args: EnumerateArgs) -> Result<()> {
             u32::try_from(args.max_off_targets).unwrap_or(u32::MAX)
         },
         min_specificity: args.min_specificity.max(0.0),
+        keep_dropped: args.keep_dropped,
     };
     run_discover_with(&mmap, &config, args.scanner.into()).context("enumerate failed")
 }

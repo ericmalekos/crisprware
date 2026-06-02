@@ -130,9 +130,12 @@ pub struct DiscoverConfig {
     pub output: PathBuf,
     pub format: OutputFormat,
     pub spec_convention: SpecConvention,
-    /// If `Some(t)`, drop any guide whose nearest *off*-target (mm > 0)
-    /// has mismatch ≤ t. Matches `guidescan enumerate --threshold`.
-    /// `None` disables filtering.
+    /// If `Some(t)`, drop any guide that has an off-target within `t`
+    /// mismatches (a 0-mm duplicate, or any 1..=t-mm match). Matches
+    /// `guidescan enumerate --threshold`. In the streaming output path this
+    /// drives a cheap mm≤t pre-screen: such guides are dropped *before* the
+    /// full mm≤`max_mismatches` CFD scan, which then runs only on the
+    /// survivors. `None` disables filtering.
     pub threshold: Option<u8>,
     /// If `Some(n)`, keep at most `n` distinct off-target sequences per
     /// `(guide, mismatch-count)` bin. The cap is applied while the raw
@@ -175,6 +178,10 @@ pub struct DiscoverConfig {
     /// almost immediately. `0` = disabled. Acts together with `max_off_targets`
     /// (stop on either).
     pub min_specificity: f64,
+    /// When [`threshold`](Self::threshold) drives a pre-screen, keep the dropped
+    /// (non-specific) guides in the Mode-1 output with a `dropped` marker rather
+    /// than omitting them. `false` (default) = omit; output is survivors only.
+    pub keep_dropped: bool,
 }
 
 impl Default for DiscoverConfig {
@@ -195,6 +202,7 @@ impl Default for DiscoverConfig {
             hit_budget: 64_000_000,
             max_off_targets: 0,
             min_specificity: 0.0,
+            keep_dropped: false,
         }
     }
 }
@@ -730,17 +738,42 @@ fn run_discover_streaming(
     } else {
         0.0
     };
+
+    // Optional pre-screen: --threshold t drops guides with an off-target within
+    // t mismatches via a cheap mm≤t count scan (candidate bins explode with the
+    // mismatch budget, so this is far cheaper than the full scan); the full CFD
+    // scan then runs only on the survivors. `abs_map` maps a survivor's
+    // scan-slice index back to its absolute guide index (`None` = no screen).
+    let dropped: Vec<bool> = if let Some(t) = config.threshold {
+        screen_dropped(source, guides, t, scanner)?
+    } else {
+        vec![false; n]
+    };
+    let survivor_abs: Vec<usize> = if config.threshold.is_some() {
+        (0..n).filter(|&i| !dropped[i]).collect()
+    } else {
+        Vec::new()
+    };
+    let survivor_guides: Vec<Guide> = survivor_abs.iter().map(|&i| guides[i].clone()).collect();
+    let (scan_guides, abs_map): (&[Guide], Option<&[usize]>) = if config.threshold.is_some() {
+        (&survivor_guides, Some(survivor_abs.as_slice()))
+    } else {
+        (guides, None)
+    };
+
     match scanner {
         ScannerKind::Cpu => {
             let mut base = 0usize;
-            while base < guides.len() {
-                let end = (base + batch_cap).min(guides.len());
-                let hits = BinScanner::new(source).scan(&guides[base..end], config.max_mismatches);
+            while base < scan_guides.len() {
+                let end = (base + batch_cap).min(scan_guides.len());
+                let hits =
+                    BinScanner::new(source).scan(&scan_guides[base..end], config.max_mismatches);
                 for h in &hits {
-                    let abs = base + h.guide_index as usize;
+                    let rel = base + h.guide_index as usize;
+                    let abs = abs_map.map_or(rel, |m| m[rel]);
                     accumulate_hit(
                         abs,
-                        guides[abs].site,
+                        scan_guides[rel].site,
                         h.off_target,
                         h.position,
                         h.mismatches,
@@ -767,7 +800,8 @@ fn run_discover_streaming(
             if !want_ot && cfd.is_some() && !is_cas12a {
                 streaming_gpu_cfd_mode1(
                     source,
-                    guides,
+                    scan_guides,
+                    abs_map,
                     config.max_mismatches,
                     ot_cap,
                     off_sum_cap,
@@ -776,7 +810,8 @@ fn run_discover_streaming(
             } else {
                 streaming_gpu_loop(
                     source,
-                    guides,
+                    scan_guides,
+                    abs_map,
                     batch_cap,
                     config.max_mismatches,
                     config.cfd_threshold,
@@ -796,6 +831,14 @@ fn run_discover_streaming(
     if want_agg {
         let mut agg = crate::ot_stream::AggWriter::create(&config.output, is_cas12a)?;
         for (i, rec) in guide_records.iter().enumerate() {
+            if dropped[i] {
+                // Pre-screened out (off-target within --threshold): omit, unless
+                // --keep-dropped asked for a complete record of every guide.
+                if config.keep_dropped {
+                    agg.write_dropped(&rec.id)?;
+                }
+                continue;
+            }
             if is_cas12a {
                 let tttn = if acc.off_sum[i] > 0.0 {
                     1.0 / acc.off_sum[i]
@@ -838,6 +881,9 @@ fn run_discover_streaming(
         let mut side =
             crate::ot_stream::GuidesSidecarWriter::create(&suffix_path(&config.output, "guides.tsv"))?;
         for (i, rec) in guide_records.iter().enumerate() {
+            if dropped[i] {
+                continue;
+            }
             side.write_row(
                 u32::try_from(i).unwrap_or(u32::MAX),
                 &rec.id,
@@ -853,6 +899,99 @@ fn run_discover_streaming(
     Ok(())
 }
 
+/// Pre-screen: flag every guide that has an off-target within `t` mismatches —
+/// a 0-mm duplicate (`mm == 0` with count > 1) or any `1..=t`-mm match — using a
+/// cheap mm≤t count scan. The candidate-bin set grows steeply with the mismatch
+/// budget, so a mm≤2 screen is far cheaper than the full mm≤`max_mismatches`
+/// scan; dropping these guides up front means the full CFD scan runs only on the
+/// survivors. Returns one flag per guide (`true` = drop, i.e. non-specific).
+fn screen_dropped(
+    source: &dyn BinSource,
+    guides: &[Guide],
+    t: u8,
+    scanner: ScannerKind,
+) -> Result<Vec<bool>, DiscoverError> {
+    let n = guides.len();
+    let mut dropped = vec![false; n];
+    if n == 0 {
+        return Ok(dropped);
+    }
+    match scanner {
+        ScannerKind::Cpu => {
+            let batch = 50_000usize;
+            let mut base = 0usize;
+            while base < n {
+                let end = (base + batch).min(n);
+                // BinScanner at max_mm = t returns only mm ≤ t hits.
+                let hits = BinScanner::new(source).scan(&guides[base..end], t);
+                let mut on = vec![0u32; end - base];
+                let mut close = vec![false; end - base];
+                for h in &hits {
+                    let r = h.guide_index as usize;
+                    if h.mismatches == 0 {
+                        on[r] += 1;
+                    } else {
+                        close[r] = true;
+                    }
+                }
+                for r in 0..(end - base) {
+                    if on[r] > 1 || close[r] {
+                        dropped[base + r] = true;
+                    }
+                }
+                base = end;
+            }
+        }
+        ScannerKind::Gpu => screen_dropped_gpu(source, guides, t, &mut dropped)?,
+    }
+    Ok(dropped)
+}
+
+/// GPU pre-screen via `scan_counts_prefilter(max_mm = t)` (per-guide counts at
+/// mm 0..=t, no hit download). Drops a guide if it has a 0-mm duplicate
+/// (`counts[0] > 1`) or any `1..=t`-mm off-target.
+#[cfg(feature = "gpu")]
+fn screen_dropped_gpu(
+    source: &dyn BinSource,
+    guides: &[Guide],
+    t: u8,
+    dropped: &mut [bool],
+) -> Result<(), DiscoverError> {
+    let scanner =
+        crispr_scan_gpu::GpuScanner::new(source).map_err(|e| DiscoverError::Gpu(e.to_string()))?;
+    let stride = t as usize + 1;
+    const SCREEN_CHUNK: usize = 1 << 20;
+    let mut base = 0usize;
+    while base < guides.len() {
+        let end = (base + SCREEN_CHUNK).min(guides.len());
+        let counts = scanner.scan_counts_prefilter(&guides[base..end], t);
+        for r in 0..(end - base) {
+            let c0 = counts[r * stride];
+            let close = (1..=t as usize).any(|m| counts[r * stride + m] > 0);
+            if c0 > 1 || close {
+                dropped[base + r] = true;
+            }
+        }
+        base = end;
+    }
+    Ok(())
+}
+
+/// Stub for non-GPU builds.
+#[cfg(not(feature = "gpu"))]
+fn screen_dropped_gpu(
+    _source: &dyn BinSource,
+    _guides: &[Guide],
+    _t: u8,
+    _dropped: &mut [bool],
+) -> Result<(), DiscoverError> {
+    Err(DiscoverError::Gpu(
+        "streaming --output-mode with --scanner gpu requires a binary built \
+         with `cargo build --features gpu`"
+            .to_string(),
+    ))
+}
+
 /// GPU streaming loop: build the resident scanner once, then two-pass each
 /// batch — `scan_counts_prefilter` to size the output buffer exactly, then
 /// `scan_raw` to emit — and accumulate via [`accumulate_hit`].
@@ -861,6 +1000,7 @@ fn run_discover_streaming(
 fn streaming_gpu_loop(
     source: &dyn BinSource,
     guides: &[Guide],
+    abs_map: Option<&[usize]>,
     batch_cap: usize,
     max_mm: u8,
     cfd_threshold: f64,
@@ -887,12 +1027,13 @@ fn streaming_gpu_loop(
             .scan_prefilter_raw(batch, max_mm, out_cap)
             .map_err(|e| DiscoverError::Gpu(e.to_string()))?;
         for k in 0..raw.guide.len() {
-            let abs = base + raw.guide[k] as usize;
+            let rel = base + raw.guide[k] as usize;
+            let abs = abs_map.map_or(rel, |m| m[rel]);
             let e = scanner.entry(raw.entry[k]);
             let mm = u8::try_from(raw.mm[k]).unwrap_or(u8::MAX);
             accumulate_hit(
                 abs,
-                guides[abs].site,
+                guides[rel].site,
                 e.site(),
                 e.position(),
                 mm,
@@ -918,6 +1059,7 @@ fn streaming_gpu_loop(
 fn streaming_gpu_loop(
     _source: &dyn BinSource,
     _guides: &[Guide],
+    _abs_map: Option<&[usize]>,
     _batch_cap: usize,
     _max_mm: u8,
     _cfd_threshold: f64,
@@ -946,6 +1088,7 @@ fn streaming_gpu_loop(
 fn streaming_gpu_cfd_mode1(
     source: &dyn BinSource,
     guides: &[Guide],
+    abs_map: Option<&[usize]>,
     max_mm: u8,
     ot_cap: u32,
     off_sum_cap: f64,
@@ -961,7 +1104,7 @@ fn streaming_gpu_cfd_mode1(
             .scan_cfd_specificity(&guides[base..end], max_mm, ot_cap, off_sum_cap)
             .map_err(|e| DiscoverError::Gpu(e.to_string()))?;
         for (j, a) in aggs.iter().enumerate() {
-            let abs = base + j;
+            let abs = abs_map.map_or(base + j, |m| m[base + j]);
             acc.off_sum[abs] = a.off_sum;
             acc.max_cfd[abs] = a.max_cfd;
             acc.on_count[abs] = a.on_count;
@@ -978,6 +1121,7 @@ fn streaming_gpu_cfd_mode1(
 fn streaming_gpu_cfd_mode1(
     _source: &dyn BinSource,
     _guides: &[Guide],
+    _abs_map: Option<&[usize]>,
     _max_mm: u8,
     _ot_cap: u32,
     _off_sum_cap: f64,
