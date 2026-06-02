@@ -156,56 +156,88 @@ def _build_details(
 ) -> Dict[str, int]:
     """Write crisprDetails.tab and return ``id -> uncompressed byte offset``.
 
-    One line per non-dropped guide with off_target_count > 0:
-    ``mismatchCounts<TAB>offtargetList``. The list is the Mode-2 off-targets
-    (browser ``pos``/strand/round(cfd*1000)) sorted by score desc, capped at
-    ``list_cap``; blanked (counts kept) when off_target_count > blank_threshold.
-    Guides with no line get _offset 0 ("No off-targets found").
+    **Streams** an arbitrarily large Mode-2 TSV: external-sort by guide_id, then
+    group on the fly, so peak memory is one guide's off-targets — not the whole
+    (tens-of-GB) file. One line per non-dropped guide with off_target_count > 0:
+    ``mismatchCounts<TAB>offtargetList`` (browser ``pos``/strand/round(cfd*1000),
+    score desc). ``list_cap <= 0`` keeps the full list; ``blank_threshold <= 0``
+    never blanks. Guides with no line get _offset 0 ("No off-targets found").
     """
-    # guide_id (int) -> id (composite string), non-dropped guides only
+    import shlex
+
     side = pd.read_csv(sidecar_path, sep="\t", usecols=["guide_id", "id"])
-    gid_to_id = dict(zip(side["guide_id"].to_numpy(), side["id"].to_numpy()))
+    gid_to_id = dict(zip(side["guide_id"].to_numpy().tolist(), side["id"].to_numpy().tolist()))
 
-    # Mode-2 -> per-guide capped, score-sorted off-target list string.
-    id_to_list: Dict[str, str] = {}
-    if os.path.getsize(mode2_path) > 0:
-        ot = pd.read_csv(mode2_path, sep="\t")
-        if len(ot):
-            pos = np.where(ot["strand"].to_numpy() == "+", ot["start"].to_numpy(), ot["start"].to_numpy() + 3)
-            score_int = np.rint(ot["cfd"].to_numpy() * 1000).astype(int)
-            ot = ot.assign(
-                _entry=(
-                    ot["chrom"].astype(str)
-                    + ";"
-                    + pd.Series(pos, index=ot.index).astype(str)
-                    + ot["strand"].astype(str)
-                    + ";"
-                    + pd.Series(score_int, index=ot.index).astype(str)
-                ),
-                _score=score_int,
-            )
-            ot = ot.sort_values(["guide_id", "_score"], ascending=[True, False])
-            ot = ot[ot.groupby("guide_id").cumcount() < list_cap]
-            for gid, entries in ot.groupby("guide_id")["_entry"]:
-                gid_to_id_v = gid_to_id.get(gid)
-                if gid_to_id_v is not None:
-                    id_to_list[gid_to_id_v] = "|".join(entries)
+    m1 = mode1.set_index("id")
+    counts_by_id = m1["mismatch_counts"].fillna("").astype(str).to_dict()
+    oc_by_id = pd.to_numeric(m1["off_target_count"], errors="coerce").to_dict()
 
-    # Write the tab file in guide order, capturing offsets. Counts come from
-    # Mode-1 (true totals); the header occupies byte 0 so every real row is > 0.
+    cap = list_cap if list_cap and list_cap > 0 else None
+    blank = blank_threshold if blank_threshold and blank_threshold > 0 else None
     offsets: Dict[str, int] = {}
-    keep = mode1[(mode1["dropped"] == 0) & (mode1["off_target_count"].fillna(0) > 0)]
-    with open(details_path, "wb") as fh:
-        fh.write(b"_mismatchCounts\t_crisprOfftargets\n")
-        for gid_str, mmc, oc in zip(
-            keep["id"].to_numpy(),
-            keep["mismatch_counts"].to_numpy(),
-            keep["off_target_count"].to_numpy(),
-        ):
-            counts = str(mmc).replace(";", ",") if isinstance(mmc, str) and mmc else "0"
-            lst = "" if oc > blank_threshold else id_to_list.get(gid_str, "")
-            offsets[gid_str] = fh.tell()
-            fh.write(f"{counts}\t{lst}\n".encode("ascii"))
+    seen: set = set()
+    have_ot = os.path.exists(mode2_path) and os.path.getsize(mode2_path) > 0
+
+    with open(details_path, "wb") as out:
+        out.write(b"_mismatchCounts\t_crisprOfftargets\n")
+
+        def _emit(gid_str: str, lst: str) -> None:
+            counts = counts_by_id.get(gid_str, "").replace(";", ",") or "0"
+            offsets[gid_str] = out.tell()
+            out.write(f"{counts}\t{lst}\n".encode("ascii"))
+
+        if have_ot:
+            # External-sort the Mode-2 TSV by guide_id (numeric first field;
+            # default whitespace split works since chrom names have no spaces).
+            # Temp files land on the output fs; then stream + group one guide at
+            # a time so memory stays bounded regardless of file size.
+            sorted_path = mode2_path + ".byguide"
+            tmp = os.path.dirname(os.path.abspath(details_path)) or "."
+            cmd = (
+                f"set -o pipefail; tail -n +2 {shlex.quote(mode2_path)} | "
+                f"LC_ALL=C sort -k1,1n -S 16G -T {shlex.quote(tmp)} > {shlex.quote(sorted_path)}"
+            )
+            subprocess.run(cmd, shell=True, check=True, executable="/bin/bash")
+
+            def _flush(gid: int, entries: list) -> None:
+                gid_str = gid_to_id.get(gid)
+                if gid_str is None:
+                    return
+                seen.add(gid_str)
+                oc = oc_by_id.get(gid_str)
+                if blank is not None and oc is not None and oc > blank:
+                    _emit(gid_str, "")
+                    return
+                entries.sort(key=lambda e: e[1], reverse=True)
+                if cap is not None:
+                    entries = entries[:cap]
+                _emit(gid_str, "|".join(e[0] for e in entries))
+
+            cur = None
+            entries: list = []
+            with open(sorted_path) as f:
+                for line in f:
+                    p = line.rstrip("\n").split("\t")
+                    gid = int(p[0])
+                    if gid != cur:
+                        if cur is not None:
+                            _flush(cur, entries)
+                        cur, entries = gid, []
+                    start, strand = int(p[2]), p[3]
+                    pos = start if strand == "+" else start + 3
+                    si = int(round(float(p[5]) * 1000))
+                    entries.append((f"{p[1]};{pos}{strand};{si}", si))
+            if cur is not None:
+                _flush(cur, entries)
+            os.remove(sorted_path)
+
+        # Guides with off-targets but none in Mode-2 (all below the CFD floor):
+        # keep the counts, empty list. Dropped guides (off_target_count NaN) get
+        # no line -> _offset 0.
+        for gid_str, oc in oc_by_id.items():
+            if gid_str in seen or oc is None or pd.isna(oc) or oc <= 0:
+                continue
+            _emit(gid_str, "")
     return offsets
 
 
