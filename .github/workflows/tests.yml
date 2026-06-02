@@ -25,7 +25,8 @@ jobs:
       - name: Install conda dependencies
         run: |
           conda install -y -c conda-forge -c bioconda \
-            biopython pybedtools pybigwig pandas numpy scipy h5py joblib scikit-learn
+            biopython pybedtools pybigwig pandas numpy scipy h5py joblib scikit-learn \
+            viennarna
 
       - name: Install pip dependencies
         run: |

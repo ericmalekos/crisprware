@@ -172,13 +172,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
     parser.add_argument(
         "--cas9_scorer",
-        choices=["none", "deepspcas9"],
+        choices=["none", "deepspcas9", "deephf_wt_u6", "deephf_esp", "deephf_hf"],
         default="none",
         help="Additional SpCas9 on-target scorer to run alongside RS3. \
             deepspcas9: Kim 2019 inception-CNN (Sci Adv); 30-nt context \
             (4 + 20 protospacer + 3 PAM + 3 downstream); unbounded \
-            regression. Runs in parallel with --tracr (no mutex). \
-            [default: none]",
+            regression. deephf_*: Wang 2019 BiLSTM (Nat Commun) for three \
+            Cas9 variants -- wildtype SpCas9 (wt_u6), eSpCas9 (esp), \
+            SpCas9-HF1 (hf); 23-nt protospacer+PAM input; output in [0,1]. \
+            Runs in parallel with --tracr (no mutex). [default: none]",
     )
 
     parser.add_argument(
@@ -187,6 +189,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default=float("-inf"),
         help="Minimum DeepSpCas9 score (unbounded regression, ~[0, 100]). \
             Applied after scoring; analogous to --min_rs3. [default: None]",
+    )
+
+    parser.add_argument(
+        "--min_deephf",
+        type=float,
+        default=float("-inf"),
+        help="Minimum DeepHF score (probability, [0, 1]). Applied to whichever \
+            deephf_* variant is selected. [default: None]",
     )
 
     parser.add_argument(
@@ -551,6 +561,39 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             gRNADF = gRNADF[gRNADF["deepspcas9_score"] > args.min_deepspcas9]
             print(f"\tAfter dropping DeepSpCas9 scores below {args.min_deepspcas9}: {before} -> {len(gRNADF)}\n")
         final_columns += ["deepspcas9_score"]
+
+    if args.cas9_scorer.startswith("deephf_"):
+        from crisprware.scorers import deephf as _deephf
+
+        variant = args.cas9_scorer.removeprefix("deephf_")  # wt_u6, esp, or hf
+        col_name = f"deephf_{variant}_score"
+        print(f"\n\tBeginning DeepHF SpCas9 on-target scoring (variant={variant})\n")
+        # DeepHF takes 23-nt protospacer+PAM. The pam column in the id field
+        # is generic ("NGG"); the actual 3-bp PAM bases live in the context
+        # column immediately after the 20-bp protospacer. Slice 23 nt out by
+        # finding the protospacer (from the sequence column) inside context.
+        composite = gRNADF["id,sequence,pam,chromosome,position,sense"].str.split(",")
+        protospacers = composite.str[1]
+
+        def _extract_23(row):
+            pro = row["protospacer"]
+            ctx = row["context"]
+            i = ctx.find(pro)
+            if i < 0 or i + 23 > len(ctx):
+                return None
+            return ctx[i:i + 23]
+
+        tmp_df = pd.DataFrame({"protospacer": protospacers.tolist(), "context": gRNADF["context"].tolist()})
+        seq23 = tmp_df.apply(_extract_23, axis=1)
+        gRNADF[col_name] = _deephf.compute_deephf_scores(
+            seq23.tolist(), variant=variant, threads=args.threads, chunk_size=args.chunk_size
+        )
+        gRNADF[col_name] = gRNADF[col_name].round(8)
+        if args.min_deephf > float("-inf"):
+            before = len(gRNADF)
+            gRNADF = gRNADF[gRNADF[col_name] > args.min_deephf]
+            print(f"\tAfter dropping DeepHF scores below {args.min_deephf}: {before} -> {len(gRNADF)}\n")
+        final_columns += [col_name]
 
     gRNADF.loc[:, "id"] = gRNADF["id,sequence,pam,chromosome,position,sense"].str.split(",").str[0]
     guidescan_dfs = []
