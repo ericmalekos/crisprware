@@ -15,6 +15,7 @@ from typing import List, Optional, Union
 import pandas as pd
 import subprocess
 import argparse
+import time
 from rs3.seq import predict_seq
 
 # from scipy.stats import norm
@@ -527,7 +528,9 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         index,
     ]
     print("\n\tUCSC track: crispr-ots off-target pass\n\t" + " ".join(cmd) + "\n")
+    _t_enum = time.time()
     subprocess.run(cmd, check=True)
+    print(f"\n\t[TIMING] off-target crispr-ots enumerate: {time.time() - _t_enum:.1f}s\n", flush=True)
 
     comp = gRNADF[composite].str.split(",", expand=True)
     guide_df = pd.DataFrame(
@@ -545,6 +548,7 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         if c in gRNADF.columns:
             guide_df[c] = gRNADF[c].to_numpy()
 
+    _t_asm = time.time()
     art = ucsc_track.build_track(
         guide_df,
         enum_out,
@@ -554,6 +558,7 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         blank_threshold=args.ucscgb_blank_threshold,
         run_tools=True,
     )
+    print(f"\n\t[TIMING] track assembly (sort+stream+bigBed+bgzip): {time.time() - _t_asm:.1f}s", flush=True)
     print("\n\tUCSC Cas12a track written:")
     for k, v in art.items():
         print(f"\t  {k}: {v}")
@@ -665,9 +670,11 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         from crisprware.scorers import enpam_gb as _enpam_gb
 
         print("\n\tBeginning enPAM+GB Cas12a on-target scoring\n")
+        _t = time.time()
         gRNADF["enpam_gb_score"] = _enpam_gb.compute_enpam_gb_scores(
             gRNADF["context"].tolist(), threads=args.threads, chunk_size=args.chunk_size
         )
+        print(f"\t[TIMING] enpam_gb on-target ({len(gRNADF)} guides, CPU): {time.time() - _t:.1f}s", flush=True)
         gRNADF["enpam_gb_score"] = gRNADF["enpam_gb_score"].round(8)
         if args.min_enpam_gb > float("-inf"):
             before = len(gRNADF)
@@ -679,9 +686,11 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         from crisprware.scorers import deepcpf1 as _deepcpf1
 
         print("\n\tBeginning DeepCpf1 Cas12a on-target scoring\n")
+        _t = time.time()
         gRNADF["deepcpf1_score"] = _deepcpf1.compute_deepcpf1_scores(
             gRNADF["context"].tolist(), threads=args.threads, chunk_size=args.chunk_size
         )
+        print(f"\t[TIMING] deepcpf1 on-target ({len(gRNADF)} guides, CPU TF): {time.time() - _t:.1f}s", flush=True)
         gRNADF["deepcpf1_score"] = gRNADF["deepcpf1_score"].round(8)
         if args.min_deepcpf1 > float("-inf"):
             before = len(gRNADF)
@@ -693,8 +702,12 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         from crisprware.scorers import enseq_deepcpf1 as _enseq
 
         print("\n\tBeginning enseq-DeepCpf1 Cas12a on-target scoring\n")
+        _t = time.time()
         gRNADF["enseq_deepcpf1_score"] = _enseq.compute_enseq_deepcpf1_scores(
             gRNADF["context"].tolist(), threads=args.threads, chunk_size=args.chunk_size
+        )
+        print(
+            f"\t[TIMING] enseq_deepcpf1 on-target ({len(gRNADF)} guides, CPU TF): {time.time() - _t:.1f}s", flush=True
         )
         gRNADF["enseq_deepcpf1_score"] = gRNADF["enseq_deepcpf1_score"].round(8)
         if args.min_enseq_deepcpf1 > float("-inf"):
