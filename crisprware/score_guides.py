@@ -127,13 +127,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cas12a_scorer",
         choices=["none", "enpam_gb", "deepcpf1", "enseq_deepcpf1", "seq_deepcpf1variants", "both"],
-        default="none",
-        help="Cas12a on-target scorer. enpam_gb for en(As)Cas12a; deepcpf1 \
-            for wildtype AsCas12a/LbCas12a (Kim 2018); enseq_deepcpf1 for \
-            wildtype AsCas12a (Chen 2025, modern); seq_deepcpf1variants for \
-            variant-specific scoring (requires --cas12a_variant). \
-            'both' runs enpam_gb + deepcpf1 in parallel. Mutually exclusive \
-            with --tracr (RS3 is SpCas9-only); implies --skip_rs3. [default: none]",
+        default=["none"],
+        nargs="+",
+        help="One or more Cas12a on-target scorers (space-separated). \
+            enpam_gb for en(As)Cas12a; deepcpf1 for wildtype AsCas12a/LbCas12a \
+            (Kim 2018); enseq_deepcpf1 for wildtype AsCas12a (Chen 2025, modern); \
+            seq_deepcpf1variants for variant-specific scoring (requires \
+            --cas12a_variant). 'both' is the legacy alias for 'enpam_gb deepcpf1'. \
+            Multiple values may be combined (e.g. --cas12a_scorer enpam_gb \
+            deepcpf1 enseq_deepcpf1). Mutually exclusive with --tracr (RS3 is \
+            SpCas9-only); implies --skip_rs3. [default: none]",
     )
 
     parser.add_argument(
@@ -173,14 +176,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cas9_scorer",
         choices=["none", "deepspcas9", "deephf_wt_u6", "deephf_esp", "deephf_hf"],
-        default="none",
-        help="Additional SpCas9 on-target scorer to run alongside RS3. \
-            deepspcas9: Kim 2019 inception-CNN (Sci Adv); 30-nt context \
-            (4 + 20 protospacer + 3 PAM + 3 downstream); unbounded \
-            regression. deephf_*: Wang 2019 BiLSTM (Nat Commun) for three \
-            Cas9 variants -- wildtype SpCas9 (wt_u6), eSpCas9 (esp), \
-            SpCas9-HF1 (hf); 23-nt protospacer+PAM input; output in [0,1]. \
-            Runs in parallel with --tracr (no mutex). [default: none]",
+        default=["none"],
+        nargs="+",
+        help="One or more additional SpCas9 on-target scorers (space-separated) \
+            to run alongside RS3. deepspcas9: Kim 2019 inception-CNN (Sci Adv); \
+            30-nt context (4 + 20 protospacer + 3 PAM + 3 downstream); \
+            unbounded regression. deephf_*: Wang 2019 BiLSTM (Nat Commun) for \
+            three Cas9 variants -- wildtype SpCas9 (wt_u6), eSpCas9 (esp), \
+            SpCas9-HF1 (hf); 23-nt protospacer+PAM input; output in [0, 1]. \
+            Multiple values may be combined (e.g. --cas9_scorer deepspcas9 \
+            deephf_wt_u6 deephf_esp deephf_hf). Runs in parallel with --tracr \
+            (no mutex). [default: none]",
     )
 
     parser.add_argument(
@@ -427,7 +433,26 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         for index in args.guidescan2_indices:
             check_files_exist(index)
 
-    if args.cas12a_scorer != "none":
+    # Normalize the multi-value scorer args into sets. Accept str-or-list shape
+    # so programmatic callers (e.g. tests passing a Namespace) keep working.
+    def _to_set(v):
+        if v is None:
+            return set()
+        if isinstance(v, str):
+            return {v}
+        return set(v)
+
+    cas12a_scorers = _to_set(args.cas12a_scorer)
+    cas9_scorers = _to_set(args.cas9_scorer)
+    # 'both' is a legacy alias for {enpam_gb, deepcpf1}
+    if "both" in cas12a_scorers:
+        cas12a_scorers.discard("both")
+        cas12a_scorers.update({"enpam_gb", "deepcpf1"})
+    # 'none' is meaningless if any real scorer is also requested
+    cas12a_scorers.discard("none")
+    cas9_scorers.discard("none")
+
+    if cas12a_scorers:
         if args.tracr:
             raise ValueError(
                 "\n\t--tracr (SpCas9 RuleSet3) and --cas12a_scorer are mutually exclusive."
@@ -435,8 +460,8 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             )
         args.skip_rs3 = True
 
-    if args.cas12a_scorer == "seq_deepcpf1variants" and not args.cas12a_variant:
-        raise ValueError("\n\t--cas12a_variant is required when --cas12a_scorer is seq_deepcpf1variants.\n")
+    if "seq_deepcpf1variants" in cas12a_scorers and not args.cas12a_variant:
+        raise ValueError("\n\t--cas12a_variant is required when --cas12a_scorer includes seq_deepcpf1variants.\n")
 
     if not args.skip_rs3 and not args.tracr:
         raise ValueError(
@@ -485,7 +510,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         )
         print(f"\n\tAfter dropping RS3 cleavage scores below {args.min_rs3}:\t{len(gRNADF)}\n")
 
-    if args.cas12a_scorer in ("enpam_gb", "both"):
+    if "enpam_gb" in cas12a_scorers:
         from crisprware.scorers import enpam_gb as _enpam_gb
 
         print("\n\tBeginning enPAM+GB Cas12a on-target scoring\n")
@@ -499,7 +524,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             print(f"\tAfter dropping enPAM+GB scores below {args.min_enpam_gb}: {before} -> {len(gRNADF)}\n")
         final_columns += ["enpam_gb_score"]
 
-    if args.cas12a_scorer in ("deepcpf1", "both"):
+    if "deepcpf1" in cas12a_scorers:
         from crisprware.scorers import deepcpf1 as _deepcpf1
 
         print("\n\tBeginning DeepCpf1 Cas12a on-target scoring\n")
@@ -513,7 +538,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             print(f"\tAfter dropping DeepCpf1 scores below {args.min_deepcpf1}: {before} -> {len(gRNADF)}\n")
         final_columns += ["deepcpf1_score"]
 
-    if args.cas12a_scorer == "enseq_deepcpf1":
+    if "enseq_deepcpf1" in cas12a_scorers:
         from crisprware.scorers import enseq_deepcpf1 as _enseq
 
         print("\n\tBeginning enseq-DeepCpf1 Cas12a on-target scoring\n")
@@ -529,7 +554,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             )
         final_columns += ["enseq_deepcpf1_score"]
 
-    if args.cas12a_scorer == "seq_deepcpf1variants":
+    if "seq_deepcpf1variants" in cas12a_scorers:
         from crisprware.scorers import seq_deepcpf1variants as _variants
 
         canonical = _variants._normalize_variant(args.cas12a_variant)
@@ -548,7 +573,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             print(f"\tAfter dropping scores below {args.min_enseq_deepcpf1}: {before} -> {len(gRNADF)}\n")
         final_columns += [col_name]
 
-    if args.cas9_scorer == "deepspcas9":
+    if "deepspcas9" in cas9_scorers:
         from crisprware.scorers import deepspcas9 as _deepspcas9
 
         print("\n\tBeginning DeepSpCas9 SpCas9 on-target scoring\n")
@@ -562,16 +587,16 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             print(f"\tAfter dropping DeepSpCas9 scores below {args.min_deepspcas9}: {before} -> {len(gRNADF)}\n")
         final_columns += ["deepspcas9_score"]
 
-    if args.cas9_scorer.startswith("deephf_"):
+    deephf_variants = sorted(
+        s.removeprefix("deephf_") for s in cas9_scorers if s.startswith("deephf_")
+    )
+    if deephf_variants:
         from crisprware.scorers import deephf as _deephf
 
-        variant = args.cas9_scorer.removeprefix("deephf_")  # wt_u6, esp, or hf
-        col_name = f"deephf_{variant}_score"
-        print(f"\n\tBeginning DeepHF SpCas9 on-target scoring (variant={variant})\n")
-        # DeepHF takes 23-nt protospacer+PAM. The pam column in the id field
-        # is generic ("NGG"); the actual 3-bp PAM bases live in the context
-        # column immediately after the 20-bp protospacer. Slice 23 nt out by
-        # finding the protospacer (from the sequence column) inside context.
+        # Slice 23 nt (protospacer + actual PAM bases) from each guide's
+        # context column. The composite id field's pam slot is generic
+        # ("NGG"); the real 3-bp PAM is in the context, immediately after
+        # the 20-bp protospacer.
         composite = gRNADF["id,sequence,pam,chromosome,position,sense"].str.split(",")
         protospacers = composite.str[1]
 
@@ -584,16 +609,20 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             return ctx[i:i + 23]
 
         tmp_df = pd.DataFrame({"protospacer": protospacers.tolist(), "context": gRNADF["context"].tolist()})
-        seq23 = tmp_df.apply(_extract_23, axis=1)
-        gRNADF[col_name] = _deephf.compute_deephf_scores(
-            seq23.tolist(), variant=variant, threads=args.threads, chunk_size=args.chunk_size
-        )
-        gRNADF[col_name] = gRNADF[col_name].round(8)
-        if args.min_deephf > float("-inf"):
-            before = len(gRNADF)
-            gRNADF = gRNADF[gRNADF[col_name] > args.min_deephf]
-            print(f"\tAfter dropping DeepHF scores below {args.min_deephf}: {before} -> {len(gRNADF)}\n")
-        final_columns += [col_name]
+        seq23 = tmp_df.apply(_extract_23, axis=1).tolist()
+
+        for variant in deephf_variants:
+            col_name = f"deephf_{variant}_score"
+            print(f"\n\tBeginning DeepHF SpCas9 on-target scoring (variant={variant})\n")
+            gRNADF[col_name] = _deephf.compute_deephf_scores(
+                seq23, variant=variant, threads=args.threads, chunk_size=args.chunk_size
+            )
+            gRNADF[col_name] = gRNADF[col_name].round(8)
+            if args.min_deephf > float("-inf"):
+                before = len(gRNADF)
+                gRNADF = gRNADF[gRNADF[col_name] > args.min_deephf]
+                print(f"\tAfter dropping DeepHF scores below {args.min_deephf}: {before} -> {len(gRNADF)}\n")
+            final_columns += [col_name]
 
     gRNADF.loc[:, "id"] = gRNADF["id,sequence,pam,chromosome,position,sense"].str.split(",").str[0]
     guidescan_dfs = []
