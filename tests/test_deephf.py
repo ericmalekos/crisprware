@@ -7,6 +7,7 @@ running in the basilisk env. The 11-dim bio-feature vector is
 reproduced with vendored Python (ViennaRNA for stem/dG, Biopython for
 melting temps, pure-Python lookup table for dG_binding).
 """
+
 from __future__ import annotations
 
 import os
@@ -21,9 +22,7 @@ sys.path.insert(0, REPO_ROOT)
 
 from crisprware.scorers import deephf
 
-WEIGHTS_DIR = os.path.join(
-    REPO_ROOT, "crisprware", "scorers", "weights", "wang_2019_deephf"
-)
+WEIGHTS_DIR = os.path.join(REPO_ROOT, "crisprware", "scorers", "weights", "wang_2019_deephf")
 REF_TSV = os.path.join(REPO_ROOT, "tests", "test_data", "deephf_ref_scores.tsv")
 
 
@@ -89,14 +88,19 @@ def test_bio_features_match_reference():
     # Captured from basilisk on the same sequences:
     #   ATCGATGCTGATGCTAGATAAGG -> [0, -2.4, -21.8, -11.9, 0, 1, 8, 48.60039, -33.41291, 14.34474, -54.56225]
     #   GGAAGTCTGGAGTCTCCAGGTGG -> [0, -5.5, -26.2, -16.3, 1, 0, 12, 54.56942, -11.30664, 16.07473, -61.37201]
-    feat = deephf.compute_bio_features([
-        "ATCGATGCTGATGCTAGATAAGG",
-        "GGAAGTCTGGAGTCTCCAGGTGG",
-    ])
-    expected = np.array([
-        [0., -2.4, -21.8, -11.9, 0., 1., 8., 48.60038976, -33.41290629, 14.34473886, -54.56225157],
-        [0., -5.5, -26.2, -16.3, 1., 0., 12., 54.56942238, -11.30663628, 16.07473406, -61.37201071],
-    ], dtype=np.float32)
+    feat = deephf.compute_bio_features(
+        [
+            "ATCGATGCTGATGCTAGATAAGG",
+            "GGAAGTCTGGAGTCTCCAGGTGG",
+        ]
+    )
+    expected = np.array(
+        [
+            [0.0, -2.4, -21.8, -11.9, 0.0, 1.0, 8.0, 48.60038976, -33.41290629, 14.34473886, -54.56225157],
+            [0.0, -5.5, -26.2, -16.3, 1.0, 0.0, 12.0, 54.56942238, -11.30663628, 16.07473406, -61.37201071],
+        ],
+        dtype=np.float32,
+    )
     np.testing.assert_allclose(feat, expected, atol=1e-3)
 
 

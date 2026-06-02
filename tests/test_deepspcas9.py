@@ -5,6 +5,7 @@ Python 2.7 + TF 1.4 reference in crisprScore's basilisk env. Reference
 output (`deepspcas9_ref_output.txt`) was generated once via
 `getDeepSpCas9Scores.py` on the 7-sequence fixture `deepspcas9_test_input.tsv`.
 """
+
 from __future__ import annotations
 
 import os
@@ -18,9 +19,7 @@ sys.path.insert(0, REPO_ROOT)
 
 from crisprware.scorers import deepspcas9
 
-WEIGHTS = os.path.join(
-    REPO_ROOT, "crisprware", "scorers", "weights", "kim_2019_deepspcas9", "deepspcas9.npz"
-)
+WEIGHTS = os.path.join(REPO_ROOT, "crisprware", "scorers", "weights", "kim_2019_deepspcas9", "deepspcas9.npz")
 TEST_INPUT = os.path.join(REPO_ROOT, "tests", "test_data", "deepspcas9_test_input.tsv")
 REF_OUTPUT = os.path.join(REPO_ROOT, "tests", "test_data", "deepspcas9_ref_output.txt")
 
@@ -77,8 +76,7 @@ def test_predict_matches_tf1_reference(model):
     scored = np.array(deepspcas9.predict(seqs, model=model), dtype=float)
     max_diff = float(np.max(np.abs(scored - ref)))
     assert max_diff < 1e-3, (
-        f"max abs diff {max_diff} exceeds float32 noise tolerance.\n"
-        f"scored={scored.tolist()}\nref={ref.tolist()}"
+        f"max abs diff {max_diff} exceeds float32 noise tolerance.\nscored={scored.tolist()}\nref={ref.tolist()}"
     )
 
 

@@ -32,6 +32,7 @@ ViennaRNA (Python `RNA` module, pip-installable) is required only for
 the `dG` and `stem` features; the other 9 features are pure
 numpy/Biopython.
 """
+
 from __future__ import annotations
 
 import os
@@ -47,16 +48,26 @@ _CHAR_TO_ID = {"A": 2, "T": 3, "C": 4, "G": 5, "a": 2, "t": 3, "c": 4, "g": 5}
 _START_ID = 1
 
 # scaffold sequence appended to the 20-bp guide for RNAfold (from feature_util.py:336)
-_TRACR_SCAFFOLD = (
-    "GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGCTTT"
-)
+_TRACR_SCAFFOLD = "GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGCTTT"
 
 # Nearest-neighbor dinucleotide free energies for dG_binding (feature_util.py:418-422)
 _DG_DINUC = {
-    "aa": -0.2, "tt": -1.0, "at": -0.9, "ta": -0.6,
-    "ca": -1.6, "tg": -0.9, "ct": -1.8, "ag": -0.9,
-    "ga": -1.5, "tc": -1.3, "gt": -2.1, "ac": -1.1,
-    "cg": -1.7, "gc": -2.7, "gg": -2.1, "cc": -2.9,
+    "aa": -0.2,
+    "tt": -1.0,
+    "at": -0.9,
+    "ta": -0.6,
+    "ca": -1.6,
+    "tg": -0.9,
+    "ct": -1.8,
+    "ag": -0.9,
+    "ga": -1.5,
+    "tc": -1.3,
+    "gt": -2.1,
+    "ac": -1.1,
+    "cg": -1.7,
+    "gc": -2.7,
+    "gg": -2.1,
+    "cc": -2.9,
 }
 _DG_INIT = 3.1
 
@@ -76,10 +87,7 @@ _VARIANT_TO_WEIGHTS = {
 def _weights_path(variant: str) -> str:
     fn = _VARIANT_TO_WEIGHTS.get(variant)
     if fn is None:
-        raise ValueError(
-            f"Unknown DeepHF variant {variant!r}. "
-            f"Available: {sorted(_VARIANT_TO_WEIGHTS)}"
-        )
+        raise ValueError(f"Unknown DeepHF variant {variant!r}. Available: {sorted(_VARIANT_TO_WEIGHTS)}")
     try:
         return str(resources.files(__package__).joinpath("weights", "wang_2019_deephf", fn))
     except (AttributeError, ModuleNotFoundError):
@@ -120,7 +128,7 @@ def _dG_binding(seq: str) -> float:
     s = seq.lower().replace("u", "t")
     total = _DG_INIT
     for i in range(len(s) - 1):
-        total += _DG_DINUC.get(s[i:i + 2], 0.0)
+        total += _DG_DINUC.get(s[i : i + 2], 0.0)
     return total
 
 
@@ -145,9 +153,9 @@ def _tm_features(s21: str) -> tuple:
         return float(Tm.Tm_NN(seq, dnac1=25, dnac2=25, Na=50))
 
     seg_full = _tm(s21)
-    seg_5mer_end = _tm(s21[_TM_SEGMENTS[0][0]:_TM_SEGMENTS[0][1]])
-    seg_8mer_mid = _tm(s21[_TM_SEGMENTS[1][0]:_TM_SEGMENTS[1][1]])
-    seg_4mer_start = _tm(s21[_TM_SEGMENTS[2][0]:_TM_SEGMENTS[2][1]])
+    seg_5mer_end = _tm(s21[_TM_SEGMENTS[0][0] : _TM_SEGMENTS[0][1]])
+    seg_8mer_mid = _tm(s21[_TM_SEGMENTS[1][0] : _TM_SEGMENTS[1][1]])
+    seg_4mer_start = _tm(s21[_TM_SEGMENTS[2][0] : _TM_SEGMENTS[2][1]])
     return (seg_full, seg_5mer_end, seg_8mer_mid, seg_4mer_start)
 
 
@@ -168,7 +176,7 @@ def _rna_fold_features(s21: str) -> tuple:
 
     fc99 = RNA.fold_compound(guide_rna + _TRACR_SCAFFOLD.replace("T", "U"))
     structure99, _ = fc99.mfe()
-    aligned_stem = structure99[18:18 + len(_STEM_PATTERN)]
+    aligned_stem = structure99[18 : 18 + len(_STEM_PATTERN)]
     stem = 1 if aligned_stem == _STEM_PATTERN else 0
 
     return (stem, float(dG))
@@ -202,9 +210,17 @@ def compute_bio_features(seqs_23: Sequence[str]) -> np.ndarray:
         gc_above, gc_below, gc_cnt = _gc_features(s21)
         tm_full, tm_5e, tm_8m, tm_4s = _tm_features(s21)
         feat[i] = [
-            stem, dG, dGb20, dGb7to20,
-            gc_above, gc_below, gc_cnt,
-            tm_full, tm_5e, tm_8m, tm_4s,
+            stem,
+            dG,
+            dGb20,
+            dGb7to20,
+            gc_above,
+            gc_below,
+            gc_cnt,
+            tm_full,
+            tm_5e,
+            tm_8m,
+            tm_4s,
         ]
     return feat
 
@@ -216,9 +232,7 @@ def load_model(variant: str = "wt_u6", weights_path: Optional[str] = None):
 
     path = weights_path or _weights_path(variant)
     if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"DeepHF weights for variant {variant!r} not found at {path}."
-        )
+        raise FileNotFoundError(f"DeepHF weights for variant {variant!r} not found at {path}.")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return tf.keras.models.load_model(path, compile=False)
@@ -264,7 +278,7 @@ def compute_deephf_scores(
     model = load_model(variant, weights_path=weights_path)
     scores: List[float] = []
     for i in range(0, len(seqs), chunk_size):
-        scores.extend(predict(seqs[i:i + chunk_size], variant=variant, model=model))
+        scores.extend(predict(seqs[i : i + chunk_size], variant=variant, model=model))
     return scores
 
 
