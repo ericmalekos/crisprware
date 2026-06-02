@@ -14,7 +14,6 @@ Usage: make_guides.py <reference.fa>
 Seed 42 + sorted-by-discovery-order sampling makes the output
 reproducible regardless of Python version.
 """
-
 import gzip
 import random
 import re
@@ -85,7 +84,9 @@ def main():
         csv.write(f"{guide_id},{protospacer},NGG,{chrom},{start + 1},+\n")
     fa.close()
     csv.close()
-    sys.stderr.write(f"Wrote {N_GUIDES} guides to random_1000.fasta and random_1000.kmers.csv\n")
+    sys.stderr.write(
+        f"Wrote {N_GUIDES} guides to random_1000.fasta and random_1000.kmers.csv\n"
+    )
 
 
 if __name__ == "__main__":

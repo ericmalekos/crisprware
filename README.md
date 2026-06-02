@@ -72,6 +72,12 @@ We demonstrate usage with ce11 chromosome III fasta and NCBI GTF, included in th
 
 Note the example off-target index is limited to chrIII, not the full ce11 genome
 
+By default `index_genome` builds a **crispr-ots** index (fast, exact-mismatch). Pass
+`--indexer guidescan2` to build a Guidescan2 index instead (slower, but supports RNA/DNA
+bulges), or `--indexer crispr-ots guidescan2` to build one of each so you can score with
+either or both engines in `score_guides`. Each engine writes to its own
+`<name>_<engine>/` directory.
+
 ```
 crisprware index_genome -f tests/test_data/ce11/chrIII_sequence.fasta
 ```
@@ -94,13 +100,17 @@ crisprware generate_guides -f tests/test_data/ce11/chrIII_sequence.fasta \
 Scoring will take ~5 minutes and uses 8 threads by default.
 Change this with `--threads` <int>. `--tracr` is either `Chen2013`,`Hsu2013`, os `both`, see [RuleSet3](https://github.com/gpp-rnd/rs3) scoring for details
 
+The engine is auto-detected from each `-i` index, so this works the same whether you
+built a crispr-ots or a Guidescan2 index. Pass more than one index (e.g. one of each
+type) to get a separate `specificity_<index>` column from each engine in a single run.
+
 ```
 crisprware score_guides -b chrIII_sequence_gRNA/chrIII_sequence_gRNA.bed \
--i chrIII_sequence_gscan2/chrIII_sequence_gscan2 --tracr Chen2013 --threads 8
+-i chrIII_sequence_crisprots/chrIII_sequence_crisprots --tracr Chen2013 --threads 8
 ```
 
 Ranking is done based on scoring columns  
-`-c` is matched with `-m` order so this filters out `RS3_score_Chen2013 < 0`,  `specificity_gscan_index < 0.2`  
+`-c` is matched with `-m` order so this filters out `RS3_score_Chen2013 < 0`,  `specificity_chrIII_sequence_crisprots < 0.2`  
 `-p 5 65`, `-f CDS` filters out gRNAs outside of the 5th-65th percentile of the CDS  
 `--output_all` outputs TSV and histograms for each stage of filtering in addition to the final output.
 
@@ -109,7 +119,7 @@ crisprware rank_guides \
 -k chrIII_sequence_scoredgRNA/chrIII_sequence_scoredgRNA.bed \
 -t tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf \
 -f CDS \
--c RS3_score_Chen2013 specificity_chrIII_sequence_gscan2 \
+-c RS3_score_Chen2013 specificity_chrIII_sequence_crisprots \
 -m 0 0.2 \
 -p 5 65 \
 -r RS3_score_Chen2013 \
@@ -352,6 +362,14 @@ options:
   -h, --help            show this help message and exit
   -f FASTA, --fasta FASTA
                         FASTA file to use as a reference for index creation.
+  --indexer {crispr-ots,guidescan2} [{crispr-ots,guidescan2} ...]
+                        Off-target index engine(s) to build. 'crispr-ots'
+                        (fast exact-mismatch scanner; default) and/or
+                        'guidescan2' (slower, but supports RNA/DNA bulges).
+                        Pass both (e.g. '--indexer crispr-ots guidescan2') to
+                        build one index of each type; score_guides can then
+                        score against either or both. Each engine writes to
+                        its own '<name>_<engine>' directory. [default: crispr-ots]
   -o OUTPUT_DIRECTORY, --output_directory OUTPUT_DIRECTORY
                         Path to output. [default: current directory]
   --locations_to_keep [LOCATIONS_TO_KEEP ...]
@@ -465,9 +483,12 @@ options:
   -b SGRNA_BED, --sgrna_bed SGRNA_BED
                         sgrnas.bed ouput of GenerateGuides.
   -i [GUIDESCAN2_INDICES ...], --guidescan2_indices [GUIDESCAN2_INDICES ...]
-                        One or more, space-separate Guidescan2 indices. A
-                        specificity score will be calculated against each
-                        index separately.
+                        One or more, space-separated off-target indices
+                        (crispr-ots and/or guidescan2; the engine is auto-
+                        detected from each index's files). A separate
+                        specificity column is produced for each index, so
+                        passing one index of each type scores guides with both
+                        methods in a single run.
   --tracr {Hsu2013,Chen2013,both}
                         TracrRNA version for cleavage scoring. Either
                         'Hsu2013' or 'Chen2013' or 'both', see
@@ -483,11 +504,11 @@ options:
                         Number of mismatches for Guidescan2 off-target scoring
                         [default: 3]
   --rna_bulges RNA_BULGES
-                        RNA bulges for Guidescan2 off-target scoring [default:
-                        0]
+                        RNA bulges for off-target scoring. guidescan2 indices
+                        only; crispr-ots requires 0 [default: 0]
   --dna_bulges DNA_BULGES
-                        DNA bulges for Guidescan2 off-target scoring [default:
-                        0]
+                        DNA bulges for off-target scoring. guidescan2 indices
+                        only; crispr-ots requires 0 [default: 0]
   --mode {succinct,complete}
                         Whether Guidescan2 temporary output should be succinct
                         or complete mode [default: 0]

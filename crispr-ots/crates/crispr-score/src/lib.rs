@@ -11,5 +11,5 @@
 pub mod cas12a;
 pub mod cfd;
 
-pub use cas12a::{Cas12aCfd, Cas12aMatrix, Cas12aResult, Cas12aParseError};
+pub use cas12a::{is_tttt_prefix, Cas12aCfd, Cas12aMatrix, Cas12aParseError, Cas12aResult};
 pub use cfd::{Cfd, CfdResult, SpecConvention, CFD_MINIMUM_THRESHOLD};

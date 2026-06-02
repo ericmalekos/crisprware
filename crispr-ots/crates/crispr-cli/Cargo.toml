@@ -26,7 +26,14 @@ crispr-encoding = { path = "../crispr-encoding" }
 crispr-db = { path = "../crispr-db" }
 crispr-scan = { path = "../crispr-scan" }
 crispr-score = { path = "../crispr-score" }
+# Optional CUDA backend, pulled in only by `--features gpu` so the default
+# build is CUDA-free and runs on any node.
+crispr-scan-gpu = { path = "../crispr-scan-gpu", optional = true }
 
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 rayon = "1"
+
+[features]
+# Enables the `--scanner gpu` backend (links crispr-scan-gpu / cudarc).
+gpu = ["dep:crispr-scan-gpu"]

@@ -6,12 +6,17 @@ members = [
     "crates/crispr-scan",
     "crates/crispr-score",
     "crates/crispr-cli",
+    "crates/crispr-scan-gpu",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+# 1.89 is the first stable rustc with the AVX-512 512-bit intrinsics
+# (`_mm512_popcnt_epi64`, `_mm512_loadu_si512`, …) used by the VPOPCNTDQ
+# scan kernel in crispr-scan. The AVX2/scalar paths still build on older
+# toolchains, but the workspace as a whole now requires 1.89+.
+rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/ericmalekos/crispr-ots"
 authors = ["Eric Malekos <ericmalekos@gmail.com>"]
