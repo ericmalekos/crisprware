@@ -564,6 +564,11 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
     if args is None:
         args = parse_arguments()
 
+    # Programmatic callers (e.g. tests) may build a Namespace without the newer
+    # --ucscgb args; default the gating flag so attribute access stays safe.
+    if not hasattr(args, "ucscgb"):
+        args.ucscgb = None
+
     # print("ALT PAMS" + args.alt_pams)
     # --ucscgb runs its own streaming crispr-ots pass (not the guidescan-style
     # gscan_scoring path), so skip its index-file precheck.
