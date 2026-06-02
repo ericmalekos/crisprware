@@ -529,6 +529,11 @@ fn scan_on_gpu(
 // Streaming scored-output driver (`--output-mode`)
 // ======================================================================
 
+/// Per-guide bucket array length: counts off-targets with exactly `i`
+/// mismatches for `i` in `0..MM_BUCKETS` (index 0 is unused — the mm-0 bucket
+/// is derived from `on_count`). 8 covers every realistic `--mismatches`.
+const MM_BUCKETS: usize = 8;
+
 /// Per-guide CFD accumulators for the streaming driver (Mode 1).
 struct Accum {
     /// Σ cfd over off-targets (Cas9), or Σ TTTN (Cas12a).
@@ -541,6 +546,10 @@ struct Accum {
     on_count: Vec<u32>,
     /// Off-target (mm > 0) position count per guide.
     off_count: Vec<u32>,
+    /// Off-targets bucketed by exact mismatch count; index `m` = number of
+    /// off-targets at `m` mismatches (`1..=max_mm` used; mm-0 derived from
+    /// `on_count`). Feeds the track's `_mismatchCounts`.
+    mm_counts: Vec<[u32; MM_BUCKETS]>,
     /// Set when a per-guide cap was hit (any backend) — the guide's sums are
     /// partial (specificity is an upper bound, ≈ 0).
     saturated: Vec<bool>,
@@ -594,6 +603,9 @@ fn accumulate_hit(
     };
     acc.off_sum[abs_guide] += cfd_val;
     acc.off_count[abs_guide] += 1;
+    if (mm as usize) < MM_BUCKETS {
+        acc.mm_counts[abs_guide][mm as usize] += 1;
+    }
     if cas12a.is_some() && !is_tttt {
         acc.tttv_sum[abs_guide] += cfd_val;
     }
@@ -610,11 +622,12 @@ fn accumulate_hit(
                 offset: ot_pos.offset,
                 strand_reverse: strand_rev,
                 cfd_q: crate::ot_stream::OtRecord::quantize_cfd(cfd_val),
+                mm,
             })?;
         }
         if let Some(w) = writers.tsv.as_mut() {
             let chrom = source.contig_name(ot_pos.contig_id).unwrap_or("");
-            w.write_row(gid, chrom, ot_pos.offset, strand_rev, cfd_val)?;
+            w.write_row(gid, chrom, ot_pos.offset, strand_rev, mm, cfd_val)?;
         }
     }
     flag_if_saturated(acc, abs_guide, ot_cap, off_sum_cap);
@@ -699,6 +712,7 @@ fn run_discover_streaming(
         max_cfd: vec![0.0; n],
         on_count: vec![0; n],
         off_count: vec![0; n],
+        mm_counts: vec![[0u32; MM_BUCKETS]; n],
         saturated: vec![false; n],
     };
 
@@ -821,6 +835,14 @@ fn run_discover_streaming(
                 }
                 continue;
             }
+            // Per-mismatch-bucket counts `[mm0, mm1, …, mm_maxmm]`: mm-0 is the
+            // number of *other* perfect-match loci (`on_count - 1`, excluding the
+            // guide's own site); the rest come from the scan accumulator.
+            let max_mm = usize::from(config.max_mismatches).min(MM_BUCKETS - 1);
+            let mut buckets = Vec::with_capacity(max_mm + 1);
+            buckets.push(acc.on_count[i].saturating_sub(1));
+            buckets.extend_from_slice(&acc.mm_counts[i][1..=max_mm]);
+
             if is_cas12a {
                 let tttn = if acc.off_sum[i] > 0.0 {
                     1.0 / acc.off_sum[i]
@@ -838,6 +860,7 @@ fn run_discover_streaming(
                     tttv,
                     acc.max_cfd[i],
                     acc.off_count[i],
+                    &buckets,
                     acc.saturated[i],
                 )?;
             } else {
@@ -847,6 +870,7 @@ fn run_discover_streaming(
                     spec,
                     acc.max_cfd[i],
                     acc.off_count[i],
+                    &buckets,
                     acc.saturated[i],
                 )?;
             }

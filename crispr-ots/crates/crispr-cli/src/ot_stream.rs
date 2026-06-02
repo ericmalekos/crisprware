@@ -12,11 +12,11 @@
 //!   maps `guide_id → (id, on-target locus, sequence, on_count)` so binary
 //!   records stay tiny but joinable.
 //!
-//! Binary layout — 64-byte header then `n` × 12-byte records:
+//! Binary layout — 64-byte header then `n` × 13-byte records:
 //! ```text
 //! header: magic "CROTOT2\0" (8) | version u16 | record_bytes u16 | max_mm u8 |
 //!         (pad 3) | cfd_threshold f64 | n_guides u64 | (pad to 64)
-//! record: guide_id u32 | contig u16 | offset(bits0-30)+strand(bit31) u32 | cfd_q u16
+//! record: guide_id u32 | contig u16 | offset(bits0-30)+strand(bit31) u32 | cfd_q u16 | mm u8
 //! ```
 //! CFD is quantized to `u16` as `round(cfd * 65535)` (precision ~1.5e-5, far
 //! below biological significance); strand is folded into bit 31 of the offset
@@ -30,12 +30,26 @@ use std::path::Path;
 /// Magic bytes opening a Mode-2 binary off-target file.
 pub const OT_MAGIC: [u8; 8] = *b"CROTOT2\0";
 /// Bytes per binary off-target record.
-pub const OT_RECORD_BYTES: usize = 12;
+pub const OT_RECORD_BYTES: usize = 13;
 /// Fixed binary header size.
 pub const OT_HEADER_BYTES: usize = 64;
-/// Current binary format version.
-pub const OT_VERSION: u16 = 1;
+/// Current binary format version (2 = adds a per-record `mm` byte).
+pub const OT_VERSION: u16 = 2;
 const CFD_SCALE: f64 = 65535.0;
+
+/// Join per-mismatch-bucket counts (`[mm0, mm1, …]`) into a `;`-separated
+/// field for the comma-delimited Mode-1 CSV (the track maps `;` → `,` to
+/// build the spec's `_mismatchCounts`).
+fn join_counts(counts: &[u32]) -> String {
+    let mut s = String::with_capacity(counts.len() * 3);
+    for (i, c) in counts.iter().enumerate() {
+        if i > 0 {
+            s.push(';');
+        }
+        s.push_str(&c.to_string());
+    }
+    s
+}
 
 /// One per-off-target record (12 bytes LE).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +64,8 @@ pub struct OtRecord {
     pub strand_reverse: bool,
     /// CFD quantized to `u16` (`round(cfd * 65535)`).
     pub cfd_q: u16,
+    /// Mismatch count of this off-target vs the guide (over the protospacer).
+    pub mm: u8,
 }
 
 impl OtRecord {
@@ -81,10 +97,11 @@ impl OtRecord {
         b[4..6].copy_from_slice(&self.contig.to_le_bytes());
         b[6..10].copy_from_slice(&off_strand.to_le_bytes());
         b[10..12].copy_from_slice(&self.cfd_q.to_le_bytes());
+        b[12] = self.mm;
         b
     }
 
-    /// Decode a 12-byte little-endian record.
+    /// Decode a 13-byte little-endian record.
     #[must_use]
     pub fn from_bytes(b: &[u8; OT_RECORD_BYTES]) -> Self {
         let guide_id = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
@@ -97,6 +114,7 @@ impl OtRecord {
             offset: off_strand & 0x7FFF_FFFF,
             strand_reverse: (off_strand >> 31) == 1,
             cfd_q,
+            mm: b[12],
         }
     }
 }
@@ -208,7 +226,7 @@ impl OtTsvWriter {
     /// I/O failure.
     pub fn create(path: &Path) -> io::Result<Self> {
         let mut w = BufWriter::with_capacity(1 << 20, File::create(path)?);
-        writeln!(w, "guide_id\tchrom\tstart\tstrand\tcfd")?;
+        writeln!(w, "guide_id\tchrom\tstart\tstrand\tmm\tcfd")?;
         Ok(Self { w })
     }
 
@@ -222,10 +240,11 @@ impl OtTsvWriter {
         chrom: &str,
         start: u32,
         strand_reverse: bool,
+        mm: u8,
         cfd: f64,
     ) -> io::Result<()> {
         let strand = if strand_reverse { '-' } else { '+' };
-        writeln!(self.w, "{guide_id}\t{chrom}\t{start}\t{strand}\t{cfd:.6}")
+        writeln!(self.w, "{guide_id}\t{chrom}\t{start}\t{strand}\t{mm}\t{cfd:.6}")
     }
 
     /// Flush and close.
@@ -256,10 +275,13 @@ impl AggWriter {
         if cas12a {
             writeln!(
                 w,
-                "id,specificity_tttn,specificity_tttv,max_cfd,off_target_count,saturated,dropped"
+                "id,specificity_tttn,specificity_tttv,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
             )?;
         } else {
-            writeln!(w, "id,specificity,max_cfd,off_target_count,saturated,dropped")?;
+            writeln!(
+                w,
+                "id,specificity,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
+            )?;
         }
         Ok(Self { w, cas12a })
     }
@@ -276,11 +298,13 @@ impl AggWriter {
         specificity: f64,
         max_cfd: f64,
         off_target_count: u32,
+        mm_counts: &[u32],
         saturated: bool,
     ) -> io::Result<()> {
         writeln!(
             self.w,
-            "{id},{specificity:.6},{max_cfd:.6},{off_target_count},{},0",
+            "{id},{specificity:.6},{max_cfd:.6},{off_target_count},{},{},0",
+            join_counts(mm_counts),
             u8::from(saturated)
         )
     }
@@ -296,11 +320,13 @@ impl AggWriter {
         tttv: f64,
         max_cfd: f64,
         off_target_count: u32,
+        mm_counts: &[u32],
         saturated: bool,
     ) -> io::Result<()> {
         writeln!(
             self.w,
-            "{id},{tttn:.6},{tttv:.6},{max_cfd:.6},{off_target_count},{},0",
+            "{id},{tttn:.6},{tttv:.6},{max_cfd:.6},{off_target_count},{},{},0",
+            join_counts(mm_counts),
             u8::from(saturated)
         )
     }
@@ -313,9 +339,9 @@ impl AggWriter {
     /// I/O failure.
     pub fn write_dropped(&mut self, id: &str) -> io::Result<()> {
         if self.cas12a {
-            writeln!(self.w, "{id},,,,,0,1")
+            writeln!(self.w, "{id},,,,,,0,1")
         } else {
-            writeln!(self.w, "{id},,,,0,1")
+            writeln!(self.w, "{id},,,,,0,1")
         }
     }
 
@@ -443,12 +469,21 @@ mod tests {
             offset: 0x4321_0FED & 0x7FFF_FFFF,
             strand_reverse: true,
             cfd_q: OtRecord::quantize_cfd(0.37),
+            mm: 3,
         };
         let bytes = rec.to_bytes();
         assert_eq!(bytes.len(), OT_RECORD_BYTES);
         let back = OtRecord::from_bytes(&bytes);
         assert_eq!(rec, back);
+        assert_eq!(back.mm, 3);
         assert!((back.cfd() - 0.37).abs() < 1e-4);
+    }
+
+    #[test]
+    fn join_counts_formats_semicolons() {
+        assert_eq!(join_counts(&[0, 1, 0, 3, 5]), "0;1;0;3;5");
+        assert_eq!(join_counts(&[7]), "7");
+        assert_eq!(join_counts(&[]), "");
     }
 
     #[test]
@@ -496,6 +531,7 @@ mod tests {
                 offset: 100,
                 strand_reverse: false,
                 cfd_q: OtRecord::quantize_cfd(cfd),
+                mm: 4,
             })
             .expect("write");
         }
