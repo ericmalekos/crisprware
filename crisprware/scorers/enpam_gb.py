@@ -274,30 +274,130 @@ def featurize(seqs: Sequence[str]) -> pd.DataFrame:
     return pd.DataFrame(_featurize_array(seqs), columns=_feature_names())
 
 
+class _IdentityLink:
+    """Identity link used by least-squares regression -- `link(x) == x`."""
+
+    def link(self, raw):
+        return raw
+
+    def inverse(self, raw):
+        return raw
+
+
 class PortableSquaredLoss:
-    """sklearn-version-independent stub for `GradientBoostingRegressor.loss_`.
+    """sklearn-version-independent stub for the GBR loss attribute.
 
-    Replaces `sklearn.ensemble._gb_losses.LeastSquaresError`, which was
-    removed in sklearn 1.2. GBR.predict() reads `loss_` only to call
-    `get_init_raw_predictions(X, init_)`, which for least-squares
-    regression is just `init_.predict(X)` reshaped + cast.
+    Sklearn refactored `GradientBoostingRegressor`'s loss handling repeatedly:
+      - <=1.1 : `model.loss_` is `_gb_losses.LeastSquaresError`. `predict()`
+                calls `model.loss_.get_init_raw_predictions(X, init_)`. The
+                `_gb_losses` module was removed in 1.2.
+      - 1.3-1.5 : public `loss_` survives; the path through `_loss` (private)
+                  reads `K`, `is_multi_class`, etc.
+      - >=1.6 : `predict()` reads `model._loss` and calls a module-level
+                `_init_raw_predictions(X, init_, _loss, use_predict_proba)`
+                which for regression returns `_loss.link.link(init_.predict(X))`.
 
-    Lives in `crisprware.scorers.enpam_gb` so the re-saved joblib
-    pickle references this module (which always exists) instead of
-    sklearn's private `_gb_losses` module (which doesn't, on modern
-    sklearn). Bit-exact replacement -- predictions are unchanged.
+    This stub carries the union of attributes/methods those code paths read,
+    all wired to the bit-exact least-squares behaviour: predictions stay
+    `init_.predict(X)` followed by additive contributions from each tree
+    (handled by sklearn-internal `predict_stages` either way).
 
-    Attributes mimic the upstream class enough that sklearn's GBR
-    internals never crash on attribute access:
-      - K = 1                 (regression has one output)
-      - is_multi_class = False
+    Lives in `crisprware.scorers.enpam_gb` so the re-saved joblib pickle
+    references our module (always available) rather than sklearn's
+    private, version-churning loss machinery.
     """
 
     K = 1
-    is_multi_class = False
+    is_multi_class = False  # <=1.5 attr name
+    is_multiclass = False  # >=1.6 attr name (no underscore)
+    link = _IdentityLink()
 
     def get_init_raw_predictions(self, X, estimator):
         return estimator.predict(X).reshape(-1, 1).astype(np.float64)
+
+
+def _make_tree(args, state):
+    """Unpickle a sklearn `_tree.Tree`, adapting node-dtype across sklearn versions.
+
+    Used as the constructor for the trees inside the vendored enPAM+GB pickle so
+    one file loads across the whole sklearn 0.21 -> current range. The pickled
+    state carries the original 7-field node dtype (no `missing_go_to_left`).
+    Sklearn >= 1.3 added an 8th field `missing_go_to_left` (u1) and rejects the
+    7-field dtype in `Tree.__setstate__`. We try the original setstate first
+    (works on <= 1.2), and on `ValueError` we pad each node row with
+    `missing_go_to_left = 0` and retry (works on >= 1.3).
+
+    Padding with 0 is bit-exact for inputs without missing values: 0 means "no
+    missing values were seen in training and there's no learned routing." The
+    enPAM+GB featurizer (`_featurize_array`) emits NaN only for unrecognised
+    bases, which are filtered upstream by `predict()`, so the predict path
+    never feeds NaN into the trees. Bit-exact verified at re-dump time.
+    """
+    from sklearn.tree._tree import Tree
+
+    tree = Tree(*args)
+    try:
+        tree.__setstate__(state)
+        return tree
+    except ValueError:
+        pass
+
+    nodes = state["nodes"]
+    names = nodes.dtype.names or ()
+    if "missing_go_to_left" not in names:
+        new_desc = list(nodes.dtype.descr) + [("missing_go_to_left", "u1")]
+        new_nodes = np.zeros(nodes.shape, dtype=np.dtype(new_desc))
+        for name in names:
+            new_nodes[name] = nodes[name]
+        state = dict(state)
+        state["nodes"] = new_nodes
+    tree.__setstate__(state)
+    return tree
+
+
+def _upgrade_estimator_attrs(model) -> None:
+    """Pad attrs that newer sklearn introduced but the 0.21 pickle doesn't carry.
+
+    Sklearn periodically adds estimator attributes (`monotonic_cst` in 1.4,
+    others before/after) that `predict()` reads via `_validate_X_predict`.
+    A pickle from sklearn 0.21 lacks them, so loading on a current sklearn
+    surfaces `AttributeError: '...' object has no attribute 'monotonic_cst'`
+    even though the joblib unpickles cleanly.
+
+    Strategy: instantiate a fresh estimator of each relevant type in the
+    *current* sklearn, and for every constructor default that's absent on
+    the loaded estimator, copy it across. Idempotent (hasattr-gated) and a
+    no-op on the sklearn version that originally pickled the model.
+
+    Bit-exact for our use case: every padded attribute is a benign default
+    (no monotonic constraint, no extra feature gating, etc.). Tests cover
+    parity vs the frozen golden TSV.
+    """
+    try:
+        from sklearn.ensemble import GradientBoostingRegressor
+        from sklearn.tree import DecisionTreeRegressor
+    except ImportError:
+        return
+
+    def _pad(obj, fresh):
+        for attr, default in vars(fresh).items():
+            if not hasattr(obj, attr):
+                setattr(obj, attr, default)
+
+    _pad(model, GradientBoostingRegressor())
+    fresh_dt = DecisionTreeRegressor()
+    estimators = getattr(model, "estimators_", None)
+    if estimators is not None:
+        for est in np.asarray(estimators).ravel():
+            _pad(est, fresh_dt)
+
+    init = getattr(model, "init_", None)
+    if init is not None:
+        try:
+            fresh_init = type(init)()
+            _pad(init, fresh_init)
+        except TypeError:
+            pass
 
 
 def _install_sklearn_legacy_aliases() -> None:
@@ -345,7 +445,12 @@ def load_model(weights_path: Optional[str] = None):
             warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
         except ImportError:
             pass
-        return joblib.load(path)
+        model = joblib.load(path)
+    _upgrade_estimator_attrs(model)
+    # sklearn >= 1.6 reads `_loss` (was `loss_` through 1.5); alias if absent.
+    if not hasattr(model, "_loss") and hasattr(model, "loss_"):
+        model._loss = model.loss_
+    return model
 
 
 def predict(
