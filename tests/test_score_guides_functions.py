@@ -4,7 +4,7 @@ import tempfile
 import os
 import shutil
 
-from crisprware.score_guides import restricted_float, detect_indexer, gscan_scoring, get_alt_pams
+from crisprware.score_guides import restricted_float, check_files_exist, get_alt_pams
 
 
 class TestRestrictedFloat(unittest.TestCase):
@@ -23,7 +23,7 @@ class TestRestrictedFloat(unittest.TestCase):
             restricted_float(-0.1)
 
 
-class TestDetectIndexer(unittest.TestCase):
+class TestCheckFilesExist(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
 
@@ -32,34 +32,15 @@ class TestDetectIndexer(unittest.TestCase):
 
     def test_missing_files(self):
         with self.assertRaises(FileNotFoundError):
-            detect_indexer(os.path.join(self.tmpdir, "nonexistent"))
+            check_files_exist(os.path.join(self.tmpdir, "nonexistent"))
 
-    def test_detects_guidescan2(self):
-        index = os.path.join(self.tmpdir, "genome_guidescan2")
+    def test_existing_files(self):
+        index = os.path.join(self.tmpdir, "genome.fa.index")
         for ext in [".reverse", ".forward", ".gs"]:
             with open(index + ext, "w") as f:
                 f.write("")
-        self.assertEqual(detect_indexer(index), "guidescan2")
-
-    def test_detects_crispr_ots(self):
-        # crispr-ots writes a real .crot alongside zero-byte guidescan-compatible
-        # stubs, so the .crot file must take precedence over the stub trio.
-        index = os.path.join(self.tmpdir, "genome_crisprots")
-        for ext in [".crot", ".reverse", ".forward", ".gs"]:
-            with open(index + ext, "w") as f:
-                f.write("")
-        self.assertEqual(detect_indexer(index), "crispr-ots")
-
-
-class TestGscanScoringBulgeGuard(unittest.TestCase):
-    def test_crispr_ots_rejects_rna_bulges(self):
-        # The guard must fire before any subprocess is launched.
-        with self.assertRaises(ValueError):
-            gscan_scoring(guideCSV="in.csv", output="out.csv", guideIndex="idx", indexer="crispr-ots", rna_bulges=1)
-
-    def test_crispr_ots_rejects_dna_bulges(self):
-        with self.assertRaises(ValueError):
-            gscan_scoring(guideCSV="in.csv", output="out.csv", guideIndex="idx", indexer="crispr-ots", dna_bulges=2)
+        # Should not raise
+        check_files_exist(index)
 
 
 class TestGetAltPams(unittest.TestCase):

@@ -252,20 +252,28 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "(must support --output-mode/--scanner; default: 'crispr-ots' on PATH).",
     )
     ucsc.add_argument(
-        "--ucscgb_scanner", choices=["gpu", "cpu"], default="gpu",
+        "--ucscgb_scanner",
+        choices=["gpu", "cpu"],
+        default="gpu",
         help="Scanner for the --ucscgb off-target pass [default: gpu].",
     )
     ucsc.add_argument(
-        "--ucscgb_cfd_threshold", type=float, default=0.023,
+        "--ucscgb_cfd_threshold",
+        type=float,
+        default=0.023,
         help="CFD floor for the off-target list written to crisprDetails (counts "
         "are unaffected — they come from the unfloored Mode-1 totals). [default: 0.023]",
     )
     ucsc.add_argument(
-        "--ucscgb_list_cap", type=int, default=100,
+        "--ucscgb_list_cap",
+        type=int,
+        default=100,
         help="Max off-targets listed per guide in crisprDetails (top by score) [default: 100].",
     )
     ucsc.add_argument(
-        "--ucscgb_blank_threshold", type=int, default=2000,
+        "--ucscgb_blank_threshold",
+        type=int,
+        default=2000,
         help="Guides with more than this many off-targets get an empty list (counts "
         "kept) — the viewer shows 'Too many off-targets'. [default: 2000]",
     )
@@ -493,15 +501,30 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
 
     enum_out = os.path.join(outdir, "offtargets.csv")
     cmd = [
-        args.crispr_ots_bin, "enumerate",
-        "--scanner", args.ucscgb_scanner,
-        "--threads", str(args.threads),
-        "--score", "cfd-cas12a:encas12a",
-        "--mismatches", str(args.mismatches),
-        "--output-mode", "both", "--ot-format", "tsv",
-        "--threshold", "0", "--keep-dropped",
-        "--cfd-threshold", str(args.ucscgb_cfd_threshold),
-        "--kmers-file", kmers_path, "--output", enum_out, index,
+        args.crispr_ots_bin,
+        "enumerate",
+        "--scanner",
+        args.ucscgb_scanner,
+        "--threads",
+        str(args.threads),
+        "--score",
+        "cfd-cas12a:encas12a",
+        "--mismatches",
+        str(args.mismatches),
+        "--output-mode",
+        "both",
+        "--ot-format",
+        "tsv",
+        "--threshold",
+        "0",
+        "--keep-dropped",
+        "--cfd-threshold",
+        str(args.ucscgb_cfd_threshold),
+        "--kmers-file",
+        kmers_path,
+        "--output",
+        enum_out,
+        index,
     ]
     print("\n\tUCSC track: crispr-ots off-target pass\n\t" + " ".join(cmd) + "\n")
     subprocess.run(cmd, check=True)
@@ -523,7 +546,9 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
             guide_df[c] = gRNADF[c].to_numpy()
 
     art = ucsc_track.build_track(
-        guide_df, enum_out, outdir,
+        guide_df,
+        enum_out,
+        outdir,
         chrom_sizes=args.chrom_sizes,
         list_cap=args.ucscgb_list_cap,
         blank_threshold=args.ucscgb_blank_threshold,
@@ -570,8 +595,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         args.drop_duplicates = False
         if not cas12a_scorers:
             raise ValueError(
-                "\n\t--ucscgb writes a Cas12a track; pass --cas12a_scorer "
-                "(e.g. deepcpf1 enpam_gb enseq_deepcpf1).\n"
+                "\n\t--ucscgb writes a Cas12a track; pass --cas12a_scorer (e.g. deepcpf1 enpam_gb enseq_deepcpf1).\n"
             )
 
     if cas12a_scorers:

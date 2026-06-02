@@ -29,7 +29,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -55,7 +55,7 @@ def build_autosql(score_cols: Sequence[str]) -> str:
     """autoSql for the bigBed: bed9 + guideSeq/pam + on-target/specificity
     display columns + the required ``_mouseOver``/``_offset`` trailer."""
     lines = [
-        'table cas12aTargets',
+        "table cas12aTargets",
         '"CRISPR Cas12a guides, genome wide (bed9 + extra; off-targets in external bgzip tab file)"',
         "    (",
         '    string  chrom;        "Reference sequence chromosome or scaffold"',
@@ -67,8 +67,8 @@ def build_autosql(score_cols: Sequence[str]) -> str:
         '    uint    thickStart;   "Start of spacer (thick); the 4nt PAM is the thin part"',
         '    uint    thickEnd;     "End of spacer (thick)"',
         '    uint    itemRgb;      "Display color R,G,B"',
-        '    string  guideSeq;     "Spacer 5\'->3\' (23nt)"',
-        '    string  pam;          "4nt PAM 5\'->3\' (e.g. TTTA)"',
+        "    string  guideSeq;     \"Spacer 5'->3' (23nt)\"",
+        "    string  pam;          \"4nt PAM 5'->3' (e.g. TTTA)\"",
     ]
     for c in score_cols:
         lines.append(f'    string  {c};{" " * max(1, 18 - len(c))}"free-form score (display only)"')
@@ -109,6 +109,7 @@ def _fmt_pct_raw(raw: pd.Series, pct: pd.Series) -> pd.Series:
 def _mismatch_buckets(mm_counts: pd.Series) -> pd.DataFrame:
     """Split the ';'-joined Mode-1 mismatch_counts into mm0/mm1/mm2 columns
     (enough for the itemRgb hierarchy). Missing/blank -> 0."""
+
     def _get(cell, i):
         if not isinstance(cell, str) or not cell:
             return 0
@@ -263,18 +264,28 @@ def build_track(
 
     buckets = _mismatch_buckets(g["mismatch_counts"])
     enpam_pct = _pct(g["enpam_gb_score"]).to_numpy() if "enpam_gb_score" in g.columns else np.full(len(g), np.nan)
-    item_rgb = _item_rgb(dropped, buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(),
-                         buckets["mm2"].to_numpy(), spec_pct, enpam_pct)
+    item_rgb = _item_rgb(
+        dropped, buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy(), spec_pct, enpam_pct
+    )
 
     # unique flags: non-dropped guides cleared the --threshold 0 screen (no 0-mm
     # off-target) -> unique; dropped (non-unique) -> False. (TTTV vs TTTN nuance
     # for dropped guides is not distinguished — they are skipped at off-target.)
     unique = np.where(dropped, "False", "True")
 
-    out = {"#chr": g["chrom"].to_numpy(), "start": chrom_start, "stop": chrom_end,
-           "name": " ", "score": score, "strand": g["strand"].to_numpy(),
-           "thickStart": thick_start, "thickEnd": thick_end, "itemRgb": item_rgb,
-           "guideSeq": g["guideSeq"].to_numpy(), "pam": g["pam"].to_numpy()}
+    out = {
+        "#chr": g["chrom"].to_numpy(),
+        "start": chrom_start,
+        "stop": chrom_end,
+        "name": " ",
+        "score": score,
+        "strand": g["strand"].to_numpy(),
+        "thickStart": thick_start,
+        "thickEnd": thick_end,
+        "itemRgb": item_rgb,
+        "guideSeq": g["guideSeq"].to_numpy(),
+        "pam": g["pam"].to_numpy(),
+    }
     for c in score_cols:
         out[c] = _fmt_pct_raw(g[c], _pct(g[c])).to_numpy()
     out["TTTV_enCas12a_specificity"] = _fmt_pct_raw(spec_tttv, _pct(spec_tttv)).to_numpy()
