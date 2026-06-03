@@ -289,10 +289,14 @@ def build_track(
     thick_end = np.where(is_plus, chrom_end, chrom_end - PAM_LEN)
 
     # --- scores / colors / display strings ---
+    # Operative specificity = TTTN: guides are TTTV-only but off-targets are
+    # scored against TTTT too (enCas12a cleaves TTTT), so the bigBed score/color
+    # come from specificity_tttn (Sigma cfd over ALL off-targets incl TTTT). Both
+    # TTTN and TTTV are still emitted as display columns below.
     spec_tttv = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
     spec_tttn = pd.to_numeric(g.get("specificity_tttn"), errors="coerce")
-    spec_pct = _pct(spec_tttv).to_numpy()
-    score = np.clip(np.rint(spec_tttv.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
+    spec_pct = _pct(spec_tttn).to_numpy()
+    score = np.clip(np.rint(spec_tttn.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
 
     buckets = _mismatch_buckets(g["mismatch_counts"])
     enpam_pct = _pct(g["enpam_gb_score"]).to_numpy() if "enpam_gb_score" in g.columns else np.full(len(g), np.nan)
