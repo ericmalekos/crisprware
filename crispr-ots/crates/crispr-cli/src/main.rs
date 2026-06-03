@@ -15,7 +15,7 @@ use std::process::ExitCode;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crispr_cli::discover::enzyme_from_name;
+use crispr_cli::discover::enzyme_from_pam;
 use crispr_cli::{
     run_build, run_discover_with, BuildConfig, DiscoverConfig, DiscoverInput, OtFormat, OutputFormat,
     OutputMode, ScannerKind, ScoreMetric, SpecConvention,
@@ -74,10 +74,20 @@ struct IndexArgs {
     #[arg(long, value_name = "PREFIX", alias = "output", short = 'o')]
     index: PathBuf,
 
-    /// Enzyme preset. Recognised: spcas9ngg, spcas9nag, spcas9 (NGG+NAG),
-    /// cpf1 (a.k.a. cas12a).
-    #[arg(short, long, default_value = "spcas9ngg")]
-    enzyme: String,
+    /// PAM motif as an IUPAC string, e.g. `NGG` (SpCas9), `NAG`, `TTTV` or
+    /// `TTTN` (Cas12a). With `--protospacer-length` and `--pam-5-prime` this
+    /// fully defines the recognised sites — there are no enzyme presets.
+    #[arg(long)]
+    pam: String,
+
+    /// Protospacer (spacer) length in bases, e.g. 20 (SpCas9) or 23 (Cas12a).
+    #[arg(short = 'l', long)]
+    protospacer_length: u8,
+
+    /// PAM lies 5' of the protospacer (Cas12a-style). Omit for a 3' PAM
+    /// (SpCas9-style), which is the default.
+    #[arg(long)]
+    pam_5_prime: bool,
 
     /// Bin-prefix width in bases (1-15). Higher widths sharpen the
     /// per-bin prefilter at the cost of a larger bin-offset table.
@@ -382,8 +392,7 @@ fn real_main() -> Result<()> {
 }
 
 fn run_index_cmd(args: IndexArgs) -> Result<()> {
-    let enzyme = enzyme_from_name(&args.enzyme)
-        .ok_or_else(|| anyhow!("unknown enzyme '{}'", args.enzyme))?;
+    let enzyme = enzyme_from_pam(&args.pam, args.protospacer_length, args.pam_5_prime).map_err(|e| anyhow!(e))?;
     let crot_path = resolve_index_crot_path(&args.index);
     let config = BuildConfig {
         reference: args.fasta,
@@ -595,6 +604,10 @@ mod tests {
             "index",
             "--index",
             "/tmp/db",
+            "--pam",
+            "NGG",
+            "-l",
+            "20",
             "/tmp/ref.fa.gz",
         ])
         .expect("crisprware-style index args should parse");
@@ -602,7 +615,9 @@ mod tests {
             Command::Index(args) => {
                 assert_eq!(args.fasta, PathBuf::from("/tmp/ref.fa.gz"));
                 assert_eq!(args.index, PathBuf::from("/tmp/db"));
-                assert_eq!(args.enzyme, "spcas9ngg");
+                assert_eq!(args.pam, "NGG");
+                assert_eq!(args.protospacer_length, 20);
+                assert!(!args.pam_5_prime);
             }
             Command::Enumerate(_) => panic!("expected Index command, got Enumerate"),
         }
@@ -615,6 +630,10 @@ mod tests {
             "build",
             "--index",
             "/tmp/db",
+            "--pam",
+            "NGG",
+            "-l",
+            "20",
             "/tmp/ref.fa",
         ])
         .expect("`build` alias should resolve to Index");

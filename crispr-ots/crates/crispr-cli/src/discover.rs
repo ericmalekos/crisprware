@@ -1390,6 +1390,46 @@ pub fn enzyme_from_name(name: &str) -> Option<crispr_encoding::Enzyme> {
     }
 }
 
+/// Build an `Enzyme` directly from a PAM string + protospacer length + PAM
+/// orientation — the flexible, preset-free index interface. `pam` is an IUPAC
+/// motif (e.g. `NGG`, `TTTV`); `five_prime` selects a Cas12a-style 5' PAM, else
+/// a 3' SpCas9-style PAM. Off-target sites and mismatch geometry derive from
+/// these three values alone, so any PAM/length/orientation works without a
+/// named preset (the `.crot` index stores them, so `enumerate` needs no enzyme
+/// argument).
+///
+/// # Errors
+/// Returns a message if `pam` is empty, contains a non-IUPAC base, or if
+/// `pam.len() + protospacer_len` exceeds the 28-base site limit.
+pub fn enzyme_from_pam(pam: &str, protospacer_len: u8, five_prime: bool) -> Result<crispr_encoding::Enzyme, String> {
+    use crispr_encoding::{Enzyme, IupacCode, PamSide, MAX_SITE_LEN};
+    if pam.is_empty() {
+        return Err("--pam must be a non-empty IUPAC string (e.g. NGG, TTTV)".to_string());
+    }
+    let codes: Vec<IupacCode> = pam
+        .bytes()
+        .map(|b| {
+            IupacCode::from_ascii(b.to_ascii_uppercase())
+                .ok_or_else(|| format!("invalid PAM base '{}' (expected IUPAC: A C G T R Y S W K M B D H V N)", b as char))
+        })
+        .collect::<Result<_, _>>()?;
+    let total = codes.len() + usize::from(protospacer_len);
+    if total > MAX_SITE_LEN {
+        return Err(format!(
+            "PAM ({}) + protospacer ({protospacer_len}) = {total} exceeds the {MAX_SITE_LEN}-base site limit",
+            codes.len()
+        ));
+    }
+    let side = if five_prime { PamSide::FivePrime } else { PamSide::ThreePrime };
+    let name = format!(
+        "PAM-{}-{}-{}nt",
+        pam.to_ascii_uppercase(),
+        if five_prime { "5p" } else { "3p" },
+        protospacer_len
+    );
+    Ok(Enzyme::from_iupac(&name, &codes, side, protospacer_len))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1419,6 +1459,25 @@ mod tests {
         assert!(enzyme_from_name("cpf1").is_some());
         assert!(enzyme_from_name("CAS12a").is_some());
         assert!(enzyme_from_name("unknown").is_none());
+    }
+
+    #[test]
+    fn enzyme_from_pam_builds_arbitrary_enzymes() {
+        use crispr_encoding::PamSide;
+        // SpCas9-style: NGG, 20-nt, 3' PAM.
+        let cas9 = enzyme_from_pam("NGG", 20, false).expect("NGG parses");
+        assert_eq!(cas9.pam_len, 3);
+        assert_eq!(cas9.protospacer_len, 20);
+        assert!(matches!(cas9.pam_side, PamSide::ThreePrime));
+        // Cas12a-style: TTTV, 23-nt, 5' PAM (case-insensitive).
+        let cas12a = enzyme_from_pam("tttv", 23, true).expect("TTTV parses");
+        assert_eq!(cas12a.pam_len, 4);
+        assert_eq!(cas12a.protospacer_len, 23);
+        assert!(matches!(cas12a.pam_side, PamSide::FivePrime));
+        // Errors: empty, bad base, over the 28-base site limit.
+        assert!(enzyme_from_pam("", 20, false).is_err());
+        assert!(enzyme_from_pam("NXG", 20, false).is_err());
+        assert!(enzyme_from_pam("NGG", 30, false).is_err());
     }
 
     #[test]
