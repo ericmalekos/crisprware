@@ -38,7 +38,7 @@ for W in "${WIDTHS[@]}"; do
         BUILD_RSS="reused"
     else
         echo "  building..." >&2
-        /usr/bin/time -v crispr-ots index --enzyme spcas9ngg --bin-width "$W" \
+        /usr/bin/time -v crispr-ots index --pam NGG -l 20 --bin-width "$W" \
             --index "$PREFIX" "$REF" 2> "$BUILD_LOG"
         BUILD_WALL=$(grep "Elapsed" "$BUILD_LOG" | awk '{print $NF}')
         BUILD_RSS=$(grep "Maximum resident" "$BUILD_LOG" | awk '{print $NF}')
