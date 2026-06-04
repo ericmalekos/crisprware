@@ -99,10 +99,11 @@ def test_offtarget_browser_pos_and_offset_seek(tmp_path):
     line = raw[off:].split(b"\n", 1)[0].decode()
     counts, lst = line.split("\t")
     assert counts == "0,1,0,2,0"  # mismatch_counts ; -> ,
-    # off-targets sorted by score desc: + at 500 (pos=start=500), - at 800 (pos=start+3=803)
+    # off-targets sorted by score desc; pos = crispr-ots start for BOTH strands
+    # (the full 27-nt site's leftmost base): + at 500, - at 800.
     entries = lst.split("|")
     assert entries[0] == "chr1;500+;800"  # cfd 0.80 -> 800; + strand pos=start
-    assert entries[1] == "chr3;803-;300"  # cfd 0.30 -> 300; - strand pos=start+3
+    assert entries[1] == "chr3;800-;300"  # cfd 0.30 -> 300; - strand pos=start (was start+3)
     # sum of listed strong off-targets <= sum of mismatch counts (=3)
     assert len(entries) <= sum(int(x) for x in counts.split(","))
 

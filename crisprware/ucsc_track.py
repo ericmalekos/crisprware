@@ -15,9 +15,10 @@ Coordinate conventions (validated against hg38, both strands):
 * On-target feature spans PAM(4) + spacer(23) = 27 nt. The guide BED's
   ``start``/``stop`` bound the 23-nt spacer on the + strand; the 4-nt PAM is
   added on the 5' side per strand (``+``: left, ``-``: right).
-* Off-target ``pos`` (the browser's 24-nt window = 4 PAM + 20 match) maps from
-  crispr-ots's 0-based 27-nt-site ``start`` as **``+``: pos = start;
-  ``-``: pos = start + 3``** (the 23→20 truncation drops the 3 PAM-distal nt).
+* Off-target ``pos`` = the 0-based leftmost base of the full **27-nt** site
+  (4-nt PAM + 23-nt protospacer) on the forward strand = crispr-ots's ``start``,
+  for **both strands**. The viewer fetches ``[pos, pos+27)``, reverse-complements
+  on the ``-`` strand, and reads a 4-nt PAM + the full 23-nt match.
 
 The ``_mismatchCounts`` come from Mode-1 (true per-bucket totals, no CFD floor);
 the ``_crisprOfftargets`` list comes from Mode-2 (floored at the run's
@@ -223,8 +224,12 @@ def _build_details(
                         if cur is not None:
                             _flush(cur, entries)
                         cur, entries = gid, []
+                    # pos = 0-based leftmost base of the full 27-nt site (4-nt PAM
+                    # + 23-nt protospacer) on the forward strand = crispr-ots's
+                    # `start`, for BOTH strands. The viewer fetches [pos, pos+27),
+                    # reverse-complements if '-', and reads 4-nt PAM + 23-nt match.
                     start, strand = int(p[2]), p[3]
-                    pos = start if strand == "+" else start + 3
+                    pos = start
                     si = int(round(float(p[5]) * 1000))
                     entries.append((f"{p[1]};{pos}{strand};{si}", si))
             if cur is not None:
