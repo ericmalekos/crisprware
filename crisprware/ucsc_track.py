@@ -322,12 +322,12 @@ def build_track(
 
     buckets = _mismatch_buckets(g["mismatch_counts"])
     enpam_pct = _pct(g["enpam_gb_score"]).to_numpy() if "enpam_gb_score" in g.columns else np.full(len(g), np.nan)
-    # itemRgb efficiency ramp is driven by EnSeq-DeepCpf1 (enpam_pct kept for the mouseover).
-    color_pct = (
+    # itemRgb efficiency ramp is driven by EnCas12a-DeepCpf1 (enseq); also shown on hover.
+    enseq_pct = (
         _pct(g["enseq_deepcpf1_score"]).to_numpy() if "enseq_deepcpf1_score" in g.columns else np.full(len(g), np.nan)
     )
     item_rgb = _item_rgb(
-        dropped, buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy(), spec_pct, color_pct
+        dropped, buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy(), spec_pct, enseq_pct
     )
 
     # unique flags: non-dropped guides cleared the --threshold 0 screen (no 0-mm
@@ -358,10 +358,16 @@ def build_track(
         out[c] = _fmt_pct_raw(g[c], _pct(g[c])).to_numpy()
 
     dcpf_pct = _pct(g["deepcpf1_score"]).to_numpy() if "deepcpf1_score" in g.columns else np.full(len(g), np.nan)
+
+    def _pf(v):
+        return "" if np.isnan(v) else int(round(v))
+
+    # hover shows the operative specificity + all three on-target efficiencies (percentiles)
     mouse = [
-        f"EnCas12A Spec: {'' if np.isnan(spec_pct[i]) else int(round(spec_pct[i]))}, "
-        f"DeepCpf1: {'' if np.isnan(dcpf_pct[i]) else int(round(dcpf_pct[i]))}, "
-        f"EnCas12a: {'' if np.isnan(enpam_pct[i]) else int(round(enpam_pct[i]))}"
+        f"EnCas12A Spec: {_pf(spec_pct[i])}, "
+        f"EnCas12a-DeepCpf1: {_pf(enseq_pct[i])}, "
+        f"DeepCpf1: {_pf(dcpf_pct[i])}, "
+        f"EnPAM-GB: {_pf(enpam_pct[i])}"
         for i in range(len(g))
     ]
     out["_mouseOver"] = mouse
