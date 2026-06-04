@@ -253,7 +253,15 @@ def _build_details(
                     start, strand = int(p[2]), p[3]
                     pos = start
                     si = int(round(float(p[5]) * 1000))
-                    entries.append((f"{p[1]};{pos}{strand};{si}", si))
+                    # Single-pass dual scoring: the Mode-2 TSV has a 2nd CFD column
+                    # (cfd2). Per the spec, each off-target is
+                    # chrom;posStrand;scoreInt1[;scoreInt2] (EnCas12a, then WT/2xNLS).
+                    if len(p) > 6 and p[6] != "":
+                        si2 = int(round(float(p[6]) * 1000))
+                        entry = f"{p[1]};{pos}{strand};{si};{si2}"
+                    else:
+                        entry = f"{p[1]};{pos}{strand};{si}"
+                    entries.append((entry, si))
             if cur is not None:
                 _flush(cur, entries)
             os.remove(sorted_path)
@@ -279,7 +287,6 @@ def build_track(
     list_cap: int = 100,
     blank_threshold: int = 2000,
     run_tools: bool = True,
-    extra_specs: Optional[Sequence[tuple[str, str, str]]] = None,
 ) -> Dict[str, str]:
     """Assemble the UCSC track from ``guide_df`` + crispr-ots output at
     ``enum_prefix`` (Mode-1 = ``enum_prefix``, Mode-2 = ``enum_prefix.ot.tsv``,
@@ -307,23 +314,23 @@ def build_track(
         g[col] = g["id"].map(m1[col]) if col in m1.columns else np.nan
     dropped = g["dropped"].fillna(0).to_numpy() == 1
 
-    # Additional off-target matrices (e.g. 2xNLS), each scored in its own
-    # aggregated pass; merge each one's TTTV/TTTN specificity by guide id.
+    # Single-pass dual scoring: the secondary matrix's specificity rides in the
+    # SAME Mode-1 (columns specificity_tttn_2xnls / specificity_tttv_2xnls). Emit
+    # the 2xNLS-Cas12a display columns when present.
     extra_spec_data = []  # (field_label, display_name, spec_tttv, spec_tttn)
-    for field, display, mode1_path in extra_specs or []:
-        em1 = pd.read_csv(mode1_path).set_index("id")
+    if "specificity_tttn_2xnls" in m1.columns or "specificity_tttv_2xnls" in m1.columns:
         ids = g["id"]
         etttv = (
-            pd.to_numeric(ids.map(em1["specificity_tttv"]), errors="coerce")
-            if "specificity_tttv" in em1.columns
+            pd.to_numeric(ids.map(m1["specificity_tttv_2xnls"]), errors="coerce")
+            if "specificity_tttv_2xnls" in m1.columns
             else pd.Series(np.nan, index=g.index)
         )
         etttn = (
-            pd.to_numeric(ids.map(em1["specificity_tttn"]), errors="coerce")
-            if "specificity_tttn" in em1.columns
+            pd.to_numeric(ids.map(m1["specificity_tttn_2xnls"]), errors="coerce")
+            if "specificity_tttn_2xnls" in m1.columns
             else pd.Series(np.nan, index=g.index)
         )
-        extra_spec_data.append((field, display, etttv, etttn))
+        extra_spec_data.append(("2xNLS_Cas12A", "2xNLS-Cas12A", etttv, etttn))
 
     # --- coordinates: spacer BED -> 27-nt site (5'-PAM, strand-aware) ---
     start = pd.to_numeric(g["start"], errors="coerce").fillna(0).astype(int).to_numpy()
@@ -451,20 +458,9 @@ def _cli() -> None:
     ap.add_argument("--list-cap", type=int, default=100)
     ap.add_argument("--blank-threshold", type=int, default=2000)
     ap.add_argument("--no-tools", action="store_true", help="Skip bgzip/bedToBigBed (just write .bed/.tab/.as)")
-    ap.add_argument(
-        "--extra-spec",
-        action="append",
-        default=[],
-        metavar="FIELD:DISPLAY:MODE1PATH",
-        help="Additional off-target matrix specificity to merge (repeatable), "
-        "e.g. 2xNLS_Cas12A:2xNLS-Cas12A:offtargets_2xnls.csv",
-    )
     a = ap.parse_args()
-    extra = [tuple(s.split(":", 2)) for s in a.extra_spec]
     gdf = pd.read_csv(a.guides, sep="\t", dtype=str)
-    art = build_track(
-        gdf, a.enum_prefix, a.outdir, a.chrom_sizes, a.list_cap, a.blank_threshold, not a.no_tools, extra_specs=extra
-    )
+    art = build_track(gdf, a.enum_prefix, a.outdir, a.chrom_sizes, a.list_cap, a.blank_threshold, not a.no_tools)
     for k, v in art.items():
         print(f"{k}: {v}")
 

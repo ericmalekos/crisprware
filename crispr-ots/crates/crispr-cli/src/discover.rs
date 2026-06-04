@@ -534,13 +534,26 @@ fn scan_on_gpu(
 /// is derived from `on_count`). 8 covers every realistic `--mismatches`.
 const MM_BUCKETS: usize = 8;
 
+/// Primary + optional secondary Cas12a CFD scorer for one dual-matrix scan.
+/// The PRIMARY drives `off_sum`/`tttv_sum`, `max_cfd`, the saturation cap, the
+/// Mode-2 `cfd` column, and the `--cfd-threshold` floor; the SECONDARY (when
+/// present) drives only the `*_2` specificity pair and the Mode-2 `cfd2` column.
+struct Cas12aScorers {
+    primary: Cas12aCfd,
+    secondary: Option<Cas12aCfd>,
+}
+
 /// Per-guide CFD accumulators for the streaming driver (Mode 1).
 struct Accum {
-    /// Σ cfd over off-targets (Cas9), or Σ TTTN (Cas12a).
+    /// Σ cfd over off-targets (Cas9), or Σ TTTN (Cas12a primary matrix).
     off_sum: Vec<f64>,
-    /// Σ over off-targets whose PAM ≠ TTTT (Cas12a TTTV only).
+    /// Σ over off-targets whose PAM ≠ TTTT (Cas12a primary TTTV only).
     tttv_sum: Vec<f64>,
-    /// Largest off-target CFD seen per guide.
+    /// Σ TTTN over off-targets for the secondary Cas12a matrix (dual runs only).
+    off_sum2: Vec<f64>,
+    /// Σ TTTV over off-targets for the secondary Cas12a matrix (dual runs only).
+    tttv_sum2: Vec<f64>,
+    /// Largest off-target CFD seen per guide (primary matrix).
     max_cfd: Vec<f64>,
     /// On-target (mm == 0) multiplicity per guide.
     on_count: Vec<u32>,
@@ -572,7 +585,7 @@ fn accumulate_hit(
     ot_pos: Position,
     mm: u8,
     cfd: Option<&Cfd>,
-    cas12a: Option<&Cas12aCfd>,
+    cas12a: Option<&Cas12aScorers>,
     proto_len: u32,
     cfd_threshold: f64,
     ot_cap: u32,
@@ -591,15 +604,21 @@ fn accumulate_hit(
         flag_if_saturated(acc, abs_guide, ot_cap, off_sum_cap);
         return Ok(());
     }
-    let (cfd_val, is_tttt) = if let Some(c) = cas12a {
-        (
-            c.score_pair_with_len(guide_site, ot_site, proto_len),
-            crispr_score::is_tttt_prefix(ot_site, proto_len),
-        )
+    // `is_tttt` is matrix-independent (the PAM isn't scored) — compute it once.
+    // The primary CFD drives all aggregates + the Mode-2 `cfd`; the secondary
+    // (dual Cas12a only) drives only `off_sum2`/`tttv_sum2` + the `cfd2` column.
+    let (cfd_val, cfd2_opt, is_tttt) = if let Some(c) = cas12a {
+        let is_tttt = crispr_score::is_tttt_prefix(ot_site, proto_len);
+        let primary = c.primary.score_pair_with_len(guide_site, ot_site, proto_len);
+        let secondary = c
+            .secondary
+            .as_ref()
+            .map(|s| s.score_pair_with_len(guide_site, ot_site, proto_len));
+        (primary, secondary, is_tttt)
     } else if let Some(c) = cfd {
-        (c.score_pair(guide_site, ot_site), false)
+        (c.score_pair(guide_site, ot_site), None, false)
     } else {
-        (0.0, false)
+        (0.0, None, false)
     };
     acc.off_sum[abs_guide] += cfd_val;
     acc.off_count[abs_guide] += 1;
@@ -608,6 +627,12 @@ fn accumulate_hit(
     }
     if cas12a.is_some() && !is_tttt {
         acc.tttv_sum[abs_guide] += cfd_val;
+    }
+    if let Some(cfd2_val) = cfd2_opt {
+        acc.off_sum2[abs_guide] += cfd2_val;
+        if !is_tttt {
+            acc.tttv_sum2[abs_guide] += cfd2_val;
+        }
     }
     if cfd_val > acc.max_cfd[abs_guide] {
         acc.max_cfd[abs_guide] = cfd_val;
@@ -622,12 +647,13 @@ fn accumulate_hit(
                 offset: ot_pos.offset,
                 strand_reverse: strand_rev,
                 cfd_q: crate::ot_stream::OtRecord::quantize_cfd(cfd_val),
+                cfd2_q: cfd2_opt.map_or(0, crate::ot_stream::OtRecord::quantize_cfd),
                 mm,
             })?;
         }
         if let Some(w) = writers.tsv.as_mut() {
             let chrom = source.contig_name(ot_pos.contig_id).unwrap_or("");
-            w.write_row(gid, chrom, ot_pos.offset, strand_rev, mm, cfd_val)?;
+            w.write_row(gid, chrom, ot_pos.offset, strand_rev, mm, cfd_val, cfd2_opt)?;
         }
     }
     flag_if_saturated(acc, abs_guide, ot_cap, off_sum_cap);
@@ -696,19 +722,39 @@ fn run_discover_streaming(
     } else {
         None
     };
-    let cas12a = if config.scores.contains(&ScoreMetric::Cas12aTwoXNls) {
-        Some(Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls).expect("bundled 2xNLS matrix parses"))
-    } else if config.scores.contains(&ScoreMetric::Cas12aEnCas12a) {
-        Some(Cas12aCfd::from_matrix(Cas12aMatrix::EnCas12a).expect("bundled enCas12a matrix parses"))
-    } else {
-        None
+    // Collect the requested Cas12a matrices in listed order (dedup). The first is
+    // the primary; the second distinct one (if any) is the secondary "WT" matrix,
+    // scored in the same scan. Any 3rd distinct matrix is ignored.
+    let cas12a = {
+        let mut mats: Vec<Cas12aMatrix> = Vec::new();
+        for s in &config.scores {
+            let m = match s {
+                ScoreMetric::Cas12aEnCas12a => Some(Cas12aMatrix::EnCas12a),
+                ScoreMetric::Cas12aTwoXNls => Some(Cas12aMatrix::TwoXNls),
+                _ => None,
+            };
+            if let Some(m) = m {
+                if !mats.contains(&m) {
+                    mats.push(m);
+                }
+            }
+        }
+        mats.first().map(|&m0| Cas12aScorers {
+            primary: Cas12aCfd::from_matrix(m0).expect("bundled Cas12a matrix parses"),
+            secondary: mats
+                .get(1)
+                .map(|&m1| Cas12aCfd::from_matrix(m1).expect("bundled Cas12a matrix parses")),
+        })
     };
     let is_cas12a = cas12a.is_some();
+    let cas12a_dual = cas12a.as_ref().is_some_and(|c| c.secondary.is_some());
 
     let n = guide_records.len();
     let mut acc = Accum {
         off_sum: vec![0.0; n],
         tttv_sum: vec![0.0; n],
+        off_sum2: vec![0.0; n],
+        tttv_sum2: vec![0.0; n],
         max_cfd: vec![0.0; n],
         on_count: vec![0; n],
         off_count: vec![0; n],
@@ -732,10 +778,10 @@ fn run_discover_streaming(
             None
         },
         tsv: if want_ot && matches!(config.ot_format, OtFormat::Tsv | OtFormat::Both) {
-            Some(crate::ot_stream::OtTsvWriter::create(&suffix_path(
-                &config.output,
-                "ot.tsv",
-            ))?)
+            Some(crate::ot_stream::OtTsvWriter::create(
+                &suffix_path(&config.output, "ot.tsv"),
+                cas12a_dual,
+            )?)
         } else {
             None
         },
@@ -825,7 +871,7 @@ fn run_discover_streaming(
 
     // ---- write Mode 1 + sidecar ----
     if want_agg {
-        let mut agg = crate::ot_stream::AggWriter::create(&config.output, is_cas12a)?;
+        let mut agg = crate::ot_stream::AggWriter::create(&config.output, is_cas12a, cas12a_dual)?;
         for (i, rec) in guide_records.iter().enumerate() {
             if dropped[i] {
                 // Pre-screened out (off-target within --threshold): omit, unless
@@ -853,10 +899,20 @@ fn run_discover_streaming(
                 // landed mid-distribution instead of at the maximum.)
                 let tttn = specificity(config.spec_convention, acc.off_sum[i], acc.on_count[i]);
                 let tttv = specificity(config.spec_convention, acc.tttv_sum[i], acc.on_count[i]);
+                let (tttn2, tttv2) = if cas12a_dual {
+                    (
+                        Some(specificity(config.spec_convention, acc.off_sum2[i], acc.on_count[i])),
+                        Some(specificity(config.spec_convention, acc.tttv_sum2[i], acc.on_count[i])),
+                    )
+                } else {
+                    (None, None)
+                };
                 agg.write_cas12a(
                     &rec.id,
                     tttn,
                     tttv,
+                    tttn2,
+                    tttv2,
                     acc.max_cfd[i],
                     acc.off_count[i],
                     &buckets,
@@ -964,7 +1020,7 @@ fn gpu_emit_pass(
     ot_cap: u32,
     off_sum_cap: f64,
     cfd: Option<&Cfd>,
-    cas12a: Option<&Cas12aCfd>,
+    cas12a: Option<&Cas12aScorers>,
     proto_len: u32,
     acc: &mut Accum,
     writers: &mut OtWriters,
@@ -1061,7 +1117,7 @@ fn streaming_gpu(
     ot_cap: u32,
     off_sum_cap: f64,
     cfd: Option<&Cfd>,
-    cas12a: Option<&Cas12aCfd>,
+    cas12a: Option<&Cas12aScorers>,
     proto_len: u32,
     acc: &mut Accum,
     writers: &mut OtWriters,
@@ -1107,7 +1163,7 @@ fn streaming_gpu(
     _ot_cap: u32,
     _off_sum_cap: f64,
     _cfd: Option<&Cfd>,
-    _cas12a: Option<&Cas12aCfd>,
+    _cas12a: Option<&Cas12aScorers>,
     _proto_len: u32,
     _acc: &mut Accum,
     _writers: &mut OtWriters,

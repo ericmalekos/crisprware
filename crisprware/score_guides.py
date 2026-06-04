@@ -518,58 +518,49 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
 
     reuse = getattr(args, "ucscgb_reuse_offtargets", False)
 
-    def _enumerate(score_metric: str, output_mode: str, out_path: str) -> None:
-        """One crispr-ots off-target pass with the given CFD matrix. ``both`` writes
-        Mode-1 (specificity) + Mode-2 (off-target list); ``aggregated`` writes Mode-1
-        only. Honors --ucscgb_reuse_offtargets per output file."""
-        cmd = [
-            args.crispr_ots_bin,
-            "enumerate",
-            "--scanner",
-            args.ucscgb_scanner,
-            "--threads",
-            str(args.threads),
-            "--score",
-            score_metric,
-            "--mismatches",
-            str(args.mismatches),
-            "--output-mode",
-            output_mode,
-            "--threshold",
-            "0",
-            "--keep-dropped",
-        ]
-        if output_mode == "both":
-            cmd += ["--ot-format", "tsv", "--cfd-threshold", str(args.ucscgb_cfd_threshold)]
-        cmd += ["--kmers-file", kmers_path, "--output", out_path, index]
-
-        cached = os.path.exists(out_path) and os.path.getsize(out_path) > 0
-        if output_mode == "both":
-            cached = cached and os.path.exists(out_path + ".ot.tsv")
-        if reuse and cached:
-            print(f"\n\tUCSC track: reusing cached {out_path} — skipping enumerate ({score_metric})\n", flush=True)
-            return
-        if reuse:
-            print(
-                f"\n\t--ucscgb_reuse_offtargets set but {out_path} missing; running enumerate ({score_metric}).\n",
-                flush=True,
-            )
-        print(f"\n\tUCSC track: crispr-ots off-target pass ({score_metric})\n\t" + " ".join(cmd) + "\n")
-        _t = time.time()
-        subprocess.run(cmd, check=True)
-        print(f"\n\t[TIMING] off-target enumerate ({score_metric}): {time.time() - _t:.1f}s\n", flush=True)
-
-    # primary pass (enCas12a): Mode-1 specificity + Mode-2 off-target list.
-    enum_out = os.path.join(outdir, "offtargets.csv")
-    _enumerate("cfd-cas12a:encas12a", "both", enum_out)
-
-    # optional 2xNLS-Cas12a pass: aggregated only — we want its specificity columns;
-    # the off-target list still comes from the enCas12a pass.
-    extra_specs: list = []
+    # One scan scores every requested CFD matrix. enCas12a is primary (drives the
+    # off-target list + score/color); 2xNLS-Cas12a ("WT") is added unless
+    # --no-ucscgb_2xnls. Both specificities land in one Mode-1 and both per-off-target
+    # CFDs (cfd + cfd2) in one Mode-2 — no second scan.
+    scores = ["cfd-cas12a:encas12a"]
     if getattr(args, "ucscgb_2xnls", True):
-        enum_2xnls = os.path.join(outdir, "offtargets_2xnls.csv")
-        _enumerate("cfd-cas12a:2xnls", "aggregated", enum_2xnls)
-        extra_specs = [("2xNLS_Cas12A", "2xNLS-Cas12A", enum_2xnls)]
+        scores.append("cfd-cas12a:2xnls")
+
+    enum_out = os.path.join(outdir, "offtargets.csv")
+    cmd = [args.crispr_ots_bin, "enumerate", "--scanner", args.ucscgb_scanner, "--threads", str(args.threads)]
+    for s in scores:
+        cmd += ["--score", s]
+    cmd += [
+        "--mismatches",
+        str(args.mismatches),
+        "--output-mode",
+        "both",
+        "--ot-format",
+        "tsv",
+        "--threshold",
+        "0",
+        "--keep-dropped",
+        "--cfd-threshold",
+        str(args.ucscgb_cfd_threshold),
+        "--kmers-file",
+        kmers_path,
+        "--output",
+        enum_out,
+        index,
+    ]
+    ot_tsv = enum_out + ".ot.tsv"
+    if reuse and os.path.exists(enum_out) and os.path.getsize(enum_out) > 0 and os.path.exists(ot_tsv):
+        print(
+            f"\n\tUCSC track: reusing cached off-target output {enum_out} (+ .ot.tsv) — skipping enumerate\n",
+            flush=True,
+        )
+    else:
+        if reuse:
+            print("\n\t--ucscgb_reuse_offtargets set but no cached output found; running enumerate.\n", flush=True)
+        print("\n\tUCSC track: crispr-ots off-target pass (" + ", ".join(scores) + ")\n\t" + " ".join(cmd) + "\n")
+        _t_enum = time.time()
+        subprocess.run(cmd, check=True)
+        print(f"\n\t[TIMING] off-target crispr-ots enumerate: {time.time() - _t_enum:.1f}s\n", flush=True)
 
     comp = gRNADF[composite].str.split(",", expand=True)
     guide_df = pd.DataFrame(
@@ -596,7 +587,6 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         list_cap=args.ucscgb_list_cap,
         blank_threshold=args.ucscgb_blank_threshold,
         run_tools=True,
-        extra_specs=extra_specs,
     )
     print(f"\n\t[TIMING] track assembly (sort+stream+bigBed+bgzip): {time.time() - _t_asm:.1f}s", flush=True)
     print("\n\tUCSC Cas12a track written:")

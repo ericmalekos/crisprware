@@ -12,11 +12,11 @@
 //!   maps `guide_id → (id, on-target locus, sequence, on_count)` so binary
 //!   records stay tiny but joinable.
 //!
-//! Binary layout — 64-byte header then `n` × 13-byte records:
+//! Binary layout — 64-byte header then `n` × 15-byte records:
 //! ```text
 //! header: magic "CROTOT2\0" (8) | version u16 | record_bytes u16 | max_mm u8 |
 //!         (pad 3) | cfd_threshold f64 | n_guides u64 | (pad to 64)
-//! record: guide_id u32 | contig u16 | offset(bits0-30)+strand(bit31) u32 | cfd_q u16 | mm u8
+//! record: guide_id u32 | contig u16 | offset(bits0-30)+strand(bit31) u32 | cfd_q u16 | cfd2_q u16 | mm u8
 //! ```
 //! CFD is quantized to `u16` as `round(cfd * 65535)` (precision ~1.5e-5, far
 //! below biological significance); strand is folded into bit 31 of the offset
@@ -30,11 +30,11 @@ use std::path::Path;
 /// Magic bytes opening a Mode-2 binary off-target file.
 pub const OT_MAGIC: [u8; 8] = *b"CROTOT2\0";
 /// Bytes per binary off-target record.
-pub const OT_RECORD_BYTES: usize = 13;
+pub const OT_RECORD_BYTES: usize = 15;
 /// Fixed binary header size.
 pub const OT_HEADER_BYTES: usize = 64;
-/// Current binary format version (2 = adds a per-record `mm` byte).
-pub const OT_VERSION: u16 = 2;
+/// Current binary format version (3 = adds a per-record second-matrix CFD `cfd2_q`).
+pub const OT_VERSION: u16 = 3;
 const CFD_SCALE: f64 = 65535.0;
 
 /// Join per-mismatch-bucket counts (`[mm0, mm1, …]`) into a `;`-separated
@@ -51,7 +51,7 @@ fn join_counts(counts: &[u32]) -> String {
     s
 }
 
-/// One per-off-target record (12 bytes LE).
+/// One per-off-target record (15 bytes LE).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OtRecord {
     /// Absolute guide index (joins to the sidecar / Mode-1 row order).
@@ -62,8 +62,10 @@ pub struct OtRecord {
     pub offset: u32,
     /// `true` if the off-target is on the reverse strand.
     pub strand_reverse: bool,
-    /// CFD quantized to `u16` (`round(cfd * 65535)`).
+    /// Primary-matrix CFD quantized to `u16` (`round(cfd * 65535)`).
     pub cfd_q: u16,
+    /// Secondary-matrix CFD quantized to `u16` (0 when only one matrix scored).
+    pub cfd2_q: u16,
     /// Mismatch count of this off-target vs the guide (over the protospacer).
     pub mm: u8,
 }
@@ -83,10 +85,16 @@ impl OtRecord {
         f64::from(q) / CFD_SCALE
     }
 
-    /// This record's dequantized CFD.
+    /// This record's dequantized primary-matrix CFD.
     #[must_use]
     pub fn cfd(self) -> f64 {
         Self::dequantize_cfd(self.cfd_q)
+    }
+
+    /// This record's dequantized secondary-matrix CFD.
+    #[must_use]
+    pub fn cfd2(self) -> f64 {
+        Self::dequantize_cfd(self.cfd2_q)
     }
 
     #[must_use]
@@ -97,24 +105,27 @@ impl OtRecord {
         b[4..6].copy_from_slice(&self.contig.to_le_bytes());
         b[6..10].copy_from_slice(&off_strand.to_le_bytes());
         b[10..12].copy_from_slice(&self.cfd_q.to_le_bytes());
-        b[12] = self.mm;
+        b[12..14].copy_from_slice(&self.cfd2_q.to_le_bytes());
+        b[14] = self.mm;
         b
     }
 
-    /// Decode a 13-byte little-endian record.
+    /// Decode a 15-byte little-endian record.
     #[must_use]
     pub fn from_bytes(b: &[u8; OT_RECORD_BYTES]) -> Self {
         let guide_id = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
         let contig = u16::from_le_bytes([b[4], b[5]]);
         let off_strand = u32::from_le_bytes([b[6], b[7], b[8], b[9]]);
         let cfd_q = u16::from_le_bytes([b[10], b[11]]);
+        let cfd2_q = u16::from_le_bytes([b[12], b[13]]);
         Self {
             guide_id,
             contig,
             offset: off_strand & 0x7FFF_FFFF,
             strand_reverse: (off_strand >> 31) == 1,
             cfd_q,
-            mm: b[12],
+            cfd2_q,
+            mm: b[14],
         }
     }
 }
@@ -156,6 +167,17 @@ impl OtHeader {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "not a CROTOT2 off-target file (bad magic)",
+            ));
+        }
+        let version = u16::from_le_bytes([b[8], b[9]]);
+        let record_bytes = usize::from(u16::from_le_bytes([b[10], b[11]]));
+        if record_bytes != OT_RECORD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "off-target record size {record_bytes} (file version {version}) != expected \
+                     {OT_RECORD_BYTES} (v{OT_VERSION}); rebuild with a matching crispr-ots"
+                ),
             ));
         }
         Ok(Self {
@@ -213,24 +235,31 @@ pub fn push_record_bytes(buf: &mut Vec<u8>, rec: OtRecord) {
     buf.extend_from_slice(&rec.to_bytes());
 }
 
-/// Mode-2 TSV off-target writer (`guide_id\tchrom\tstart\tstrand\tcfd`).
+/// Mode-2 TSV off-target writer (`guide_id\tchrom\tstart\tstrand\tmm\tcfd[\tcfd2]`).
 #[derive(Debug)]
 pub struct OtTsvWriter {
     w: BufWriter<File>,
+    with_cfd2: bool,
 }
 
 impl OtTsvWriter {
-    /// Create the file and write the header line.
+    /// Create the file and write the header line. `with_cfd2` adds a second-matrix
+    /// CFD column (`cfd2`) for dual-matrix Cas12a runs.
     ///
     /// # Errors
     /// I/O failure.
-    pub fn create(path: &Path) -> io::Result<Self> {
+    pub fn create(path: &Path, with_cfd2: bool) -> io::Result<Self> {
         let mut w = BufWriter::with_capacity(1 << 20, File::create(path)?);
-        writeln!(w, "guide_id\tchrom\tstart\tstrand\tmm\tcfd")?;
-        Ok(Self { w })
+        if with_cfd2 {
+            writeln!(w, "guide_id\tchrom\tstart\tstrand\tmm\tcfd\tcfd2")?;
+        } else {
+            writeln!(w, "guide_id\tchrom\tstart\tstrand\tmm\tcfd")?;
+        }
+        Ok(Self { w, with_cfd2 })
     }
 
-    /// Append one row.
+    /// Append one row. `cfd2` is written only when the writer was created with
+    /// `with_cfd2` (defaults to `0.0` if `None`).
     ///
     /// # Errors
     /// I/O failure.
@@ -242,9 +271,15 @@ impl OtTsvWriter {
         strand_reverse: bool,
         mm: u8,
         cfd: f64,
+        cfd2: Option<f64>,
     ) -> io::Result<()> {
         let strand = if strand_reverse { '-' } else { '+' };
-        writeln!(self.w, "{guide_id}\t{chrom}\t{start}\t{strand}\t{mm}\t{cfd:.6}")
+        if self.with_cfd2 {
+            let c2 = cfd2.unwrap_or(0.0);
+            writeln!(self.w, "{guide_id}\t{chrom}\t{start}\t{strand}\t{mm}\t{cfd:.6}\t{c2:.6}")
+        } else {
+            writeln!(self.w, "{guide_id}\t{chrom}\t{start}\t{strand}\t{mm}\t{cfd:.6}")
+        }
     }
 
     /// Flush and close.
@@ -261,29 +296,39 @@ impl OtTsvWriter {
 pub struct AggWriter {
     w: BufWriter<File>,
     cas12a: bool,
+    cas12a_dual: bool,
 }
 
 impl AggWriter {
-    /// Create the file and write the header. `cas12a` selects the column set.
-    /// Trailing `dropped` column flags guides removed by the `--threshold`
+    /// Create the file and write the header. `cas12a` selects the column set;
+    /// `cas12a_dual` additionally emits a second-matrix specificity pair
+    /// (`specificity_tttn_2xnls,specificity_tttv_2xnls`) right after the primary
+    /// pair. Trailing `dropped` column flags guides removed by the `--threshold`
     /// pre-screen (only present, as `1`, when `--keep-dropped` is set).
     ///
     /// # Errors
     /// I/O failure.
-    pub fn create(path: &Path, cas12a: bool) -> io::Result<Self> {
+    pub fn create(path: &Path, cas12a: bool, cas12a_dual: bool) -> io::Result<Self> {
         let mut w = BufWriter::new(File::create(path)?);
         if cas12a {
-            writeln!(
-                w,
-                "id,specificity_tttn,specificity_tttv,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
-            )?;
+            if cas12a_dual {
+                writeln!(
+                    w,
+                    "id,specificity_tttn,specificity_tttv,specificity_tttn_2xnls,specificity_tttv_2xnls,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
+                )?;
+            } else {
+                writeln!(
+                    w,
+                    "id,specificity_tttn,specificity_tttv,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
+                )?;
+            }
         } else {
             writeln!(
                 w,
                 "id,specificity,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
             )?;
         }
-        Ok(Self { w, cas12a })
+        Ok(Self { w, cas12a, cas12a_dual })
     }
 
     /// SpCas9 row. `saturated` marks a guide whose off-target cap was hit, so
@@ -318,17 +363,28 @@ impl AggWriter {
         id: &str,
         tttn: f64,
         tttv: f64,
+        tttn2: Option<f64>,
+        tttv2: Option<f64>,
         max_cfd: f64,
         off_target_count: u32,
         mm_counts: &[u32],
         saturated: bool,
     ) -> io::Result<()> {
-        writeln!(
-            self.w,
-            "{id},{tttn:.6},{tttv:.6},{max_cfd:.6},{off_target_count},{},{},0",
-            join_counts(mm_counts),
-            u8::from(saturated)
-        )
+        let counts = join_counts(mm_counts);
+        let sat = u8::from(saturated);
+        if self.cas12a_dual {
+            let t2 = tttn2.unwrap_or(0.0);
+            let v2 = tttv2.unwrap_or(0.0);
+            writeln!(
+                self.w,
+                "{id},{tttn:.6},{tttv:.6},{t2:.6},{v2:.6},{max_cfd:.6},{off_target_count},{counts},{sat},0"
+            )
+        } else {
+            writeln!(
+                self.w,
+                "{id},{tttn:.6},{tttv:.6},{max_cfd:.6},{off_target_count},{counts},{sat},0"
+            )
+        }
     }
 
     /// A guide dropped by the `--threshold` pre-screen: scored columns are left
@@ -339,7 +395,12 @@ impl AggWriter {
     /// I/O failure.
     pub fn write_dropped(&mut self, id: &str) -> io::Result<()> {
         if self.cas12a {
-            writeln!(self.w, "{id},,,,,,0,1")
+            if self.cas12a_dual {
+                // 10 cols: id + 7 empty (tttn,tttv,tttn2,tttv2,max_cfd,off_count,counts) + saturated=0 + dropped=1
+                writeln!(self.w, "{id},,,,,,,,0,1")
+            } else {
+                writeln!(self.w, "{id},,,,,,0,1")
+            }
         } else {
             writeln!(self.w, "{id},,,,,0,1")
         }
@@ -469,14 +530,17 @@ mod tests {
             offset: 0x4321_0FED & 0x7FFF_FFFF,
             strand_reverse: true,
             cfd_q: OtRecord::quantize_cfd(0.37),
+            cfd2_q: OtRecord::quantize_cfd(0.82),
             mm: 3,
         };
         let bytes = rec.to_bytes();
         assert_eq!(bytes.len(), OT_RECORD_BYTES);
+        assert_eq!(OT_RECORD_BYTES, 15);
         let back = OtRecord::from_bytes(&bytes);
         assert_eq!(rec, back);
         assert_eq!(back.mm, 3);
         assert!((back.cfd() - 0.37).abs() < 1e-4);
+        assert!((back.cfd2() - 0.82).abs() < 1e-4);
     }
 
     #[test]
@@ -531,6 +595,7 @@ mod tests {
                 offset: 100,
                 strand_reverse: false,
                 cfd_q: OtRecord::quantize_cfd(cfd),
+                cfd2_q: 0,
                 mm: 4,
             })
             .expect("write");
@@ -544,6 +609,64 @@ mod tests {
         assert!((agg[&0].max_cfd - 0.5).abs() < 1e-3);
         // guide 1: 1/(1 + 0.1)
         assert!((agg[&1].specificity - 1.0 / 1.1).abs() < 1e-3);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn record_carries_two_distinct_cfds() {
+        let rec = OtRecord {
+            guide_id: 7,
+            contig: 1,
+            offset: 500,
+            strand_reverse: false,
+            cfd_q: OtRecord::quantize_cfd(0.9),
+            cfd2_q: OtRecord::quantize_cfd(0.1),
+            mm: 2,
+        };
+        let back = OtRecord::from_bytes(&rec.to_bytes());
+        assert!((back.cfd() - 0.9).abs() < 1e-4);
+        assert!((back.cfd2() - 0.1).abs() < 1e-4);
+        assert_ne!(back.cfd_q, back.cfd2_q);
+    }
+
+    #[test]
+    fn agg_dual_header_and_row_order() {
+        let path = std::env::temp_dir().join(format!("crispr_agg_dual_{}.csv", std::process::id()));
+        {
+            let mut w = AggWriter::create(&path, true, true).expect("create");
+            w.write_cas12a("g1", 0.8, 0.9, Some(0.5), Some(0.6), 0.3, 2, &[0, 0, 0, 1, 1], false)
+                .expect("row");
+            w.write_dropped("g2").expect("dropped");
+        } // drop flushes the BufWriter
+        let body = std::fs::read_to_string(&path).expect("read");
+        let mut lines = body.lines();
+        assert_eq!(
+            lines.next().unwrap(),
+            "id,specificity_tttn,specificity_tttv,specificity_tttn_2xnls,specificity_tttv_2xnls,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
+        );
+        let row = lines.next().unwrap();
+        assert_eq!(row.split(',').count(), 10, "dual row has 10 columns");
+        assert!(row.starts_with("g1,0.800000,0.900000,0.500000,0.600000,"));
+        let dropped = lines.next().unwrap();
+        assert_eq!(dropped.split(',').count(), 10, "dual dropped row has 10 columns");
+        assert!(dropped.ends_with(",0,1"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tsv_dual_cfd_column() {
+        let path = std::env::temp_dir().join(format!("crispr_tsv_dual_{}.tsv", std::process::id()));
+        {
+            let mut w = OtTsvWriter::create(&path, true).expect("create");
+            w.write_row(0, "chr1", 100, true, 3, 0.4, Some(0.7)).expect("row");
+            w.finish().expect("finish");
+        }
+        let body = std::fs::read_to_string(&path).expect("read");
+        let mut lines = body.lines();
+        assert_eq!(lines.next().unwrap(), "guide_id\tchrom\tstart\tstrand\tmm\tcfd\tcfd2");
+        let row = lines.next().unwrap();
+        assert_eq!(row.split('\t').count(), 7);
+        assert!(row.ends_with("0.400000\t0.700000"));
         std::fs::remove_file(&path).ok();
     }
 }
