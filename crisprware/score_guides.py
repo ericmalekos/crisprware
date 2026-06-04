@@ -278,6 +278,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Guides with more than this many off-targets get an empty list (counts "
         "kept) — the viewer shows 'Too many off-targets'. [default: 2000]",
     )
+    ucsc.add_argument(
+        "--ucscgb_reuse_offtargets",
+        action="store_true",
+        help="Reuse an existing off-target enumerate output (offtargets.csv + .ot.tsv) "
+        "in the --ucscgb dir instead of re-running crispr-ots. Use when re-assembling a "
+        "track after an adapter-only change (the engine output is unchanged), skipping "
+        "the GPU pass. [default: off]",
+    )
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -527,10 +535,20 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         enum_out,
         index,
     ]
-    print("\n\tUCSC track: crispr-ots off-target pass\n\t" + " ".join(cmd) + "\n")
-    _t_enum = time.time()
-    subprocess.run(cmd, check=True)
-    print(f"\n\t[TIMING] off-target crispr-ots enumerate: {time.time() - _t_enum:.1f}s\n", flush=True)
+    ot_tsv = enum_out + ".ot.tsv"
+    reuse = getattr(args, "ucscgb_reuse_offtargets", False)
+    if reuse and os.path.exists(enum_out) and os.path.getsize(enum_out) > 0 and os.path.exists(ot_tsv):
+        print(
+            f"\n\tUCSC track: reusing cached off-target output {enum_out} (+ .ot.tsv) — skipping enumerate\n",
+            flush=True,
+        )
+    else:
+        if reuse:
+            print("\n\t--ucscgb_reuse_offtargets set but no cached output found; running enumerate.\n", flush=True)
+        print("\n\tUCSC track: crispr-ots off-target pass\n\t" + " ".join(cmd) + "\n")
+        _t_enum = time.time()
+        subprocess.run(cmd, check=True)
+        print(f"\n\t[TIMING] off-target crispr-ots enumerate: {time.time() - _t_enum:.1f}s\n", flush=True)
 
     comp = gRNADF[composite].str.split(",", expand=True)
     guide_df = pd.DataFrame(
