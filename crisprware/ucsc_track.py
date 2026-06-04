@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a UCSC Genome Browser Cas12a track from crispr-ots scored output.
+"""Build a UCSC Genome Browser Cas12A track from crispr-ots scored output.
 
 Consumes the per-guide on-target scores plus the crispr-ots streaming
 off-target output (Mode-1 aggregated CSV + Mode-2 per-off-target TSV + the
@@ -58,13 +58,13 @@ def build_autosql(score_cols: Sequence[str]) -> str:
     ``_mouseOver``/``_offset`` trailer. The column order here MUST match the BED
     written by :func:`build_track`."""
     score_descs = {
-        "enseq_deepcpf1_score": "EnCas12a-DeepCpf1 efficiency: percentile (raw)",
-        "deepcpf1_score": "DeepCpf1 efficiency: percentile (raw)",
-        "enpam_gb_score": "EnPAM-GB efficiency: percentile (raw)",
+        "enseq_deepcpf1_score": "EnCas12A-DeepCpf1 efficiency: percentile (score)",
+        "deepcpf1_score": "DeepCpf1 efficiency: percentile (score)",
+        "enpam_gb_score": "EnPAM-GB efficiency: percentile (score)",
     }
     lines = [
-        "table cas12aTargets",
-        '"CRISPR Cas12a guides, genome wide (bed9 + extra; off-targets in external bgzip tab file)"',
+        "table Cas12ATargets",
+        '"CRISPR Cas12A guides, genome wide (bed9 + extra; off-targets in external bgzip tab file)"',
         "    (",
         '    string  chrom;        "Reference sequence chromosome or scaffold"',
         '    uint    chromStart;   "0-based start of the 27nt PAM+spacer site"',
@@ -79,13 +79,13 @@ def build_autosql(score_cols: Sequence[str]) -> str:
         '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
         '    string  unique_TTTV;               "Unique at TTTV PAMs"',
         '    string  unique_TTTN;               "Unique at TTTN PAMs"',
-        '    string  TTTV_enCas12a_specificity; "EnCas12a specificity vs TTTV: percentile (raw)"',
-        '    string  TTTN_enCas12a_specificity; "EnCas12a specificity vs TTTN: percentile (raw)"',
+        '    string  TTTV_enCas12A_specificity; "EnCas12A specificity vs TTTV: percentile (score)"',
+        '    string  TTTN_enCas12A_specificity; "EnCas12A specificity vs TTTN: percentile (score)"',
     ]
     for c in score_cols:
-        desc = score_descs.get(c, "efficiency: percentile (raw)")
+        desc = score_descs.get(c, "efficiency: percentile (score)")
         # align descriptions to the same column as the unique_/specificity rows
-        # (longest extra-field name = TTTV_enCas12a_specificity, 25 chars).
+        # (longest extra-field name = TTTV_enCas12A_specificity, 25 chars).
         lines.append(f'    string  {c};{" " * max(1, 26 - len(c))}"{desc}"')
     lines += [
         '    string  _mouseOver;   "Hover label (mouseOver)"',
@@ -312,7 +312,7 @@ def build_track(
 
     # --- scores / colors / display strings ---
     # Operative specificity = TTTN: guides are TTTV-only but off-targets are
-    # scored against TTTT too (enCas12a cleaves TTTT), so the bigBed score/color
+    # scored against TTTT too (enCas12A cleaves TTTT), so the bigBed score/color
     # come from specificity_tttn (Sigma cfd over ALL off-targets incl TTTT). Both
     # TTTN and TTTV are still emitted as display columns below.
     spec_tttv = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
@@ -322,7 +322,7 @@ def build_track(
 
     buckets = _mismatch_buckets(g["mismatch_counts"])
     enpam_pct = _pct(g["enpam_gb_score"]).to_numpy() if "enpam_gb_score" in g.columns else np.full(len(g), np.nan)
-    # itemRgb efficiency ramp is driven by EnCas12a-DeepCpf1 (enseq); also shown on hover.
+    # itemRgb efficiency ramp is driven by EnCas12A-DeepCpf1 (enseq); also shown on hover.
     enseq_pct = (
         _pct(g["enseq_deepcpf1_score"]).to_numpy() if "enseq_deepcpf1_score" in g.columns else np.full(len(g), np.nan)
     )
@@ -352,8 +352,8 @@ def build_track(
     # specificity, then the on-target efficiency scores (enseq, deepcpf1, enpam_gb).
     out["unique_TTTV"] = unique
     out["unique_TTTN"] = unique
-    out["TTTV_enCas12a_specificity"] = _fmt_pct_raw(spec_tttv, _pct(spec_tttv)).to_numpy()
-    out["TTTN_enCas12a_specificity"] = _fmt_pct_raw(spec_tttn, _pct(spec_tttn)).to_numpy()
+    out["TTTV_enCas12A_specificity"] = _fmt_pct_raw(spec_tttv, _pct(spec_tttv)).to_numpy()
+    out["TTTN_enCas12A_specificity"] = _fmt_pct_raw(spec_tttn, _pct(spec_tttn)).to_numpy()
     for c in score_cols:
         out[c] = _fmt_pct_raw(g[c], _pct(g[c])).to_numpy()
 
@@ -362,10 +362,15 @@ def build_track(
     def _pf(v):
         return "" if np.isnan(v) else int(round(v))
 
+    def _spec_field(i):
+        # non-unique (dropped) guides have no specificity -> NaN percentile;
+        # label them rather than showing an empty "EnCas12A Spec:".
+        return "Not unique at TTTN" if np.isnan(spec_pct[i]) else f"EnCas12A Spec: {int(round(spec_pct[i]))}"
+
     # hover shows the operative specificity + all three on-target efficiencies (percentiles)
     mouse = [
-        f"EnCas12A Spec: {_pf(spec_pct[i])}, "
-        f"EnCas12a-DeepCpf1: {_pf(enseq_pct[i])}, "
+        f"{_spec_field(i)}, "
+        f"EnCas12A-DeepCpf1: {_pf(enseq_pct[i])}, "
         f"DeepCpf1: {_pf(dcpf_pct[i])}, "
         f"EnPAM-GB: {_pf(enpam_pct[i])}"
         for i in range(len(g))
@@ -406,7 +411,7 @@ def build_track(
 def _cli() -> None:
     import argparse
 
-    ap = argparse.ArgumentParser(description="Build the UCSC Cas12a track from crispr-ots output.")
+    ap = argparse.ArgumentParser(description="Build the UCSC Cas12A track from crispr-ots output.")
     ap.add_argument("--guides", required=True, help="TSV with id,chrom,start,stop,strand,guideSeq,pam + score cols")
     ap.add_argument("--enum-prefix", required=True, help="crispr-ots Mode-1 output path (Mode-2/sidecar inferred)")
     ap.add_argument("--outdir", required=True)
