@@ -106,14 +106,21 @@ def _pct(series: pd.Series) -> pd.Series:
 
 
 def _fmt_pct_raw(raw: pd.Series, pct: pd.Series) -> pd.Series:
+    def _r4(v):
+        """Raw value rounded to <=4 decimals; pass non-numeric through unchanged."""
+        try:
+            return f"{round(float(v), 4)}"
+        except (TypeError, ValueError):
+            return str(v)
+
     out = []
     for r, p in zip(raw, pct):
         if pd.isna(r):
             out.append("")
         elif pd.isna(p):
-            out.append(str(r))
+            out.append(_r4(r))
         else:
-            out.append(f"{int(round(float(p)))}% ({r})")
+            out.append(f"{int(round(float(p)))}% ({_r4(r)})")
     return pd.Series(out, index=raw.index, dtype="object")
 
 
@@ -136,13 +143,13 @@ def _mismatch_buckets(mm_counts: pd.Series) -> pd.DataFrame:
     )
 
 
-def _item_rgb(dropped, mm0, mm1, mm2, spec_pct, enpam_pct) -> np.ndarray:
+def _item_rgb(dropped, mm0, mm1, mm2, spec_pct, eff_pct) -> np.ndarray:
     """Color hierarchy (mirrors parasol_scripts/combine_on_off_tsvs.choose_itemRgb):
     grey for non-unique (0-mm), dark grey for close (1/2-mm) off-targets, dark for
-    low specificity, else a red/yellow/green ramp on the enPAM+GB percentile."""
+    low specificity, else a red/yellow/green ramp on the EnSeq-DeepCpf1 percentile."""
     n = len(dropped)
     out = np.full(n, "230,106,113", dtype=object)  # default red
-    enp = np.where(np.isnan(enpam_pct), 100.0, enpam_pct)
+    enp = np.where(np.isnan(eff_pct), 100.0, eff_pct)
     out = np.where(enp <= 50, "230,106,113", np.where(enp <= 75, "251,243,34", "105,181,20"))
     out = np.where((~np.isnan(spec_pct)) & (spec_pct <= 55), "81,81,80", out)
     out = np.where((mm1 > 0) | (mm2 > 0), "120,120,120", out)
@@ -315,8 +322,12 @@ def build_track(
 
     buckets = _mismatch_buckets(g["mismatch_counts"])
     enpam_pct = _pct(g["enpam_gb_score"]).to_numpy() if "enpam_gb_score" in g.columns else np.full(len(g), np.nan)
+    # itemRgb efficiency ramp is driven by EnSeq-DeepCpf1 (enpam_pct kept for the mouseover).
+    color_pct = (
+        _pct(g["enseq_deepcpf1_score"]).to_numpy() if "enseq_deepcpf1_score" in g.columns else np.full(len(g), np.nan)
+    )
     item_rgb = _item_rgb(
-        dropped, buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy(), spec_pct, enpam_pct
+        dropped, buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy(), spec_pct, color_pct
     )
 
     # unique flags: non-dropped guides cleared the --threshold 0 screen (no 0-mm
