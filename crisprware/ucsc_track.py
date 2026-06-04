@@ -52,17 +52,21 @@ AS_NAME = "cas12aTargets.as"
 # ----------------------------------------------------------------------------
 # autoSql
 # ----------------------------------------------------------------------------
-def build_autosql(score_cols: Sequence[str]) -> str:
-    """autoSql for the bigBed: bed9 + guideSeq/pam + unique flags + TTTV/TTTN
-    specificity + on-target efficiency columns + the required
-    ``_mouseOver``/``_offset`` trailer. The column order here MUST match the BED
-    written by :func:`build_track`."""
+def build_autosql(
+    score_cols: Sequence[str],
+    spec_matrices: Sequence[tuple[str, str]] = (("enCas12A", "EnCas12A"),),
+) -> str:
+    """autoSql for the bigBed: bed9 + guideSeq/pam + unique flags + per-matrix
+    TTTV/TTTN specificity + on-target efficiency columns + the required
+    ``_mouseOver``/``_offset`` trailer. ``spec_matrices`` is ``(field_label,
+    display_name)`` per off-target matrix (one TTTV + one TTTN column each). The
+    column order here MUST match the BED written by :func:`build_track`."""
     score_descs = {
         "enseq_deepcpf1_score": "EnCas12A-DeepCpf1 efficiency: percentile (score)",
         "deepcpf1_score": "DeepCpf1 efficiency: percentile (score)",
         "enpam_gb_score": "EnPAM-GB efficiency: percentile (score)",
     }
-    lines = [
+    head = [
         "table Cas12ATargets",
         '"CRISPR Cas12A guides, genome wide (bed9 + extra; off-targets in external bgzip tab file)"',
         "    (",
@@ -77,23 +81,24 @@ def build_autosql(score_cols: Sequence[str]) -> str:
         '    uint    itemRgb;      "Display color R,G,B"',
         '    string  guideSeq;     "Guide sequence"',
         '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
-        '    string  unique_TTTV;               "Unique at TTTV PAMs"',
-        '    string  unique_TTTN;               "Unique at TTTN PAMs"',
-        '    string  TTTV_enCas12A_specificity; "EnCas12A specificity vs TTTV: percentile (score)"',
-        '    string  TTTN_enCas12A_specificity; "EnCas12A specificity vs TTTN: percentile (score)"',
     ]
+    # Extra string fields: unique flags, per-matrix TTTV/TTTN specificity, then
+    # the on-target efficiencies. Descriptions align to the widest field name.
+    extra = [("unique_TTTV", "Unique at TTTV PAMs"), ("unique_TTTN", "Unique at TTTN PAMs")]
+    for field, display in spec_matrices:
+        extra.append((f"TTTV_{field}_specificity", f"{display} specificity vs TTTV: percentile (score)"))
+        extra.append((f"TTTN_{field}_specificity", f"{display} specificity vs TTTN: percentile (score)"))
     for c in score_cols:
-        desc = score_descs.get(c, "efficiency: percentile (score)")
-        # align descriptions to the same column as the unique_/specificity rows
-        # (longest extra-field name = TTTV_enCas12A_specificity, 25 chars).
-        lines.append(f'    string  {c};{" " * max(1, 26 - len(c))}"{desc}"')
-    lines += [
+        extra.append((c, score_descs.get(c, "efficiency: percentile (score)")))
+    width = max(len(f) for f, _ in extra) + 2  # "field;" + >=1 space before the description
+    body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
+    tail = [
         '    string  _mouseOver;   "Hover label (mouseOver)"',
         '    bigint  _offset;      "Uncompressed byte offset into crisprDetails.tab, or 0 if non-unique"',
         "    )",
         "",
     ]
-    return "\n".join(lines)
+    return "\n".join(head + body + tail)
 
 
 # ----------------------------------------------------------------------------
@@ -274,6 +279,7 @@ def build_track(
     list_cap: int = 100,
     blank_threshold: int = 2000,
     run_tools: bool = True,
+    extra_specs: Optional[Sequence[tuple[str, str, str]]] = None,
 ) -> Dict[str, str]:
     """Assemble the UCSC track from ``guide_df`` + crispr-ots output at
     ``enum_prefix`` (Mode-1 = ``enum_prefix``, Mode-2 = ``enum_prefix.ot.tsv``,
@@ -300,6 +306,24 @@ def build_track(
     for col in ["specificity_tttv", "specificity_tttn", "off_target_count", "mismatch_counts", "dropped"]:
         g[col] = g["id"].map(m1[col]) if col in m1.columns else np.nan
     dropped = g["dropped"].fillna(0).to_numpy() == 1
+
+    # Additional off-target matrices (e.g. 2xNLS), each scored in its own
+    # aggregated pass; merge each one's TTTV/TTTN specificity by guide id.
+    extra_spec_data = []  # (field_label, display_name, spec_tttv, spec_tttn)
+    for field, display, mode1_path in extra_specs or []:
+        em1 = pd.read_csv(mode1_path).set_index("id")
+        ids = g["id"]
+        etttv = (
+            pd.to_numeric(ids.map(em1["specificity_tttv"]), errors="coerce")
+            if "specificity_tttv" in em1.columns
+            else pd.Series(np.nan, index=g.index)
+        )
+        etttn = (
+            pd.to_numeric(ids.map(em1["specificity_tttn"]), errors="coerce")
+            if "specificity_tttn" in em1.columns
+            else pd.Series(np.nan, index=g.index)
+        )
+        extra_spec_data.append((field, display, etttv, etttn))
 
     # --- coordinates: spacer BED -> 27-nt site (5'-PAM, strand-aware) ---
     start = pd.to_numeric(g["start"], errors="coerce").fillna(0).astype(int).to_numpy()
@@ -354,6 +378,9 @@ def build_track(
     out["unique_TTTN"] = unique
     out["TTTV_enCas12A_specificity"] = _fmt_pct_raw(spec_tttv, _pct(spec_tttv)).to_numpy()
     out["TTTN_enCas12A_specificity"] = _fmt_pct_raw(spec_tttn, _pct(spec_tttn)).to_numpy()
+    for field, _display, etttv, etttn in extra_spec_data:
+        out[f"TTTV_{field}_specificity"] = _fmt_pct_raw(etttv, _pct(etttv)).to_numpy()
+        out[f"TTTN_{field}_specificity"] = _fmt_pct_raw(etttn, _pct(etttn)).to_numpy()
     for c in score_cols:
         out[c] = _fmt_pct_raw(g[c], _pct(g[c])).to_numpy()
 
@@ -362,19 +389,23 @@ def build_track(
     def _pf(v):
         return "" if np.isnan(v) else int(round(v))
 
-    def _spec_field(i):
-        # non-unique (dropped) guides have no specificity -> NaN percentile;
-        # label them rather than showing an empty "EnCas12A Spec:".
-        return "Not unique at TTTN" if np.isnan(spec_pct[i]) else f"EnCas12A Spec: {int(round(spec_pct[i]))}"
+    # percentiles of each extra matrix's TTTN specificity (for the hover)
+    extra_spec_pct = [(display, _pct(etttn).to_numpy()) for _field, display, _etttv, etttn in extra_spec_data]
 
-    # hover shows the operative specificity + all three on-target efficiencies (percentiles)
-    mouse = [
-        f"{_spec_field(i)}, "
-        f"EnCas12A-DeepCpf1: {_pf(enseq_pct[i])}, "
-        f"DeepCpf1: {_pf(dcpf_pct[i])}, "
-        f"EnPAM-GB: {_pf(enpam_pct[i])}"
-        for i in range(len(g))
-    ]
+    def _hover(i):
+        # operative (primary) specificity; non-unique guides have none.
+        parts = ["Not unique at TTTN" if np.isnan(spec_pct[i]) else f"EnCas12A Spec: {int(round(spec_pct[i]))}"]
+        for display, pcts in extra_spec_pct:
+            if not np.isnan(pcts[i]):
+                parts.append(f"{display} Spec: {int(round(pcts[i]))}")
+        parts += [
+            f"EnCas12A-DeepCpf1: {_pf(enseq_pct[i])}",
+            f"DeepCpf1: {_pf(dcpf_pct[i])}",
+            f"EnPAM-GB: {_pf(enpam_pct[i])}",
+        ]
+        return ", ".join(parts)
+
+    mouse = [_hover(i) for i in range(len(g))]
     out["_mouseOver"] = mouse
     out["_offset"] = [offsets.get(gid, 0) for gid in g["id"].to_numpy()]
 
@@ -384,9 +415,10 @@ def build_track(
     bed_path = os.path.join(outdir, "guides.bed")
     bed_sorted = bed.sort_values(["#chr", "start"])
     bed_sorted.to_csv(bed_path, sep="\t", index=False, header=False)
+    spec_matrices = [("enCas12A", "EnCas12A")] + [(field, display) for field, display, _tv, _tn in extra_spec_data]
     as_path = os.path.join(outdir, AS_NAME)
     with open(as_path, "w") as fh:
-        fh.write(build_autosql(score_cols))
+        fh.write(build_autosql(score_cols, spec_matrices))
 
     artifacts = {"bed": bed_path, "details_tab": details_path, "autosql": as_path}
 
@@ -419,9 +451,20 @@ def _cli() -> None:
     ap.add_argument("--list-cap", type=int, default=100)
     ap.add_argument("--blank-threshold", type=int, default=2000)
     ap.add_argument("--no-tools", action="store_true", help="Skip bgzip/bedToBigBed (just write .bed/.tab/.as)")
+    ap.add_argument(
+        "--extra-spec",
+        action="append",
+        default=[],
+        metavar="FIELD:DISPLAY:MODE1PATH",
+        help="Additional off-target matrix specificity to merge (repeatable), "
+        "e.g. 2xNLS_Cas12A:2xNLS-Cas12A:offtargets_2xnls.csv",
+    )
     a = ap.parse_args()
+    extra = [tuple(s.split(":", 2)) for s in a.extra_spec]
     gdf = pd.read_csv(a.guides, sep="\t", dtype=str)
-    art = build_track(gdf, a.enum_prefix, a.outdir, a.chrom_sizes, a.list_cap, a.blank_threshold, not a.no_tools)
+    art = build_track(
+        gdf, a.enum_prefix, a.outdir, a.chrom_sizes, a.list_cap, a.blank_threshold, not a.no_tools, extra_specs=extra
+    )
     for k, v in art.items():
         print(f"{k}: {v}")
 
