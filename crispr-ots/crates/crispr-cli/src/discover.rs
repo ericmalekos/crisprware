@@ -844,16 +844,15 @@ fn run_discover_streaming(
             buckets.extend_from_slice(&acc.mm_counts[i][1..=max_mm]);
 
             if is_cas12a {
-                let tttn = if acc.off_sum[i] > 0.0 {
-                    1.0 / acc.off_sum[i]
-                } else {
-                    1.0
-                };
-                let tttv = if acc.tttv_sum[i] > 0.0 {
-                    1.0 / acc.tttv_sum[i]
-                } else {
-                    1.0
-                };
+                // Same on-target-regularized convention as SpCas9: 1/(on_count + Σ)
+                // for GuideScan, 1/(1 + Σ) for FlashFry. The streaming accumulator
+                // keeps the on-target out of `off_sum` (it lives in `on_count`), so
+                // the on-target term must be added back here — exactly what
+                // `specificity()` does. (Previously `1/off_sum`, which dropped the
+                // on-target term entirely: unbounded, and off-target-free guides
+                // landed mid-distribution instead of at the maximum.)
+                let tttn = specificity(config.spec_convention, acc.off_sum[i], acc.on_count[i]);
+                let tttv = specificity(config.spec_convention, acc.tttv_sum[i], acc.on_count[i]);
                 agg.write_cas12a(
                     &rec.id,
                     tttn,
