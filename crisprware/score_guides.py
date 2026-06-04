@@ -577,6 +577,11 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
     for c in ("deepcpf1_score", "enpam_gb_score", "enseq_deepcpf1_score"):
         if c in gRNADF.columns:
             guide_df[c] = gRNADF[c].to_numpy()
+    # variant-specific DeepCpf1 (seq_deepcpf1variants, e.g. --cas12a_variant AsCas12a)
+    # -> the track's ascas12a_deepcpf1_score column.
+    var_cols = [c for c in gRNADF.columns if c.startswith("seq_deepcpf1variants_") and c.endswith("_score")]
+    if var_cols:
+        guide_df["ascas12a_deepcpf1_score"] = gRNADF[var_cols[0]].to_numpy()
 
     _t_asm = time.time()
     art = ucsc_track.build_track(

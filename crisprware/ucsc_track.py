@@ -41,7 +41,7 @@ PAM_LEN = 4
 
 # On-target display score columns, in track column order (enseq, then deepcpf1,
 # then enpam_gb). Any subset actually present in the guide table is emitted.
-DISPLAY_SCORE_COLS = ["enseq_deepcpf1_score", "deepcpf1_score", "enpam_gb_score"]
+DISPLAY_SCORE_COLS = ["enseq_deepcpf1_score", "deepcpf1_score", "enpam_gb_score", "ascas12a_deepcpf1_score"]
 
 # Track filenames (must not be renamed — the browser config references them).
 BB_NAME = "minimumCas12A.bb"
@@ -65,6 +65,7 @@ def build_autosql(
         "enseq_deepcpf1_score": "EnCas12A-DeepCpf1 efficiency: percentile (score)",
         "deepcpf1_score": "DeepCpf1 efficiency: percentile (score)",
         "enpam_gb_score": "EnPAM-GB efficiency: percentile (score)",
+        "ascas12a_deepcpf1_score": "AsCas12a-DeepCpf1 efficiency: percentile (score)",
     }
     head = [
         "table Cas12ATargets",
@@ -392,6 +393,8 @@ def build_track(
         out[c] = _fmt_pct_raw(g[c], _pct(g[c])).to_numpy()
 
     dcpf_pct = _pct(g["deepcpf1_score"]).to_numpy() if "deepcpf1_score" in g.columns else np.full(len(g), np.nan)
+    has_ascas12a = "ascas12a_deepcpf1_score" in g.columns
+    ascas12a_pct = _pct(g["ascas12a_deepcpf1_score"]).to_numpy() if has_ascas12a else np.full(len(g), np.nan)
 
     def _pf(v):
         return "" if np.isnan(v) else int(round(v))
@@ -410,6 +413,8 @@ def build_track(
             f"DeepCpf1: {_pf(dcpf_pct[i])}",
             f"EnPAM-GB: {_pf(enpam_pct[i])}",
         ]
+        if has_ascas12a:
+            parts.append(f"AsCas12a-DeepCpf1: {_pf(ascas12a_pct[i])}")
         return ", ".join(parts)
 
     mouse = [_hover(i) for i in range(len(g))]
