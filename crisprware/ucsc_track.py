@@ -41,7 +41,7 @@ PAM_LEN = 4
 
 # On-target display score columns, in track column order (enseq, then deepcpf1,
 # then enpam_gb). Any subset actually present in the guide table is emitted.
-DISPLAY_SCORE_COLS = ["enseq_deepcpf1_score", "deepcpf1_score", "enpam_gb_score", "ascas12a_deepcpf1_score"]
+DISPLAY_SCORE_COLS = ["ascas12a_deepcpf1_score", "enseq_deepcpf1_score", "deepcpf1_score", "enpam_gb_score"]
 
 # Track filenames (must not be renamed — the browser config references them).
 BB_NAME = "minimumCas12A.bb"
