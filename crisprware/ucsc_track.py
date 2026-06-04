@@ -39,9 +39,9 @@ SITE_LEN = 27
 SPACER_LEN = 23
 PAM_LEN = 4
 
-# On-target display score columns, in track column order. Any subset that is
-# actually present in the guide table is emitted.
-DISPLAY_SCORE_COLS = ["deepcpf1_score", "enpam_gb_score", "enseq_deepcpf1_score"]
+# On-target display score columns, in track column order (enseq, then deepcpf1,
+# then enpam_gb). Any subset actually present in the guide table is emitted.
+DISPLAY_SCORE_COLS = ["enseq_deepcpf1_score", "deepcpf1_score", "enpam_gb_score"]
 
 # Track filenames (must not be renamed — the browser config references them).
 BB_NAME = "minimumCas12A.bb"
@@ -53,8 +53,15 @@ AS_NAME = "cas12aTargets.as"
 # autoSql
 # ----------------------------------------------------------------------------
 def build_autosql(score_cols: Sequence[str]) -> str:
-    """autoSql for the bigBed: bed9 + guideSeq/pam + on-target/specificity
-    display columns + the required ``_mouseOver``/``_offset`` trailer."""
+    """autoSql for the bigBed: bed9 + guideSeq/pam + unique flags + TTTV/TTTN
+    specificity + on-target efficiency columns + the required
+    ``_mouseOver``/``_offset`` trailer. The column order here MUST match the BED
+    written by :func:`build_track`."""
+    score_descs = {
+        "enseq_deepcpf1_score": "EnCas12a-DeepCpf1 efficiency: percentile (raw)",
+        "deepcpf1_score": "DeepCpf1 efficiency: percentile (raw)",
+        "enpam_gb_score": "EnPAM-GB efficiency: percentile (raw)",
+    }
     lines = [
         "table cas12aTargets",
         '"CRISPR Cas12a guides, genome wide (bed9 + extra; off-targets in external bgzip tab file)"',
@@ -63,23 +70,26 @@ def build_autosql(score_cols: Sequence[str]) -> str:
         '    uint    chromStart;   "0-based start of the 27nt PAM+spacer site"',
         '    uint    chromEnd;     "chromStart + 27"',
         '    string  name;         "Guide ID (may be empty)"',
-        '    uint    score;        "Score 0-1000 (filter configured 0-100)"',
+        '    uint    score;        "Score 0-1000 (labeled on the details page by trackDb scoreLabel)"',
         '    char[1] strand;       "+ or -"',
-        '    uint    thickStart;   "Start of spacer (thick); the 4nt PAM is the thin part"',
-        '    uint    thickEnd;     "End of spacer (thick)"',
+        '    uint    thickStart;   "Start of protospacer (thick);"',
+        '    uint    thickEnd;     "End of protospacer (thick)"',
         '    uint    itemRgb;      "Display color R,G,B"',
-        "    string  guideSeq;     \"Spacer 5'->3' (23nt)\"",
-        "    string  pam;          \"4nt PAM 5'->3' (e.g. TTTA)\"",
+        '    string  guideSeq;     "Guide sequence"',
+        '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
+        '    string  unique_TTTV;               "Unique at TTTV PAMs"',
+        '    string  unique_TTTN;               "Unique at TTTN PAMs"',
+        '    string  TTTV_enCas12a_specificity; "EnCas12a specificity vs TTTV: percentile (raw)"',
+        '    string  TTTN_enCas12a_specificity; "EnCas12a specificity vs TTTN: percentile (raw)"',
     ]
     for c in score_cols:
-        lines.append(f'    string  {c};{" " * max(1, 18 - len(c))}"free-form score (display only)"')
+        desc = score_descs.get(c, "efficiency: percentile (raw)")
+        # align descriptions to the same column as the unique_/specificity rows
+        # (longest extra-field name = TTTV_enCas12a_specificity, 25 chars).
+        lines.append(f'    string  {c};{" " * max(1, 26 - len(c))}"{desc}"')
     lines += [
-        '    string  TTTV_enCas12a_specificity; "free-form score (display only)"',
-        '    string  TTTN_enCas12a_specificity; "free-form score (display only)"',
-        '    string  unique_TTTV;               "free-form (display only)"',
-        '    string  unique_TTTN;               "free-form (display only)"',
-        '    string  _mouseOver;   "Hover label"',
-        '    bigint  _offset;      "Uncompressed byte offset into crisprDetails.tab, or 0 if none"',
+        '    string  _mouseOver;   "Hover label (mouseOver)"',
+        '    bigint  _offset;      "Uncompressed byte offset into crisprDetails.tab, or 0 if non-unique"',
         "    )",
         "",
     ]
@@ -327,12 +337,14 @@ def build_track(
         "guideSeq": g["guideSeq"].to_numpy(),
         "pam": g["pam"].to_numpy(),
     }
-    for c in score_cols:
-        out[c] = _fmt_pct_raw(g[c], _pct(g[c])).to_numpy()
-    out["TTTV_enCas12a_specificity"] = _fmt_pct_raw(spec_tttv, _pct(spec_tttv)).to_numpy()
-    out["TTTN_enCas12a_specificity"] = _fmt_pct_raw(spec_tttn, _pct(spec_tttn)).to_numpy()
+    # Column order must match build_autosql: unique flags, then TTTV/TTTN
+    # specificity, then the on-target efficiency scores (enseq, deepcpf1, enpam_gb).
     out["unique_TTTV"] = unique
     out["unique_TTTN"] = unique
+    out["TTTV_enCas12a_specificity"] = _fmt_pct_raw(spec_tttv, _pct(spec_tttv)).to_numpy()
+    out["TTTN_enCas12a_specificity"] = _fmt_pct_raw(spec_tttn, _pct(spec_tttn)).to_numpy()
+    for c in score_cols:
+        out[c] = _fmt_pct_raw(g[c], _pct(g[c])).to_numpy()
 
     dcpf_pct = _pct(g["deepcpf1_score"]).to_numpy() if "deepcpf1_score" in g.columns else np.full(len(g), np.nan)
     mouse = [
