@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a UCSC Genome Browser Cas12A track from crispr-ots scored output.
+"""Build a UCSC Genome Browser Cas12a track from crispr-ots scored output.
 
 Consumes the per-guide on-target scores plus the crispr-ots streaming
 off-target output (Mode-1 aggregated CSV + Mode-2 per-off-target TSV + the
@@ -54,7 +54,7 @@ AS_NAME = "cas12aTargets.as"
 # ----------------------------------------------------------------------------
 def build_autosql(
     score_cols: Sequence[str],
-    spec_matrices: Sequence[tuple[str, str]] = (("enCas12A", "EnCas12A"),),
+    spec_matrices: Sequence[tuple[str, str]] = (("enCas12a", "EnCas12a"),),
 ) -> str:
     """autoSql for the bigBed: bed9 + guideSeq/pam + unique flags + per-matrix
     TTTV/TTTN specificity + on-target efficiency columns + the required
@@ -62,14 +62,14 @@ def build_autosql(
     display_name)`` per off-target matrix (one TTTV + one TTTN column each). The
     column order here MUST match the BED written by :func:`build_track`."""
     score_descs = {
-        "enseq_deepcpf1_score": "EnCas12A-DeepCpf1 efficiency: percentile (score)",
+        "enseq_deepcpf1_score": "EnCas12a-DeepCpf1 efficiency: percentile (score)",
         "deepcpf1_score": "DeepCpf1 efficiency: percentile (score)",
         "enpam_gb_score": "EnPAM-GB efficiency: percentile (score)",
         "ascas12a_deepcpf1_score": "AsCas12a-DeepCpf1 efficiency: percentile (score)",
     }
     head = [
-        "table Cas12ATargets",
-        '"CRISPR Cas12A guides, genome wide (bed9 + extra; off-targets in external bgzip tab file)"',
+        "table Cas12aTargets",
+        '"CRISPR Cas12a guides, genome wide (bed9 + extra; off-targets in external bgzip tab file)"',
         "    (",
         '    string  chrom;        "Reference sequence chromosome or scaffold"',
         '    uint    chromStart;   "0-based start of the 27nt PAM+spacer site"',
@@ -152,12 +152,12 @@ def _mismatch_buckets(mm_counts: pd.Series) -> pd.DataFrame:
 def _item_rgb(dropped, mm0, mm1, mm2, spec_pct, eff_pct) -> np.ndarray:
     """Color hierarchy (mirrors parasol_scripts/combine_on_off_tsvs.choose_itemRgb):
     grey for non-unique (0-mm), dark grey for close (1/2-mm) off-targets, dark for
-    low specificity, else a red/yellow/green ramp on the EnSeq-DeepCpf1 percentile."""
+    low specificity, else a red/yellow/green ramp on the AsCas12a-DeepCpf1 percentile."""
     n = len(dropped)
-    out = np.full(n, "230,106,113", dtype=object)  # default red
+    out = np.full(n, "255,100,100", dtype=object)  # default red
     enp = np.where(np.isnan(eff_pct), 100.0, eff_pct)
-    out = np.where(enp <= 50, "230,106,113", np.where(enp <= 75, "251,243,34", "105,181,20"))
-    out = np.where((~np.isnan(spec_pct)) & (spec_pct <= 55), "81,81,80", out)
+    out = np.where(enp <= 50, "255,100,100", np.where(enp <= 75, "255,255,0", "0,200,0"))
+    out = np.where((~np.isnan(spec_pct)) & (spec_pct <= 55), "80,80,80", out)
     out = np.where((mm1 > 0) | (mm2 > 0), "120,120,120", out)
     out = np.where(dropped | (mm0 > 0), "150,150,150", out)
     return out
@@ -331,7 +331,7 @@ def build_track(
             if "specificity_tttn_2xnls" in m1.columns
             else pd.Series(np.nan, index=g.index)
         )
-        extra_spec_data.append(("2xNLS_Cas12A", "2xNLS-Cas12A", etttv, etttn))
+        extra_spec_data.append(("AsCas12a", "AsCas12a", etttv, etttn))
 
     # --- coordinates: spacer BED -> 27-nt site (5'-PAM, strand-aware) ---
     start = pd.to_numeric(g["start"], errors="coerce").fillna(0).astype(int).to_numpy()
@@ -344,22 +344,33 @@ def build_track(
 
     # --- scores / colors / display strings ---
     # Operative specificity = TTTN: guides are TTTV-only but off-targets are
-    # scored against TTTT too (enCas12A cleaves TTTT), so the bigBed score/color
+    # scored against TTTT too (enCas12a cleaves TTTT), so the bigBed score/color
     # come from specificity_tttn (Sigma cfd over ALL off-targets incl TTTT). Both
     # TTTN and TTTV are still emitted as display columns below.
     spec_tttv = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
     spec_tttn = pd.to_numeric(g.get("specificity_tttn"), errors="coerce")
     spec_pct = _pct(spec_tttn).to_numpy()
-    score = np.clip(np.rint(spec_tttn.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
+    # Column 5 (score) + the UCSC score filter use AsCas12a (WT) TTTN specificity
+    # ×100 when the secondary matrix is present, else EnCas12a TTTN. extra_spec_data
+    # rows are (field, display, spec_tttv, spec_tttn) -> [0][3] is the AsCas12a TTTN.
+    score_spec_tttn = extra_spec_data[0][3] if extra_spec_data else spec_tttn
+    score = np.clip(np.rint(score_spec_tttn.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
+    # The low-specificity greying band keys off the SAME (AsCas12a) spec as the score
+    # column; the hover still reports EnCas12a Spec separately via spec_pct.
+    color_spec_pct = _pct(score_spec_tttn).to_numpy()
 
     buckets = _mismatch_buckets(g["mismatch_counts"])
     enpam_pct = _pct(g["enpam_gb_score"]).to_numpy() if "enpam_gb_score" in g.columns else np.full(len(g), np.nan)
-    # itemRgb efficiency ramp is driven by EnCas12A-DeepCpf1 (enseq); also shown on hover.
     enseq_pct = (
         _pct(g["enseq_deepcpf1_score"]).to_numpy() if "enseq_deepcpf1_score" in g.columns else np.full(len(g), np.nan)
     )
+    has_ascas12a = "ascas12a_deepcpf1_score" in g.columns
+    ascas12a_pct = _pct(g["ascas12a_deepcpf1_score"]).to_numpy() if has_ascas12a else np.full(len(g), np.nan)
+    # itemRgb efficiency ramp is driven by AsCas12a-DeepCpf1 (falls back to
+    # EnCas12a-DeepCpf1 when the AsCas12a score isn't present). Also shown on hover.
+    color_pct = ascas12a_pct if has_ascas12a else enseq_pct
     item_rgb = _item_rgb(
-        dropped, buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy(), spec_pct, enseq_pct
+        dropped, buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy(), color_spec_pct, color_pct
     )
 
     # unique flags: non-dropped guides cleared the --threshold 0 screen (no 0-mm
@@ -384,8 +395,8 @@ def build_track(
     # specificity, then the on-target efficiency scores (enseq, deepcpf1, enpam_gb).
     out["unique_TTTV"] = unique
     out["unique_TTTN"] = unique
-    out["TTTV_enCas12A_specificity"] = _fmt_pct_raw(spec_tttv, _pct(spec_tttv)).to_numpy()
-    out["TTTN_enCas12A_specificity"] = _fmt_pct_raw(spec_tttn, _pct(spec_tttn)).to_numpy()
+    out["TTTV_enCas12a_specificity"] = _fmt_pct_raw(spec_tttv, _pct(spec_tttv)).to_numpy()
+    out["TTTN_enCas12a_specificity"] = _fmt_pct_raw(spec_tttn, _pct(spec_tttn)).to_numpy()
     for field, _display, etttv, etttn in extra_spec_data:
         out[f"TTTV_{field}_specificity"] = _fmt_pct_raw(etttv, _pct(etttv)).to_numpy()
         out[f"TTTN_{field}_specificity"] = _fmt_pct_raw(etttn, _pct(etttn)).to_numpy()
@@ -393,8 +404,6 @@ def build_track(
         out[c] = _fmt_pct_raw(g[c], _pct(g[c])).to_numpy()
 
     dcpf_pct = _pct(g["deepcpf1_score"]).to_numpy() if "deepcpf1_score" in g.columns else np.full(len(g), np.nan)
-    has_ascas12a = "ascas12a_deepcpf1_score" in g.columns
-    ascas12a_pct = _pct(g["ascas12a_deepcpf1_score"]).to_numpy() if has_ascas12a else np.full(len(g), np.nan)
 
     def _pf(v):
         return "" if np.isnan(v) else int(round(v))
@@ -404,12 +413,12 @@ def build_track(
 
     def _hover(i):
         # operative (primary) specificity; non-unique guides have none.
-        parts = ["Not unique at TTTN" if np.isnan(spec_pct[i]) else f"EnCas12A Spec: {int(round(spec_pct[i]))}"]
+        parts = ["Not unique at TTTN" if np.isnan(spec_pct[i]) else f"EnCas12a Spec: {int(round(spec_pct[i]))}"]
         for display, pcts in extra_spec_pct:
             if not np.isnan(pcts[i]):
                 parts.append(f"{display} Spec: {int(round(pcts[i]))}")
         parts += [
-            f"EnCas12A-DeepCpf1: {_pf(enseq_pct[i])}",
+            f"EnCas12a-DeepCpf1: {_pf(enseq_pct[i])}",
             f"DeepCpf1: {_pf(dcpf_pct[i])}",
             f"EnPAM-GB: {_pf(enpam_pct[i])}",
         ]
@@ -427,7 +436,7 @@ def build_track(
     bed_path = os.path.join(outdir, "guides.bed")
     bed_sorted = bed.sort_values(["#chr", "start"])
     bed_sorted.to_csv(bed_path, sep="\t", index=False, header=False)
-    spec_matrices = [("enCas12A", "EnCas12A")] + [(field, display) for field, display, _tv, _tn in extra_spec_data]
+    spec_matrices = [("enCas12a", "EnCas12a")] + [(field, display) for field, display, _tv, _tn in extra_spec_data]
     as_path = os.path.join(outdir, AS_NAME)
     with open(as_path, "w") as fh:
         fh.write(build_autosql(score_cols, spec_matrices))
@@ -455,7 +464,7 @@ def build_track(
 def _cli() -> None:
     import argparse
 
-    ap = argparse.ArgumentParser(description="Build the UCSC Cas12A track from crispr-ots output.")
+    ap = argparse.ArgumentParser(description="Build the UCSC Cas12a track from crispr-ots output.")
     ap.add_argument("--guides", required=True, help="TSV with id,chrom,start,stop,strand,guideSeq,pam + score cols")
     ap.add_argument("--enum-prefix", required=True, help="crispr-ots Mode-1 output path (Mode-2/sidecar inferred)")
     ap.add_argument("--outdir", required=True)

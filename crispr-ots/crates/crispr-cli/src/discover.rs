@@ -637,7 +637,11 @@ fn accumulate_hit(
     if cfd_val > acc.max_cfd[abs_guide] {
         acc.max_cfd[abs_guide] = cfd_val;
     }
-    if (writers.bin.is_some() || writers.tsv.is_some()) && cfd_val >= cfd_threshold {
+    // Floor the off-target LIST on EITHER matrix: list the off-target if the
+    // primary OR the secondary CFD clears the threshold (counts/specificity are
+    // unfloored regardless). Single-matrix runs reduce to the primary check.
+    let pass_floor = cfd_val >= cfd_threshold || cfd2_opt.is_some_and(|c2| c2 >= cfd_threshold);
+    if (writers.bin.is_some() || writers.tsv.is_some()) && pass_floor {
         let gid = u32::try_from(abs_guide).unwrap_or(u32::MAX);
         let strand_rev = matches!(ot_pos.strand, Strand::Reverse);
         if let Some(w) = writers.bin.as_mut() {
