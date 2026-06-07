@@ -51,3 +51,9 @@ crispr-ots/**/*.crot
 crispr-ots/**/*.profraw
 crispr-ots/**/flamegraph.svg
 crispr-ots/**/perf.data*
+# Out-of-tree GPU build dir + build/test logs and generated test artifacts
+crispr-ots/target-gpu/
+crispr-ots/gpu_build.log
+crispr-ots/dualmat_build.*
+tests/test_data/**/*.fai
+tests/test_data/**/*.dna
