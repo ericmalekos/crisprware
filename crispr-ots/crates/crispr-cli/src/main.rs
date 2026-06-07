@@ -17,8 +17,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crispr_cli::discover::enzyme_from_pam;
 use crispr_cli::{
-    run_build, run_discover_with, BuildConfig, DiscoverConfig, DiscoverInput, OtFormat, OutputFormat,
-    OutputMode, ScannerKind, ScoreMetric, SpecConvention,
+    run_build, run_discover_with, BuildConfig, DiscoverConfig, DiscoverInput, OtFormat,
+    OutputFormat, OutputMode, ScannerKind, ScoreMetric, SpecConvention,
 };
 use crispr_db::MmapDb;
 
@@ -351,9 +351,7 @@ fn parse_score_metric(s: &str) -> Result<ScoreMetric, String> {
     match s.to_ascii_lowercase().as_str() {
         "cfd" | "doench2016cfd" => Ok(ScoreMetric::Cfd),
         "cfd-cas12a" | "cfd-cas12a:2xnls" | "cas12a-2xnls" => Ok(ScoreMetric::Cas12aTwoXNls),
-        "cfd-cas12a:encas12a" | "cas12a-encas12a" | "encas12a" => {
-            Ok(ScoreMetric::Cas12aEnCas12a)
-        }
+        "cfd-cas12a:encas12a" | "cas12a-encas12a" | "encas12a" => Ok(ScoreMetric::Cas12aEnCas12a),
         other => Err(format!(
             "unknown score metric '{other}' (supported: cfd, cfd-cas12a, \
              cfd-cas12a:encas12a)"
@@ -392,7 +390,8 @@ fn real_main() -> Result<()> {
 }
 
 fn run_index_cmd(args: IndexArgs) -> Result<()> {
-    let enzyme = enzyme_from_pam(&args.pam, args.protospacer_length, args.pam_5_prime).map_err(|e| anyhow!(e))?;
+    let enzyme = enzyme_from_pam(&args.pam, args.protospacer_length, args.pam_5_prime)
+        .map_err(|e| anyhow!(e))?;
     let crot_path = resolve_index_crot_path(&args.index);
     let config = BuildConfig {
         reference: args.fasta,
@@ -424,9 +423,9 @@ fn run_enumerate_cmd(args: EnumerateArgs) -> Result<()> {
         (Some(_), Some(_)) => unreachable!("clap conflicts_with prevents this"),
         (Some(kmers), None) => DiscoverInput::KmersCsv(kmers),
         (None, Some(queries)) => DiscoverInput::QueryFasta(queries),
-        (None, None) => bail!(
-            "one of --kmers-file or --queries is required to enumerate off-targets"
-        ),
+        (None, None) => {
+            bail!("one of --kmers-file or --queries is required to enumerate off-targets")
+        }
     };
 
     let format: OutputFormat = args.format.into();

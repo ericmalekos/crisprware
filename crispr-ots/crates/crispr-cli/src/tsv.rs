@@ -65,10 +65,7 @@ pub fn write_rows<W: Write>(writer: &mut W, rows: &[DiscoverRow]) -> io::Result<
         write!(writer, "\tcfd_max\tcfd_specificity")?;
     }
     if include_cas12a {
-        write!(
-            writer,
-            "\tcas12a_max\tcas12a_spec_tttn\tcas12a_spec_tttv"
-        )?;
+        write!(writer, "\tcas12a_max\tcas12a_spec_tttn\tcas12a_spec_tttv")?;
     }
     writeln!(writer)?;
     for row in rows {

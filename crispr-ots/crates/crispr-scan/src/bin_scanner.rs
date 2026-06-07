@@ -283,10 +283,7 @@ unsafe fn scan_bin_avx512(
                     _mm512_and_si512(ch, upper),
                     _mm512_and_si512(_mm512_slli_epi64::<1>(ch), upper),
                 );
-                let mm = _mm512_add_epi64(
-                    _mm512_popcnt_epi64(ind_l),
-                    _mm512_popcnt_epi64(ind_h),
-                );
+                let mm = _mm512_add_epi64(_mm512_popcnt_epi64(ind_l), _mm512_popcnt_epi64(ind_h));
                 let mut arr = [0u64; 8];
                 _mm512_storeu_si512(arr.as_mut_ptr().cast(), mm);
                 arr
@@ -470,6 +467,241 @@ impl Scanner for BinScanner<'_> {
             );
         }
         hits
+    }
+}
+
+impl BinScanner<'_> {
+    /// Streaming-aggregate scan: instead of collecting every [`Hit`] into a
+    /// `Vec` (which is O(total hits) — hundreds of GB on T2T satellite guides),
+    /// fold each hit into a per-thread accumulator `A` inline. `init` makes a
+    /// fresh per-thread `A`, `fold_hit` applies one hit, `merge` combines two
+    /// `A`s for the reduce. Peak memory is O(#A + one site-chunk of hits per
+    /// thread), independent of total hit volume — the CPU analog of the GPU's
+    /// in-kernel aggregation. Reuses the exact prefilter + SIMD kernels as
+    /// [`Scanner::scan`].
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    pub fn scan_fold<A, INIT, FOLD, SKIP, MERGE>(
+        &self,
+        guides: &[Guide],
+        max_mismatches: u8,
+        init: INIT,
+        fold_hit: FOLD,
+        skip: SKIP,
+        merge: MERGE,
+    ) -> A
+    where
+        A: Send,
+        INIT: Fn() -> A + Sync,
+        FOLD: Fn(&mut A, &Hit) + Sync,
+        // Per-guide early-exit predicate: when it returns true for `(acc, gi)`,
+        // guide `gi` is dropped from this bin's prefilter (and every later bin
+        // on this thread), so a saturated guide stops being scanned. Pass
+        // `|_, _| false` to disable.
+        SKIP: Fn(&A, usize) -> bool + Sync,
+        MERGE: Fn(A, A) -> A + Sync,
+    {
+        let compare_mask = self.source.enzyme().compare_mask;
+        let bin_width = self.source.bin_width();
+        let bin_width_bits = u32::from(bin_width) * 2;
+        let bin_mask: u32 = if bin_width_bits >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << bin_width_bits) - 1
+        };
+        let max_mm_u32 = u32::from(max_mismatches);
+        let guide_prefixes: Vec<u32> = guides.iter().map(|g| self.source.bin_key(g.site)).collect();
+        let bins: Vec<(u32, &[PackedEntry])> = self.source.iter_bins().collect();
+        #[cfg(target_arch = "x86_64")]
+        let use_avx512 = std::env::var_os("CRISPR_OTS_NO_AVX512").is_none()
+            && std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512vpopcntdq");
+        // Drain the transient per-bin hit buffer every SITE_CHUNK sites so a
+        // single low-complexity (satellite) bin can't materialize millions of
+        // hits at once — keeps peak memory bounded by the chunk, not the bin.
+        const SITE_CHUNK: usize = 16_384;
+
+        bins.par_iter()
+            .fold(
+                || {
+                    (
+                        Vec::<u32>::new(),
+                        Vec::<u64>::new(),
+                        Vec::<u64>::new(),
+                        Vec::<Hit>::new(),
+                        init(),
+                    )
+                },
+                |(mut active_idx, mut active_lows, mut active_highs, mut local_hits, mut acc),
+                 (bin_key, sites)| {
+                    active_idx.clear();
+                    active_lows.clear();
+                    active_highs.clear();
+                    for (gi, prefix) in guide_prefixes.iter().enumerate() {
+                        // Skip guides that have already saturated on this thread —
+                        // the cap-aware early-exit that keeps satellite guides from
+                        // dominating the scan.
+                        if skip(&acc, gi) {
+                            continue;
+                        }
+                        if bin_prefix_mismatches(*prefix, *bin_key, bin_mask) <= max_mm_u32 {
+                            active_idx.push(u32::try_from(gi).expect("guide index fits in u32"));
+                            let g_site = guides[gi].site;
+                            active_lows.push(g_site.low);
+                            active_highs.push(g_site.high);
+                        }
+                    }
+                    if !active_idx.is_empty() {
+                        for chunk in sites.chunks(SITE_CHUNK) {
+                            #[cfg(target_arch = "x86_64")]
+                            if use_avx512 {
+                                // SAFETY: `use_avx512` is only true when the CPU
+                                // reported avx512f + avx512vpopcntdq.
+                                unsafe {
+                                    scan_bin_avx512(
+                                        &active_lows,
+                                        &active_highs,
+                                        &active_idx,
+                                        chunk,
+                                        compare_mask,
+                                        max_mismatches,
+                                        &mut local_hits,
+                                    );
+                                }
+                            } else {
+                                scan_bin_x4(
+                                    &active_lows,
+                                    &active_highs,
+                                    &active_idx,
+                                    chunk,
+                                    compare_mask,
+                                    max_mismatches,
+                                    &mut local_hits,
+                                );
+                            }
+                            #[cfg(not(target_arch = "x86_64"))]
+                            scan_bin_x4(
+                                &active_lows,
+                                &active_highs,
+                                &active_idx,
+                                chunk,
+                                compare_mask,
+                                max_mismatches,
+                                &mut local_hits,
+                            );
+                            for h in local_hits.drain(..) {
+                                fold_hit(&mut acc, &h);
+                            }
+                        }
+                    }
+                    (active_idx, active_lows, active_highs, local_hits, acc)
+                },
+            )
+            .map(|(_, _, _, _, acc)| acc)
+            .reduce(|| init(), |a, b| merge(a, b))
+    }
+
+    /// Serial (single-thread) sibling of [`scan_fold`] for ONE guide chunk:
+    /// walks every bin **in sequence**, folding each hit into a single `acc` via
+    /// `fold_hit`. Because bins are processed serially into one accumulator, a
+    /// guide's running count is complete as it grows, so `skip` is an **exact**
+    /// per-guide early-exit — a saturated guide is dropped from every later bin,
+    /// and `fold_hit` (which writes the off-target) is never called past the cap.
+    /// The caller fans `par_iter` over guide chunks, each chunk owning its own
+    /// `acc` + output shard: partition-by-guides instead of by-bins, giving an
+    /// exact cap and streamed (non-materialized) Mode-2 output. `fold_hit` is
+    /// `FnMut` (it writes), so this method itself is single-threaded.
+    pub fn scan_chunk_fold<A, FOLD, SKIP>(
+        &self,
+        guides: &[Guide],
+        max_mismatches: u8,
+        acc: &mut A,
+        mut fold_hit: FOLD,
+        skip: SKIP,
+    ) where
+        FOLD: FnMut(&mut A, &Hit),
+        SKIP: Fn(&A, usize) -> bool,
+    {
+        let compare_mask = self.source.enzyme().compare_mask;
+        let bin_width = self.source.bin_width();
+        let bin_width_bits = u32::from(bin_width) * 2;
+        let bin_mask: u32 = if bin_width_bits >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << bin_width_bits) - 1
+        };
+        let max_mm_u32 = u32::from(max_mismatches);
+        let guide_prefixes: Vec<u32> = guides.iter().map(|g| self.source.bin_key(g.site)).collect();
+        #[cfg(target_arch = "x86_64")]
+        let use_avx512 = std::env::var_os("CRISPR_OTS_NO_AVX512").is_none()
+            && std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512vpopcntdq");
+        const SITE_CHUNK: usize = 16_384;
+        let mut active_idx: Vec<u32> = Vec::new();
+        let mut active_lows: Vec<u64> = Vec::new();
+        let mut active_highs: Vec<u64> = Vec::new();
+        let mut local_hits: Vec<Hit> = Vec::new();
+        for (bin_key, sites) in self.source.iter_bins() {
+            active_idx.clear();
+            active_lows.clear();
+            active_highs.clear();
+            for (gi, prefix) in guide_prefixes.iter().enumerate() {
+                // Exact early-exit: a guide saturated on this (single) accumulator
+                // is dropped from this bin and every later one.
+                if skip(acc, gi) {
+                    continue;
+                }
+                if bin_prefix_mismatches(*prefix, bin_key, bin_mask) <= max_mm_u32 {
+                    active_idx.push(u32::try_from(gi).expect("guide index fits in u32"));
+                    let g_site = guides[gi].site;
+                    active_lows.push(g_site.low);
+                    active_highs.push(g_site.high);
+                }
+            }
+            if active_idx.is_empty() {
+                continue;
+            }
+            for chunk in sites.chunks(SITE_CHUNK) {
+                #[cfg(target_arch = "x86_64")]
+                if use_avx512 {
+                    // SAFETY: `use_avx512` is only true when the CPU reported
+                    // avx512f + avx512vpopcntdq.
+                    unsafe {
+                        scan_bin_avx512(
+                            &active_lows,
+                            &active_highs,
+                            &active_idx,
+                            chunk,
+                            compare_mask,
+                            max_mismatches,
+                            &mut local_hits,
+                        );
+                    }
+                } else {
+                    scan_bin_x4(
+                        &active_lows,
+                        &active_highs,
+                        &active_idx,
+                        chunk,
+                        compare_mask,
+                        max_mismatches,
+                        &mut local_hits,
+                    );
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                scan_bin_x4(
+                    &active_lows,
+                    &active_highs,
+                    &active_idx,
+                    chunk,
+                    compare_mask,
+                    max_mismatches,
+                    &mut local_hits,
+                );
+                for h in local_hits.drain(..) {
+                    fold_hit(acc, &h);
+                }
+            }
+        }
     }
 }
 

@@ -25,9 +25,11 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::fs::{remove_file, File};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+
+use rayon::prelude::*;
 
 use crispr_db::{read_fasta, BinSource, Position, SiteFinder, Strand};
 use crispr_encoding::Site;
@@ -387,8 +389,7 @@ pub fn run_discover_with(
         Some(Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls).expect("bundled 2xNLS matrix parses"))
     } else if config.scores.contains(&ScoreMetric::Cas12aEnCas12a) {
         Some(
-            Cas12aCfd::from_matrix(Cas12aMatrix::EnCas12a)
-                .expect("bundled enCas12a matrix parses"),
+            Cas12aCfd::from_matrix(Cas12aMatrix::EnCas12a).expect("bundled enCas12a matrix parses"),
         )
     } else {
         None
@@ -420,9 +421,9 @@ pub fn run_discover_with(
             // Matches guidescan2's --threshold semantics: per its docs,
             // a guide is dropped if any non-on-target hit is within
             // `threshold` mismatches, including 0-mm multi-mappers.
-            let close_off = all_offs.iter().any(|(_, mm, count)| {
-                (*mm > 0 && *mm <= t) || (*mm == 0 && *count >= 2)
-            });
+            let close_off = all_offs
+                .iter()
+                .any(|(_, mm, count)| (*mm > 0 && *mm <= t) || (*mm == 0 && *count >= 2));
             if close_off {
                 keep_guide[idx] = false;
                 continue;
@@ -506,8 +507,8 @@ fn scan_on_gpu(
     guides: &[Guide],
     max_mismatches: u8,
 ) -> Result<Vec<Hit>, DiscoverError> {
-    let scanner = crispr_scan_gpu::GpuScanner::new(source)
-        .map_err(|e| DiscoverError::Gpu(e.to_string()))?;
+    let scanner =
+        crispr_scan_gpu::GpuScanner::new(source).map_err(|e| DiscoverError::Gpu(e.to_string()))?;
     Ok(scanner.scan(guides, max_mismatches))
 }
 
@@ -568,6 +569,62 @@ struct Accum {
     saturated: Vec<bool>,
 }
 
+impl Accum {
+    /// All-zero per-guide accumulator for `n` guides.
+    fn zeros(n: usize) -> Self {
+        Accum {
+            off_sum: vec![0.0; n],
+            tttv_sum: vec![0.0; n],
+            off_sum2: vec![0.0; n],
+            tttv_sum2: vec![0.0; n],
+            max_cfd: vec![0.0; n],
+            on_count: vec![0; n],
+            off_count: vec![0; n],
+            mm_counts: vec![[0u32; MM_BUCKETS]; n],
+            saturated: vec![false; n],
+        }
+    }
+
+    /// Elementwise merge of a per-thread partial accumulator into `self` — the
+    /// reduce step for the streaming-aggregate scan. Sums are additive, `max_cfd`
+    /// takes the max, `saturated` ORs.
+    fn add_assign(&mut self, o: &Accum) {
+        for i in 0..self.off_sum.len() {
+            self.off_sum[i] += o.off_sum[i];
+            self.tttv_sum[i] += o.tttv_sum[i];
+            self.off_sum2[i] += o.off_sum2[i];
+            self.tttv_sum2[i] += o.tttv_sum2[i];
+            if o.max_cfd[i] > self.max_cfd[i] {
+                self.max_cfd[i] = o.max_cfd[i];
+            }
+            self.on_count[i] += o.on_count[i];
+            self.off_count[i] += o.off_count[i];
+            for m in 0..MM_BUCKETS {
+                self.mm_counts[i][m] += o.mm_counts[i][m];
+            }
+            self.saturated[i] |= o.saturated[i];
+        }
+    }
+
+    /// Copy a chunk-local accumulator's per-guide values into `self` at absolute
+    /// indices (`dst[i]` = absolute guide index of `src` element `i`). Folds a
+    /// guide-partition chunk back into the full accumulator; chunks are disjoint,
+    /// so this overwrites (copy, not add).
+    fn copy_block(&mut self, src: &Accum, dst: &[usize]) {
+        for (i, &d) in dst.iter().enumerate() {
+            self.off_sum[d] = src.off_sum[i];
+            self.tttv_sum[d] = src.tttv_sum[i];
+            self.off_sum2[d] = src.off_sum2[i];
+            self.tttv_sum2[d] = src.tttv_sum2[i];
+            self.max_cfd[d] = src.max_cfd[i];
+            self.on_count[d] = src.on_count[i];
+            self.off_count[d] = src.off_count[i];
+            self.mm_counts[d] = src.mm_counts[i];
+            self.saturated[d] = src.saturated[i];
+        }
+    }
+}
+
 /// Mode-2 streaming writers (binary and/or TSV).
 struct OtWriters {
     bin: Option<crate::ot_stream::OtBinaryWriter>,
@@ -579,7 +636,8 @@ struct OtWriters {
 /// Mode-2 record(s).
 #[allow(clippy::too_many_arguments)]
 fn accumulate_hit(
-    abs_guide: usize,
+    acc_idx: usize,
+    out_gid: u32,
     guide_site: Site,
     ot_site: Site,
     ot_pos: Position,
@@ -596,12 +654,12 @@ fn accumulate_hit(
 ) -> Result<(), DiscoverError> {
     // Once capped, stop accumulating + writing Mode-2 records for this guide —
     // mirrors the GPU CFD kernel's early-exit so every backend agrees.
-    if acc.saturated[abs_guide] {
+    if acc.saturated[acc_idx] {
         return Ok(());
     }
     if mm == 0 {
-        acc.on_count[abs_guide] += 1;
-        flag_if_saturated(acc, abs_guide, ot_cap, off_sum_cap);
+        acc.on_count[acc_idx] += 1;
+        flag_if_saturated(acc, acc_idx, ot_cap, off_sum_cap);
         return Ok(());
     }
     // `is_tttt` is matrix-independent (the PAM isn't scored) — compute it once.
@@ -609,7 +667,9 @@ fn accumulate_hit(
     // (dual Cas12a only) drives only `off_sum2`/`tttv_sum2` + the `cfd2` column.
     let (cfd_val, cfd2_opt, is_tttt) = if let Some(c) = cas12a {
         let is_tttt = crispr_score::is_tttt_prefix(ot_site, proto_len);
-        let primary = c.primary.score_pair_with_len(guide_site, ot_site, proto_len);
+        let primary = c
+            .primary
+            .score_pair_with_len(guide_site, ot_site, proto_len);
         let secondary = c
             .secondary
             .as_ref()
@@ -620,29 +680,29 @@ fn accumulate_hit(
     } else {
         (0.0, None, false)
     };
-    acc.off_sum[abs_guide] += cfd_val;
-    acc.off_count[abs_guide] += 1;
+    acc.off_sum[acc_idx] += cfd_val;
+    acc.off_count[acc_idx] += 1;
     if (mm as usize) < MM_BUCKETS {
-        acc.mm_counts[abs_guide][mm as usize] += 1;
+        acc.mm_counts[acc_idx][mm as usize] += 1;
     }
     if cas12a.is_some() && !is_tttt {
-        acc.tttv_sum[abs_guide] += cfd_val;
+        acc.tttv_sum[acc_idx] += cfd_val;
     }
     if let Some(cfd2_val) = cfd2_opt {
-        acc.off_sum2[abs_guide] += cfd2_val;
+        acc.off_sum2[acc_idx] += cfd2_val;
         if !is_tttt {
-            acc.tttv_sum2[abs_guide] += cfd2_val;
+            acc.tttv_sum2[acc_idx] += cfd2_val;
         }
     }
-    if cfd_val > acc.max_cfd[abs_guide] {
-        acc.max_cfd[abs_guide] = cfd_val;
+    if cfd_val > acc.max_cfd[acc_idx] {
+        acc.max_cfd[acc_idx] = cfd_val;
     }
     // Floor the off-target LIST on EITHER matrix: list the off-target if the
     // primary OR the secondary CFD clears the threshold (counts/specificity are
     // unfloored regardless). Single-matrix runs reduce to the primary check.
     let pass_floor = cfd_val >= cfd_threshold || cfd2_opt.is_some_and(|c2| c2 >= cfd_threshold);
     if (writers.bin.is_some() || writers.tsv.is_some()) && pass_floor {
-        let gid = u32::try_from(abs_guide).unwrap_or(u32::MAX);
+        let gid = out_gid;
         let strand_rev = matches!(ot_pos.strand, Strand::Reverse);
         if let Some(w) = writers.bin.as_mut() {
             w.write_record(crate::ot_stream::OtRecord {
@@ -660,7 +720,7 @@ fn accumulate_hit(
             w.write_row(gid, chrom, ot_pos.offset, strand_rev, mm, cfd_val, cfd2_opt)?;
         }
     }
-    flag_if_saturated(acc, abs_guide, ot_cap, off_sum_cap);
+    flag_if_saturated(acc, acc_idx, ot_cap, off_sum_cap);
     Ok(())
 }
 
@@ -688,7 +748,11 @@ fn specificity(convention: SpecConvention, off_sum: f64, on_count: u32) -> f64 {
             }
         }
         SpecConvention::Guidescan => {
-            let on = if on_count == 0 { 1.0 } else { f64::from(on_count) };
+            let on = if on_count == 0 {
+                1.0
+            } else {
+                f64::from(on_count)
+            };
             let denom = on + off_sum;
             if denom > 0.0 {
                 1.0 / denom
@@ -754,20 +818,16 @@ fn run_discover_streaming(
     let cas12a_dual = cas12a.as_ref().is_some_and(|c| c.secondary.is_some());
 
     let n = guide_records.len();
-    let mut acc = Accum {
-        off_sum: vec![0.0; n],
-        tttv_sum: vec![0.0; n],
-        off_sum2: vec![0.0; n],
-        tttv_sum2: vec![0.0; n],
-        max_cfd: vec![0.0; n],
-        on_count: vec![0; n],
-        off_count: vec![0; n],
-        mm_counts: vec![[0u32; MM_BUCKETS]; n],
-        saturated: vec![false; n],
-    };
+    let mut acc = Accum::zeros(n);
 
-    let want_agg = matches!(config.output_mode, OutputMode::Aggregated | OutputMode::Both);
-    let want_ot = matches!(config.output_mode, OutputMode::PerOffTarget | OutputMode::Both);
+    let want_agg = matches!(
+        config.output_mode,
+        OutputMode::Aggregated | OutputMode::Both
+    );
+    let want_ot = matches!(
+        config.output_mode,
+        OutputMode::PerOffTarget | OutputMode::Both
+    );
     let mut writers = OtWriters {
         bin: if want_ot && matches!(config.ot_format, OtFormat::Binary | OtFormat::Both) {
             Some(crate::ot_stream::OtBinaryWriter::create(
@@ -792,7 +852,10 @@ fn run_discover_streaming(
     };
 
     let default_batch = 50_000usize;
-    let batch_cap = config.batch_size.filter(|&b| b > 0).unwrap_or(default_batch);
+    let batch_cap = config
+        .batch_size
+        .filter(|&b| b > 0)
+        .unwrap_or(default_batch);
     // Per-guide saturation caps, applied uniformly across the CPU, GPU-emit, and
     // GPU-CFD-kernel paths. `0` / `0.0` = disabled (the default). off_sum_cap is
     // the off-target CFD sum above which specificity is below --min-specificity.
@@ -823,32 +886,284 @@ fn run_discover_streaming(
             } else {
                 (guides, None)
             };
-            let mut base = 0usize;
-            while base < scan_guides.len() {
-                let end = (base + batch_cap).min(scan_guides.len());
-                let hits =
-                    BinScanner::new(source).scan(&scan_guides[base..end], config.max_mismatches);
-                for h in &hits {
-                    let rel = base + h.guide_index as usize;
-                    let abs = abs_map.map_or(rel, |m| m[rel]);
-                    accumulate_hit(
-                        abs,
-                        scan_guides[rel].site,
-                        h.off_target,
-                        h.position,
-                        h.mismatches,
-                        cfd.as_ref(),
-                        cas12a.as_ref(),
-                        proto_len,
-                        config.cfd_threshold,
-                        ot_cap,
-                        off_sum_cap,
-                        &mut acc,
-                        &mut writers,
-                        source,
-                    )?;
+            if !want_ot {
+                if ot_cap != 0 || off_sum_cap > 0.0 {
+                    // Capped Mode 1: guide-partitioned aggregate — par_iter ACROSS
+                    // guide chunks, each scanned serially over all bins into its own
+                    // small Accum, so each guide's count is complete: EXACT per-guide
+                    // cap early-exit (saturated guides stop being scanned, sums are
+                    // capped not per-thread upper bounds) and peak memory O(#guides),
+                    // not O(#guides × threads) — the in-process equivalent of N
+                    // single-thread processes. No post-merge re-flag needed.
+                    let scan_len = scan_guides.len();
+                    let nthreads = rayon::current_num_threads().max(1);
+                    let nchunks = (nthreads * 4).clamp(1, scan_len.max(1));
+                    let chunk_sz = scan_len.div_ceil(nchunks).max(1);
+                    let ranges: Vec<(usize, usize)> = (0..scan_len)
+                        .step_by(chunk_sz)
+                        .map(|b| (b, (b + chunk_sz).min(scan_len)))
+                        .collect();
+                    let chunks: Vec<(usize, usize, Accum)> = ranges
+                        .par_iter()
+                        .map(|&(base, end)| {
+                            let chunk_guides = &scan_guides[base..end];
+                            let mut chunk_acc = Accum::zeros(end - base);
+                            let mut sink = OtWriters {
+                                bin: None,
+                                tsv: None,
+                            };
+                            BinScanner::new(source).scan_chunk_fold(
+                                chunk_guides,
+                                config.max_mismatches,
+                                &mut chunk_acc,
+                                |a: &mut Accum, h: &Hit| {
+                                    let rel = h.guide_index as usize;
+                                    let abs = abs_map.map_or(base + rel, |m| m[base + rel]);
+                                    accumulate_hit(
+                                        rel,
+                                        u32::try_from(abs).unwrap_or(u32::MAX),
+                                        chunk_guides[rel].site,
+                                        h.off_target,
+                                        h.position,
+                                        h.mismatches,
+                                        cfd.as_ref(),
+                                        cas12a.as_ref(),
+                                        proto_len,
+                                        config.cfd_threshold,
+                                        ot_cap,
+                                        off_sum_cap,
+                                        a,
+                                        &mut sink,
+                                        source,
+                                    )
+                                    .expect("Mode-1 accumulation cannot fail without writers");
+                                },
+                                |a: &Accum, rel: usize| a.saturated[rel],
+                            );
+                            (base, end, chunk_acc)
+                        })
+                        .collect();
+                    for (base, end, chunk_acc) in &chunks {
+                        let dst: Vec<usize> = (*base..*end)
+                            .map(|si| abs_map.map_or(si, |m| m[si]))
+                            .collect();
+                        acc.copy_block(chunk_acc, &dst);
+                    }
+                } else {
+                    // Bounded-memory parallel Mode-1 aggregation: fold each hit into
+                    // a per-thread `Accum` inline (no full hit-list materialization),
+                    // then merge. Peak memory is O(#guides + a chunk of hits/thread),
+                    // independent of total hit volume. Reuses `accumulate_hit` with
+                    // empty writers, so the arithmetic matches the serial path (sums
+                    // differ only by floating-point order, ~1 ULP). Used whenever no
+                    // per-off-target (Mode-2) output is requested (Mode-2 streams hits
+                    // to disk by design).
+                    //
+                    // Caps (`--max-off-targets`/`--min-specificity`) are honored as a
+                    // per-thread early-exit: once a guide saturates on a thread it is
+                    // dropped from that thread's prefilter (the `skip` closure), so
+                    // satellite guides stop being scanned. A guide saturates per
+                    // thread, so its merged count can exceed the cap; a post-merge
+                    // pass below re-flags any guide whose TOTAL crosses the cap, so
+                    // the `saturated` flags match the exact-cap semantics (the sums of
+                    // saturated guides are upper bounds, ≈ 0 specificity regardless).
+                    let merged = BinScanner::new(source).scan_fold(
+                        scan_guides,
+                        config.max_mismatches,
+                        || Accum::zeros(n),
+                        |a: &mut Accum, h: &Hit| {
+                            let rel = h.guide_index as usize;
+                            let abs = abs_map.map_or(rel, |m| m[rel]);
+                            let mut sink = OtWriters {
+                                bin: None,
+                                tsv: None,
+                            };
+                            accumulate_hit(
+                                abs,
+                                u32::try_from(abs).unwrap_or(u32::MAX),
+                                scan_guides[rel].site,
+                                h.off_target,
+                                h.position,
+                                h.mismatches,
+                                cfd.as_ref(),
+                                cas12a.as_ref(),
+                                proto_len,
+                                config.cfd_threshold,
+                                ot_cap,
+                                off_sum_cap,
+                                a,
+                                &mut sink,
+                                source,
+                            )
+                            .expect("Mode-1 accumulation cannot fail without writers");
+                        },
+                        |a: &Accum, rel: usize| {
+                            let abs = abs_map.map_or(rel, |m| m[rel]);
+                            a.saturated[abs]
+                        },
+                        |mut a: Accum, b: Accum| {
+                            a.add_assign(&b);
+                            a
+                        },
+                    );
+                    acc.add_assign(&merged);
                 }
-                base = end;
+            } else if ot_cap != 0 || off_sum_cap > 0.0 {
+                // Guide-partitioned Mode 2 (capped): split guides into chunks and
+                // scan each chunk serially over all bins (par_iter ACROSS chunks).
+                // Each chunk owns a small Accum + its own header-less output shard,
+                // so the per-guide cap is EXACT, saturated guides stop being scanned
+                // (early-exit), and hits stream straight to disk — no batch
+                // materialization, so none of the single-process Mode-2 memory
+                // blowup. Shards are concatenated in order into the header-bearing
+                // final file(s). With `-t 1` the par_iter is serial (one chunk at a
+                // time): the intended N-process form.
+                let want_bin = matches!(config.ot_format, OtFormat::Binary | OtFormat::Both);
+                let want_tsv = matches!(config.ot_format, OtFormat::Tsv | OtFormat::Both);
+                let scan_len = scan_guides.len();
+                let nthreads = rayon::current_num_threads().max(1);
+                let nchunks = (nthreads * 4).clamp(1, scan_len.max(1));
+                let chunk_sz = scan_len.div_ceil(nchunks).max(1);
+                let ranges: Vec<(usize, usize)> = (0..scan_len)
+                    .step_by(chunk_sz)
+                    .map(|b| (b, (b + chunk_sz).min(scan_len)))
+                    .collect();
+                let chunks: Vec<(usize, usize, Accum)> = ranges
+                    .par_iter()
+                    .enumerate()
+                    .map(
+                        |(ci, &(base, end))| -> Result<(usize, usize, Accum), DiscoverError> {
+                            let chunk_guides = &scan_guides[base..end];
+                            let mut chunk_acc = Accum::zeros(end - base);
+                            let mut shard = OtWriters {
+                                bin: if want_bin {
+                                    Some(crate::ot_stream::OtBinaryWriter::create_headerless(
+                                        &suffix_path(&config.output, &format!("s{ci}.ot.bin")),
+                                    )?)
+                                } else {
+                                    None
+                                },
+                                tsv: if want_tsv {
+                                    Some(crate::ot_stream::OtTsvWriter::create_headerless(
+                                        &suffix_path(&config.output, &format!("s{ci}.ot.tsv")),
+                                        cas12a_dual,
+                                    )?)
+                                } else {
+                                    None
+                                },
+                            };
+                            let mut chunk_err: Option<DiscoverError> = None;
+                            BinScanner::new(source).scan_chunk_fold(
+                                chunk_guides,
+                                config.max_mismatches,
+                                &mut chunk_acc,
+                                |a: &mut Accum, h: &Hit| {
+                                    if chunk_err.is_some() {
+                                        return;
+                                    }
+                                    let rel = h.guide_index as usize;
+                                    let abs = abs_map.map_or(base + rel, |m| m[base + rel]);
+                                    if let Err(e) = accumulate_hit(
+                                        rel,
+                                        u32::try_from(abs).unwrap_or(u32::MAX),
+                                        chunk_guides[rel].site,
+                                        h.off_target,
+                                        h.position,
+                                        h.mismatches,
+                                        cfd.as_ref(),
+                                        cas12a.as_ref(),
+                                        proto_len,
+                                        config.cfd_threshold,
+                                        ot_cap,
+                                        off_sum_cap,
+                                        a,
+                                        &mut shard,
+                                        source,
+                                    ) {
+                                        chunk_err = Some(e);
+                                    }
+                                },
+                                |a: &Accum, rel: usize| a.saturated[rel],
+                            );
+                            if let Some(e) = chunk_err {
+                                return Err(e);
+                            }
+                            if let Some(w) = shard.bin.take() {
+                                w.finish()?;
+                            }
+                            if let Some(w) = shard.tsv.take() {
+                                w.finish()?;
+                            }
+                            Ok((base, end, chunk_acc))
+                        },
+                    )
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Merge (serial): fold each chunk's accumulator back into the full
+                // `acc` (chunk-local -> absolute index), then concatenate the shard
+                // files, in chunk order, into the header-bearing final writer(s).
+                let mut bufr = vec![0u8; 1 << 20];
+                for (ci, (base, end, chunk_acc)) in chunks.iter().enumerate() {
+                    let dst: Vec<usize> = (*base..*end)
+                        .map(|si| abs_map.map_or(si, |m| m[si]))
+                        .collect();
+                    acc.copy_block(chunk_acc, &dst);
+                    if let (true, Some(w)) = (want_bin, writers.bin.as_mut()) {
+                        let p = suffix_path(&config.output, &format!("s{ci}.ot.bin"));
+                        let mut f = File::open(&p)?;
+                        loop {
+                            let nr = f.read(&mut bufr)?;
+                            if nr == 0 {
+                                break;
+                            }
+                            w.write_chunk(&bufr[..nr])?;
+                        }
+                        drop(f);
+                        let _ = remove_file(&p);
+                    }
+                    if let (true, Some(w)) = (want_tsv, writers.tsv.as_mut()) {
+                        let p = suffix_path(&config.output, &format!("s{ci}.ot.tsv"));
+                        let mut f = File::open(&p)?;
+                        loop {
+                            let nr = f.read(&mut bufr)?;
+                            if nr == 0 {
+                                break;
+                            }
+                            w.write_raw(&bufr[..nr])?;
+                        }
+                        drop(f);
+                        let _ = remove_file(&p);
+                    }
+                }
+            } else {
+                let mut base = 0usize;
+                while base < scan_guides.len() {
+                    let end = (base + batch_cap).min(scan_guides.len());
+                    let hits = BinScanner::new(source)
+                        .scan(&scan_guides[base..end], config.max_mismatches);
+                    for h in &hits {
+                        let rel = base + h.guide_index as usize;
+                        let abs = abs_map.map_or(rel, |m| m[rel]);
+                        accumulate_hit(
+                            abs,
+                            u32::try_from(abs).unwrap_or(u32::MAX),
+                            scan_guides[rel].site,
+                            h.off_target,
+                            h.position,
+                            h.mismatches,
+                            cfd.as_ref(),
+                            cas12a.as_ref(),
+                            proto_len,
+                            config.cfd_threshold,
+                            ot_cap,
+                            off_sum_cap,
+                            &mut acc,
+                            &mut writers,
+                            source,
+                        )?;
+                    }
+                    base = end;
+                }
             }
         }
         ScannerKind::Gpu => {
@@ -905,8 +1220,16 @@ fn run_discover_streaming(
                 let tttv = specificity(config.spec_convention, acc.tttv_sum[i], acc.on_count[i]);
                 let (tttn2, tttv2) = if cas12a_dual {
                     (
-                        Some(specificity(config.spec_convention, acc.off_sum2[i], acc.on_count[i])),
-                        Some(specificity(config.spec_convention, acc.tttv_sum2[i], acc.on_count[i])),
+                        Some(specificity(
+                            config.spec_convention,
+                            acc.off_sum2[i],
+                            acc.on_count[i],
+                        )),
+                        Some(specificity(
+                            config.spec_convention,
+                            acc.tttv_sum2[i],
+                            acc.on_count[i],
+                        )),
                     )
                 } else {
                     (None, None)
@@ -943,8 +1266,10 @@ fn run_discover_streaming(
         w.finish()?;
     }
     if want_ot {
-        let mut side =
-            crate::ot_stream::GuidesSidecarWriter::create(&suffix_path(&config.output, "guides.tsv"))?;
+        let mut side = crate::ot_stream::GuidesSidecarWriter::create(&suffix_path(
+            &config.output,
+            "guides.tsv",
+        ))?;
         for (i, rec) in guide_records.iter().enumerate() {
             if dropped[i] {
                 continue;
@@ -1035,11 +1360,23 @@ fn gpu_emit_pass(
         let batch = &guides[base..end];
         let counts = scanner.scan_counts_prefilter(batch, max_mm);
         let predicted: u64 = counts.iter().map(|&c| u64::from(c)).sum();
-        let out_cap = u32::try_from(predicted).unwrap_or(u32::MAX);
-        // Fast genome-scale hit emission (candidate bins only); identical hit
-        // set to brute-force scan_raw, sized exactly by the count pass above.
+        // With a per-guide cap the emit kernel writes at most `ot_cap` hits/guide,
+        // so the device buffer is bounded by n_guides * ot_cap regardless of
+        // satellite volume. Without this, the uncapped `predicted` count sizes a
+        // multi-GB buffer for centromere batches and OOMs the GPU. `min` keeps the
+        // exact (smaller) size for non-saturated batches.
+        let cap_bound: u64 = if ot_cap != 0 {
+            (batch.len() as u64).saturating_mul(u64::from(ot_cap))
+        } else {
+            u64::MAX
+        };
+        let out_cap = u32::try_from(predicted.min(cap_bound)).unwrap_or(u32::MAX);
+        // Fast genome-scale hit emission (candidate bins only); identical hit set
+        // to brute-force scan_raw for non-saturated guides. `ot_cap` makes the
+        // kernel early-exit per guide (saturated guides stop scanning), bounding
+        // both work and the device buffer.
         let raw = scanner
-            .scan_prefilter_raw(batch, max_mm, out_cap)
+            .scan_prefilter_raw(batch, max_mm, out_cap, ot_cap)
             .map_err(|e| DiscoverError::Gpu(e.to_string()))?;
         for k in 0..raw.guide.len() {
             let rel = base + raw.guide[k] as usize;
@@ -1048,6 +1385,7 @@ fn gpu_emit_pass(
             let mm = u8::try_from(raw.mm[k]).unwrap_or(u8::MAX);
             accumulate_hit(
                 abs,
+                u32::try_from(abs).unwrap_or(u32::MAX),
                 guides[rel].site,
                 e.site(),
                 e.position(),
@@ -1146,8 +1484,20 @@ fn streaming_gpu(
         gpu_cfd_pass(&scanner, sg, am, max_mm, ot_cap, off_sum_cap, acc)
     } else {
         gpu_emit_pass(
-            &scanner, source, sg, am, batch_cap, max_mm, cfd_threshold, ot_cap, off_sum_cap, cfd,
-            cas12a, proto_len, acc, writers,
+            &scanner,
+            source,
+            sg,
+            am,
+            batch_cap,
+            max_mm,
+            cfd_threshold,
+            ot_cap,
+            off_sum_cap,
+            cfd,
+            cas12a,
+            proto_len,
+            acc,
+            writers,
         )
     }
 }
@@ -1303,7 +1653,12 @@ fn index_hits_by_guide(hits: &[Hit]) -> Vec<Vec<Hit>> {
                 .contig_id
                 .cmp(&b.position.contig_id)
                 .then(a.position.offset.cmp(&b.position.offset))
-                .then(a.position.strand.as_char().cmp(&b.position.strand.as_char()))
+                .then(
+                    a.position
+                        .strand
+                        .as_char()
+                        .cmp(&b.position.strand.as_char()),
+                )
                 .then(a.mismatches.cmp(&b.mismatches))
         });
     }
@@ -1343,9 +1698,7 @@ fn write_csv_output(
             .get(idx)
             .map_or(empty_hits.as_slice(), Vec::as_slice);
         for hit in hits_for_guide {
-            let match_chrm = source
-                .contig_name(hit.position.contig_id)
-                .unwrap_or("");
+            let match_chrm = source.contig_name(hit.position.contig_id).unwrap_or("");
             rows.push(CsvRow {
                 id: &rec.id,
                 sequence: &rec.sequence_for_output,
@@ -1460,7 +1813,11 @@ pub fn enzyme_from_name(name: &str) -> Option<crispr_encoding::Enzyme> {
 /// # Errors
 /// Returns a message if `pam` is empty, contains a non-IUPAC base, or if
 /// `pam.len() + protospacer_len` exceeds the 28-base site limit.
-pub fn enzyme_from_pam(pam: &str, protospacer_len: u8, five_prime: bool) -> Result<crispr_encoding::Enzyme, String> {
+pub fn enzyme_from_pam(
+    pam: &str,
+    protospacer_len: u8,
+    five_prime: bool,
+) -> Result<crispr_encoding::Enzyme, String> {
     use crispr_encoding::{Enzyme, IupacCode, PamSide, MAX_SITE_LEN};
     if pam.is_empty() {
         return Err("--pam must be a non-empty IUPAC string (e.g. NGG, TTTV)".to_string());
@@ -1468,8 +1825,12 @@ pub fn enzyme_from_pam(pam: &str, protospacer_len: u8, five_prime: bool) -> Resu
     let codes: Vec<IupacCode> = pam
         .bytes()
         .map(|b| {
-            IupacCode::from_ascii(b.to_ascii_uppercase())
-                .ok_or_else(|| format!("invalid PAM base '{}' (expected IUPAC: A C G T R Y S W K M B D H V N)", b as char))
+            IupacCode::from_ascii(b.to_ascii_uppercase()).ok_or_else(|| {
+                format!(
+                    "invalid PAM base '{}' (expected IUPAC: A C G T R Y S W K M B D H V N)",
+                    b as char
+                )
+            })
         })
         .collect::<Result<_, _>>()?;
     let total = codes.len() + usize::from(protospacer_len);
@@ -1479,7 +1840,11 @@ pub fn enzyme_from_pam(pam: &str, protospacer_len: u8, five_prime: bool) -> Resu
             codes.len()
         ));
     }
-    let side = if five_prime { PamSide::FivePrime } else { PamSide::ThreePrime };
+    let side = if five_prime {
+        PamSide::FivePrime
+    } else {
+        PamSide::ThreePrime
+    };
     let name = format!(
         "PAM-{}-{}-{}nt",
         pam.to_ascii_uppercase(),

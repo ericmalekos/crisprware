@@ -241,12 +241,13 @@ struct EmitCtx {
     unsigned int gi;
     unsigned int* out_count;
     unsigned int out_cap;
+    unsigned int cap;            // per-guide emit cap (on+off); 0 = uncapped
     unsigned int* out_guide;
     unsigned int* out_entry;
     unsigned int* out_mm;
 };
 
-__device__ void process_bin_emit(const EmitCtx* c, unsigned int key) {
+__device__ void process_bin_emit(const EmitCtx* c, unsigned int key, unsigned int* emitted) {
     const unsigned int start = c->bin_off[2u * key];
     const unsigned int count = c->bin_off[2u * key + 1u];
     const unsigned long long UPPER = 0xAAAAAAAAAAAAAAAAULL;
@@ -260,6 +261,11 @@ __device__ void process_bin_emit(const EmitCtx* c, unsigned int key) {
         const unsigned long long ih = (ch & UPPER) | ((ch << 1) & UPPER);
         const unsigned int mm = __popcll(il) + __popcll(ih);
         if (mm <= c->max_mm) {
+            // Per-guide cap (on+off): once this guide has emitted `cap` hits,
+            // stop — mirrors the CPU/CFD-kernel early-exit, bounds the device
+            // buffer to n_guides * cap, and lets satellite guides quit early.
+            if (c->cap != 0u && *emitted >= c->cap) return;
+            *emitted += 1u;
             const unsigned int slot = atomicAdd(c->out_count, 1u);
             if (slot < c->out_cap) {
                 c->out_guide[slot] = c->gi;
@@ -271,14 +277,16 @@ __device__ void process_bin_emit(const EmitCtx* c, unsigned int key) {
 }
 
 __device__ void visit_bins_emit(
-    const EmitCtx* c, unsigned int key, int w, int k_rem, int start_pos)
+    const EmitCtx* c, unsigned int key, int w, int k_rem, int start_pos, unsigned int* emitted)
 {
-    process_bin_emit(c, key);
+    if (c->cap != 0u && *emitted >= c->cap) return;   // guide saturated: stop visiting bins
+    process_bin_emit(c, key, emitted);
     if (k_rem == 0) return;
     for (int p = start_pos; p < w; ++p) {
         const unsigned int shift = 2u * (unsigned int)p;
         for (unsigned int delta = 1u; delta <= 3u; ++delta) {
-            visit_bins_emit(c, key ^ (delta << shift), w, k_rem - 1, p + 1);
+            if (c->cap != 0u && *emitted >= c->cap) return;
+            visit_bins_emit(c, key ^ (delta << shift), w, k_rem - 1, p + 1, emitted);
         }
     }
 }
@@ -295,7 +303,8 @@ extern "C" __global__ void scan_prefilter_emit_kernel(
     unsigned int* __restrict__ out_count, const unsigned int out_cap,
     unsigned int* __restrict__ out_guide,
     unsigned int* __restrict__ out_entry,
-    unsigned int* __restrict__ out_mm)
+    unsigned int* __restrict__ out_mm,
+    const unsigned int cap_per_guide)
 {
     const unsigned int gi = blockIdx.x * blockDim.x + threadIdx.x;
     if (gi >= n_guides) return;
@@ -313,12 +322,14 @@ extern "C" __global__ void scan_prefilter_emit_kernel(
     c.gi = gi;
     c.out_count = out_count;
     c.out_cap = out_cap;
+    c.cap = cap_per_guide;
     c.out_guide = out_guide;
     c.out_entry = out_entry;
     c.out_mm = out_mm;
 
+    unsigned int emitted = 0u;   // per-guide (per-thread) emitted count for the cap
     const unsigned int key = bin_key_of(g_low, g_high, bin_start_bit, 2u * bin_w);
-    visit_bins_emit(&c, key, (int)bin_w, (int)max_mm, 0);
+    visit_bins_emit(&c, key, (int)bin_w, (int)max_mm, 0, &emitted);
 }
 
 // ---- Bin-prefilter CFD-ACCUMULATION path (Mode-1 specificity) ----
@@ -1323,6 +1334,7 @@ impl GpuScanner {
         guides: &[Guide],
         max_mismatches: u8,
         out_cap: u32,
+        cap_per_guide: u32,
     ) -> Result<ScanRaw, GpuError> {
         if guides.is_empty() || self.n_entries == 0 {
             return Ok(ScanRaw {
@@ -1370,7 +1382,8 @@ impl GpuScanner {
             lb.arg(&mut d_guide);
             lb.arg(&mut d_entry);
             lb.arg(&mut d_mm);
-            // SAFETY: the 15 arguments match scan_prefilter_emit_kernel's
+            lb.arg(&cap_per_guide);
+            // SAFETY: the 16 arguments match scan_prefilter_emit_kernel's
             // parameter list in count, type, and order.
             unsafe { lb.launch(cfg)? };
         }

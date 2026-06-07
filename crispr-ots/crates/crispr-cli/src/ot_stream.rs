@@ -205,6 +205,18 @@ impl OtBinaryWriter {
         Ok(Self { w })
     }
 
+    /// Create a **headerless** record file — for a guide-partition shard whose
+    /// records are later concatenated into a single header-bearing file via
+    /// [`write_chunk`](Self::write_chunk).
+    ///
+    /// # Errors
+    /// I/O failure creating the file.
+    pub fn create_headerless(path: &Path) -> io::Result<Self> {
+        Ok(Self {
+            w: BufWriter::with_capacity(1 << 20, File::create(path)?),
+        })
+    }
+
     /// Append one record.
     ///
     /// # Errors
@@ -258,6 +270,27 @@ impl OtTsvWriter {
         Ok(Self { w, with_cfd2 })
     }
 
+    /// Create a **headerless** TSV shard (no column header line) for a
+    /// guide-partition chunk; rows are concatenated into the header-bearing file
+    /// via [`write_raw`](Self::write_raw).
+    ///
+    /// # Errors
+    /// I/O failure creating the file.
+    pub fn create_headerless(path: &Path, with_cfd2: bool) -> io::Result<Self> {
+        Ok(Self {
+            w: BufWriter::with_capacity(1 << 20, File::create(path)?),
+            with_cfd2,
+        })
+    }
+
+    /// Append raw pre-formatted bytes (a shard's rows) verbatim.
+    ///
+    /// # Errors
+    /// I/O failure.
+    pub fn write_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.w.write_all(bytes)
+    }
+
     /// Append one row. `cfd2` is written only when the writer was created with
     /// `with_cfd2` (defaults to `0.0` if `None`).
     ///
@@ -276,9 +309,15 @@ impl OtTsvWriter {
         let strand = if strand_reverse { '-' } else { '+' };
         if self.with_cfd2 {
             let c2 = cfd2.unwrap_or(0.0);
-            writeln!(self.w, "{guide_id}\t{chrom}\t{start}\t{strand}\t{mm}\t{cfd:.6}\t{c2:.6}")
+            writeln!(
+                self.w,
+                "{guide_id}\t{chrom}\t{start}\t{strand}\t{mm}\t{cfd:.6}\t{c2:.6}"
+            )
         } else {
-            writeln!(self.w, "{guide_id}\t{chrom}\t{start}\t{strand}\t{mm}\t{cfd:.6}")
+            writeln!(
+                self.w,
+                "{guide_id}\t{chrom}\t{start}\t{strand}\t{mm}\t{cfd:.6}"
+            )
         }
     }
 
@@ -328,7 +367,11 @@ impl AggWriter {
                 "id,specificity,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
             )?;
         }
-        Ok(Self { w, cas12a, cas12a_dual })
+        Ok(Self {
+            w,
+            cas12a,
+            cas12a_dual,
+        })
     }
 
     /// SpCas9 row. `saturated` marks a guide whose off-target cap was hit, so
@@ -428,7 +471,10 @@ impl GuidesSidecarWriter {
     /// I/O failure.
     pub fn create(path: &Path) -> io::Result<Self> {
         let mut w = BufWriter::new(File::create(path)?);
-        writeln!(w, "guide_id\tid\tchrom\tposition\tstrand\tsequence\ton_count")?;
+        writeln!(
+            w,
+            "guide_id\tid\tchrom\tposition\tstrand\tsequence\ton_count"
+        )?;
         Ok(Self { w })
     }
 
@@ -634,8 +680,18 @@ mod tests {
         let path = std::env::temp_dir().join(format!("crispr_agg_dual_{}.csv", std::process::id()));
         {
             let mut w = AggWriter::create(&path, true, true).expect("create");
-            w.write_cas12a("g1", 0.8, 0.9, Some(0.5), Some(0.6), 0.3, 2, &[0, 0, 0, 1, 1], false)
-                .expect("row");
+            w.write_cas12a(
+                "g1",
+                0.8,
+                0.9,
+                Some(0.5),
+                Some(0.6),
+                0.3,
+                2,
+                &[0, 0, 0, 1, 1],
+                false,
+            )
+            .expect("row");
             w.write_dropped("g2").expect("dropped");
         } // drop flushes the BufWriter
         let body = std::fs::read_to_string(&path).expect("read");
@@ -648,7 +704,11 @@ mod tests {
         assert_eq!(row.split(',').count(), 10, "dual row has 10 columns");
         assert!(row.starts_with("g1,0.800000,0.900000,0.500000,0.600000,"));
         let dropped = lines.next().unwrap();
-        assert_eq!(dropped.split(',').count(), 10, "dual dropped row has 10 columns");
+        assert_eq!(
+            dropped.split(',').count(),
+            10,
+            "dual dropped row has 10 columns"
+        );
         assert!(dropped.ends_with(",0,1"));
         std::fs::remove_file(&path).ok();
     }
@@ -658,12 +718,16 @@ mod tests {
         let path = std::env::temp_dir().join(format!("crispr_tsv_dual_{}.tsv", std::process::id()));
         {
             let mut w = OtTsvWriter::create(&path, true).expect("create");
-            w.write_row(0, "chr1", 100, true, 3, 0.4, Some(0.7)).expect("row");
+            w.write_row(0, "chr1", 100, true, 3, 0.4, Some(0.7))
+                .expect("row");
             w.finish().expect("finish");
         }
         let body = std::fs::read_to_string(&path).expect("read");
         let mut lines = body.lines();
-        assert_eq!(lines.next().unwrap(), "guide_id\tchrom\tstart\tstrand\tmm\tcfd\tcfd2");
+        assert_eq!(
+            lines.next().unwrap(),
+            "guide_id\tchrom\tstart\tstrand\tmm\tcfd\tcfd2"
+        );
         let row = lines.next().unwrap();
         assert_eq!(row.split('\t').count(), 7);
         assert!(row.ends_with("0.400000\t0.700000"));

@@ -194,9 +194,7 @@ pub fn read_from_reader<R: BufRead>(
     };
     let header_trimmed = header_line.trim_end_matches(['\r', '\n']).trim();
     if header_trimmed != HEADER {
-        return Err(KmerCsvError::BadHeader {
-            line: header_line,
-        });
+        return Err(KmerCsvError::BadHeader { line: header_line });
     }
 
     let proto_len = usize::from(enzyme.protospacer_len);
@@ -401,7 +399,9 @@ g,ATAACATTTCAGCATTTCCA,NGG,chr1,1,+
         let parsed =
             read_from_reader(BufReader::new(write_csv(body)), &enzyme).expect("parse succeeds");
         assert_eq!(parsed.len(), 1);
-        let decoded = parsed[0].site.decode_ascii(usize::from(enzyme.total_scan_len()));
+        let decoded = parsed[0]
+            .site
+            .decode_ascii(usize::from(enzyme.total_scan_len()));
         // Protospacer is intact; PAM `N` was substituted by `A`.
         assert_eq!(decoded, "ATAACATTTCAGCATTTCCAAGG");
     }

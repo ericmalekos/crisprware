@@ -38,7 +38,8 @@ pub struct CsvRow<'a> {
     pub specificity: f64,
 }
 
-pub const HEADER: &str = "id,sequence,match_chrm,match_position,match_strand,match_distance,specificity";
+pub const HEADER: &str =
+    "id,sequence,match_chrm,match_position,match_strand,match_distance,specificity";
 
 /// Write the CSV header plus all rows to `writer`.
 ///
