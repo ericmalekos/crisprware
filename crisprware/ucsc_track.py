@@ -370,7 +370,12 @@ def build_track(
     # EnCas12a-DeepCpf1 when the AsCas12a score isn't present). Also shown on hover.
     color_pct = ascas12a_pct if has_ascas12a else enseq_pct
     item_rgb = _item_rgb(
-        dropped, buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy(), color_spec_pct, color_pct
+        dropped,
+        buckets["mm0"].to_numpy(),
+        buckets["mm1"].to_numpy(),
+        buckets["mm2"].to_numpy(),
+        color_spec_pct,
+        color_pct,
     )
 
     # unique flags: non-dropped guides cleared the --threshold 0 screen (no 0-mm

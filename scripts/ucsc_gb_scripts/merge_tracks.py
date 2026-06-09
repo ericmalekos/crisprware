@@ -13,6 +13,7 @@ stream each chrom's details, map every data line's old byte-offset -> its new of
 the merged file, rewrite that chrom's BED _offset, then sort + bedToBigBed and
 bgzip + index the merged details. One shared header sits at byte 0 (the 0 sentinel).
 """
+
 import argparse
 import os
 import subprocess
