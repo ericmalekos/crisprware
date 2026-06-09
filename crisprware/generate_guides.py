@@ -13,10 +13,13 @@ EX Usage:
 
 from typing import Dict, Generator, List, Optional, Tuple, Union
 
-from Bio import SeqIO
-from Bio.SeqRecord import SeqRecord
 import argparse
+import os
+import shutil
+import tempfile
 from concurrent.futures import ProcessPoolExecutor
+
+import pysam
 from pybedtools import BedTool
 from crisprware.utils.dna_sequence_functions import (
     NTS,
@@ -206,8 +209,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "-t",
         "--threads",
         type=int,
-        help="Number of threads. [default: 4]",
+        help="Number of worker processes. Parallelism scales with the number of genome "
+        "windows (see --chunk_size), not the PAM count, so this can usefully exceed it. [default: 4]",
         default=4,
+    )
+
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        default=5_000_000,
+        help="Genome window size in bp for parallel scanning; smaller = more/finer tasks "
+        "(better load balance, slightly more overhead). [default: 5,000,000]",
     )
 
     parser.add_argument(
@@ -335,120 +347,75 @@ def output_bed_line(args: argparse.Namespace, chrm_name: str, sgRNA: Dict[str, U
     return "\t".join(bedLine)
 
 
-def process_pam(
-    args: argparse.Namespace,
-    pam: str,
-    record: SeqRecord,
-    start: int,
-    end: int,
-    pam_set: List[str],
-    rev_pam_set: List[str],
-) -> List[str]:
+_WORKER_FASTA = None
+
+
+def _init_worker(fasta_path: str) -> None:
+    """ProcessPoolExecutor initializer: open the FASTA once per worker process so
+    windows are read by indexed random access (pysam), never pickled."""
+    global _WORKER_FASTA
+    _WORKER_FASTA = pysam.FastaFile(fasta_path)
+
+
+def process_window(chrom, core_start, core_end, args, pam_set, rev_pam_set, pad, tmpdir, apply_reverse):
+    """Scan every PAM over one chromosome window [core_start, core_end) and write the
+    matching guides to a temp file; return its path (or None if empty).
+
+    The worker reads only its padded window slice from the shared FASTA handle (opened
+    once per worker), uppercases it once, and scans all PAMs over it -- so the genome is
+    never pickled and the chromosome is never re-stringified per PAM. `pad` guarantees
+    the full spacer+context of any PAM anchored in the core is in-slice; find_sgRNA's
+    start/end restrict scanning to the core, so each guide is emitted exactly once.
+    `apply_reverse` runs the cut-site->protospacer transform here (parallel) when there
+    is no region filtering; otherwise rows stay in cut-site coords for intersect/subtract.
     """
-    Processes PAM sequences within a specified genomic region and generates results
-    for sgRNA candidates that meet the defined criteria.
-
-    Parameters:
-    - args (Namespace): A Namespace object containing parameters for sgRNA and context
-        extraction, including sgRNA length, context window size, and PAM orientation.
-    - pam (str): The PAM sequence to search for.
-    - record (SeqRecord): A BioPython SeqRecord object representing the genomic region
-        to be searched. Contains sequence (`seq`) and identifier (`id`).
-    - start (int): The start position within the genomic region to begin the search.
-    - end (int): The end position within the genomic region to end the search.
-    - pam_set (set): A set of valid PAM sequences for forward strand analysis.
-    - rev_pam_set (set): A set of valid PAM sequences for reverse strand analysis.
-
-    Returns:
-    - list: A list of formatted results for each valid sgRNA candidate found. Each result
-        includes sgRNA sequence, position, PAM, sense, length, and context information,
-        formatted as specified by the `output_bed_line` function.
-
-    Raises:
-    - ValueError: If the provided PAM sequence is not found in either `pam_set` or
-        `rev_pam_set`.
-
-    """
-
-    results = []
-
-    context_length = args.sgRNA_length + args.context_window[0] + args.context_window[1]
-    if args.pam_5_prime:
-        # 5'-PAM enzymes (Cas12a/Cpf1) bake the PAM into the context window
-        # so downstream on-target scorers (DeepCpf1/enPAM+GB) see it.
-        context_length += len(pam)
-    chrm_seq = str(record.seq).upper()
-    chrm_name = record.id
-
-    # Process pams
-    if pam in pam_set:
-        for sgRNA, pos, context in find_sgRNA(args=args, pam=pam, chrm=chrm_seq, start=start, end=end, forward=True):
+    chrom_len = _WORKER_FASTA.get_reference_length(chrom)
+    slice_start = max(0, core_start - pad)
+    slice_end = min(chrom_len, core_end + pad)
+    seq = _WORKER_FASTA.fetch(chrom, slice_start, slice_end).upper()
+    scan_start = core_start - slice_start
+    scan_end = core_end - slice_start - 1  # find_sgRNA breaks at index > end
+    out = []
+    for pam in pam_set + rev_pam_set:
+        context_length = args.sgRNA_length + args.context_window[0] + args.context_window[1]
+        if args.pam_5_prime:
+            context_length += len(pam)
+        forward = pam in pam_set
+        for sgRNA, pos, context in find_sgRNA(
+            args=args, pam=pam, chrm=seq, start=scan_start, end=scan_end, forward=forward
+        ):
             if len(sgRNA) != args.sgRNA_length or len(context) != context_length:
                 continue
             if not all(nt in NTS for nt in context):
                 continue
-            if include_sgRNA(
-                args,
-                {
-                    "sequence": sgRNA,
-                    "position": pos,
-                    "pam": pam,
-                    "sense": "+",
-                    "length": args.sgRNA_length,
-                    "context": context,
-                },
-            ):
-                results.append(
-                    output_bed_line(
-                        args,
-                        chrm_name,
-                        {
-                            "sequence": sgRNA,
-                            "position": pos,
-                            "pam": args.pam,
-                            "sense": "+",
-                            "length": args.sgRNA_length,
-                            "context": context,
-                        },
-                    )
-                )
-    elif pam in rev_pam_set:
-        for sgRNA, pos, context in find_sgRNA(args=args, pam=pam, chrm=chrm_seq, start=start, end=end, forward=False):
-            if len(sgRNA) != args.sgRNA_length or len(context) != context_length:
-                continue
-            if not all(nt in NTS for nt in context):
-                continue
-            sgRNA = revcom(sgRNA)
-            context = revcom(context)
-            if include_sgRNA(
-                args,
-                {
-                    "sequence": sgRNA,
-                    "position": pos,
-                    "pam": pam,
-                    "sense": "-",
-                    "length": args.sgRNA_length,
-                    "context": context,
-                },
-            ):
-                results.append(
-                    output_bed_line(
-                        args,
-                        chrm_name,
-                        {
-                            "sequence": sgRNA,
-                            "position": pos,
-                            "pam": args.pam,
-                            "sense": "-",
-                            "length": args.sgRNA_length,
-                            "context": context,
-                        },
-                    )
-                )
-    else:
-        raise ValueError(f"The PAM sequence '{pam}' is not found in the list of valid PAMs.")
-
-    return results
+            position = pos + slice_start  # slice-relative -> absolute (matches the original full-chromosome position)
+            if forward:
+                sense = "+"
+            else:
+                sgRNA = revcom(sgRNA)
+                context = revcom(context)
+                sense = "-"
+            entry = {
+                "sequence": sgRNA,
+                "position": position,
+                "pam": pam,
+                "sense": sense,
+                "length": args.sgRNA_length,
+                "context": context,
+            }
+            if include_sgRNA(args, entry):
+                out_entry = dict(entry)
+                out_entry["pam"] = args.pam
+                line = output_bed_line(args, chrom, out_entry)
+                if apply_reverse:
+                    line = reverse_cut_site_offset(line, args)
+                out.append(line)
+    if not out:
+        return None
+    fd, path = tempfile.mkstemp(suffix=".bed", dir=tmpdir)
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(out) + "\n")
+    return path
 
 
 def reverse_cut_site_offset(bedline: str, args: argparse.Namespace) -> str:
@@ -563,63 +530,74 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
     pam_set = map_ambiguous_sequence(args.pam)
     rev_pam_set = list(map(revcom, pam_set))
 
-    with ProcessPoolExecutor(max_workers=args.threads) as executor:
-        for record in SeqIO.parse(args.fasta, "fasta"):
-            chr_results = []
+    pad = args.sgRNA_length + args.context_window[0] + args.context_window[1] + max(len(p) for p in pam_set) + 10
+    has_locations = bool(targets_to_keep or targets_to_discard)
+    # With no region filtering each worker applies the cut-site -> protospacer transform
+    # itself (in parallel). With locations, rows must stay in cut-site coords until after
+    # intersect/subtract, then write_results applies the transform (matching the original).
+    apply_reverse = (not has_locations) and (not args.coords_as_active_site)
 
-            # skip chromosomes
-            if keep_chroms and record.id not in keep_chroms:
-                continue
+    # Flat task list: tile every (kept) chromosome into windows, across ALL chromosomes.
+    fa = pysam.FastaFile(args.fasta)
+    tasks = []
+    for chrom in fa.references:
+        chrom_len = fa.get_reference_length(chrom)
+        if keep_chroms and chrom not in keep_chroms:
+            continue
+        if chrom_len < args.min_chr_length:
+            continue
+        if keep_chroms:
+            r_start, r_end = keep_chroms[chrom]
+            r_start = max(r_start - max(args.context_window), 0)
+            r_end = min(r_end + max(args.context_window), chrom_len)
+        else:
+            r_start, r_end = 0, chrom_len
+        for w_start in range(r_start, r_end, args.chunk_size):
+            tasks.append((chrom, w_start, min(w_start + args.chunk_size, r_end)))
+    fa.close()
+    print(f"\n\tScanning {len(tasks)} windows across {args.threads} workers\n")
 
-            print("\tProcessing " + record.id)
-            # skip short chromosomes
-            if len(record.seq) < args.min_chr_length:
-                print("\tSkipping record, too short:\t" + record.id)
-                continue
-            if keep_chroms:
-                start, end = keep_chroms[record.id]
-                start -= max(args.context_window)
-                start = max(start, 0)
-                end += max(args.context_window)
-                end = min(end, len(record.seq))
-            else:
-                start = 0
-                end = len(record.seq)
+    out_dir = os.path.dirname(gRNA_output_path) or "."
+    tmpdir = tempfile.mkdtemp(prefix="ggwin_", dir=out_dir)
+    paths = []
+    with ProcessPoolExecutor(max_workers=args.threads, initializer=_init_worker, initargs=(args.fasta,)) as executor:
+        futures = [
+            executor.submit(process_window, c, ws, we, args, pam_set, rev_pam_set, pad, tmpdir, apply_reverse)
+            for (c, ws, we) in tasks
+        ]
+        for future in futures:
+            p = future.result()
+            if p:
+                paths.append(p)
 
-            # Submitting each PAM for processing as separate task
-            futures = []
+    if not has_locations:
+        # workers already wrote final rows (protospacer coords unless --coords_as_active_site)
+        with open(gRNA_output_path, "ab") as out:
+            for p in paths:
+                with open(p, "rb") as ph:
+                    shutil.copyfileobj(ph, out)
+                os.remove(p)
+    else:
+        combined = os.path.join(tmpdir, "_combined.bed")
+        with open(combined, "wb") as cf:
+            for p in paths:
+                with open(p, "rb") as ph:
+                    shutil.copyfileobj(ph, cf)
+                os.remove(p)
+        bed = BedTool(combined)
+        if targets_to_keep:
+            final_targets = bed.intersect(targets_to_keep, u=True)
+        else:
+            final_targets = bed.subtract(targets_to_discard, A=True)
+        write_results([str(line) for line in final_targets], gRNA_output_path, args)
+        os.remove(combined)
 
-            for pam in pam_set + rev_pam_set:
-                futures.append(
-                    executor.submit(
-                        process_pam,
-                        args=args,
-                        pam=pam,
-                        record=record,
-                        start=start,
-                        end=end,
-                        pam_set=pam_set,
-                        rev_pam_set=rev_pam_set,
-                    )
-                )
+    try:
+        os.rmdir(tmpdir)
+    except OSError:
+        pass
 
-            # Waiting for all futures to complete and collecting the results
-            for future in futures:
-                chr_results.extend(future.result())
-
-            bed_chr_results = BedTool("\n".join(chr_results), from_string=True)
-
-            if targets_to_keep:
-                final_targets = bed_chr_results.intersect(BedTool(targets_to_keep), u=True)
-            elif targets_to_discard:
-                final_targets = bed_chr_results.subtract(BedTool(targets_to_discard), A=True)
-            else:
-                final_targets = bed_chr_results
-
-            final_targets_str = [str(line) for line in final_targets]
-            write_results(final_targets_str, gRNA_output_path, args)
-
-        print(f"\n\tSaved output file to {gRNA_output_path}\n")
+    print(f"\n\tSaved output file to {gRNA_output_path}\n")
 
     if was_gzipped:
         remove_file(args.fasta)
