@@ -41,6 +41,15 @@ bigBed `_offset` column points at uncompressed byte offsets in that piece's
    Merge order is arbitrary — offsets are assigned at merge time and the bigBed is
    sorted at the end. Requires `bedToBigBed` and `bgzip` on `PATH`.
 
+## Track schema
+
+`cas12aTargets.as` here is the canonical autoSql schema for the bigBed — 23 fields:
+bed9 + `guideSeq`/`pam`, the unique flags, EnCas12a + AsCas12a TTTV/TTTN specificity,
+the four on-target efficiency scores, and the required `_mouseOver`/`_offset` trailer.
+It is emitted by `score_guides --ucscgb` (every per-chunk track's `cas12aTargets.as` is
+an identical copy) and is what you pass to `merge_tracks.py --as-file` (or `bedToBigBed
+-as`). Keep it in sync with `crisprware/ucsc_track.py:build_autosql`, which generates it.
+
 ## Requirements
 
 Python 3 (stdlib only). `merge_tracks.py` shells out to `bgzip` and `bedToBigBed`.
