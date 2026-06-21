@@ -62,10 +62,10 @@ def build_autosql(
     display_name)`` per off-target matrix (one TTTV + one TTTN column each). The
     column order here MUST match the BED written by :func:`build_track`."""
     score_descs = {
-        "enseq_deepcpf1_score": "EnCas12a-DeepCpf1 efficiency: percentile (score)",
-        "deepcpf1_score": "DeepCpf1 efficiency: percentile (score)",
-        "enpam_gb_score": "EnPAM-GB efficiency: percentile (score)",
-        "ascas12a_deepcpf1_score": "AsCas12a-DeepCpf1 efficiency: percentile (score)",
+        "enseq_deepcpf1_score": "EnCas12a-DeepCpf1",
+        "deepcpf1_score": "DeepCpf1",
+        "enpam_gb_score": "EnPAM-GB",
+        "ascas12a_deepcpf1_score": "AsCas12a-DeepCpf1",
     }
     head = [
         "table Cas12aTargets",
@@ -85,12 +85,12 @@ def build_autosql(
     ]
     # Extra string fields: unique flags, per-matrix TTTV/TTTN specificity, then
     # the on-target efficiencies. Descriptions align to the widest field name.
-    extra = [("unique_TTTV", "Unique at TTTV PAMs"), ("unique_TTTN", "Unique at TTTN PAMs")]
+    extra = [("unique_TTTV", "TTTV PAM unique"), ("unique_TTTN", "TTTN PAM unique")]
     for field, display in spec_matrices:
-        extra.append((f"TTTV_{field}_specificity", f"{display} specificity vs TTTV: percentile (score)"))
-        extra.append((f"TTTN_{field}_specificity", f"{display} specificity vs TTTN: percentile (score)"))
+        extra.append((f"TTTV_{field}_specificity", f"{display} TTTV CFD"))
+        extra.append((f"TTTN_{field}_specificity", f"{display} TTTN CFD"))
     for c in score_cols:
-        extra.append((c, score_descs.get(c, "efficiency: percentile (score)")))
+        extra.append((c, score_descs.get(c, "efficiency")))
     width = max(len(f) for f, _ in extra) + 2  # "field;" + >=1 space before the description
     body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
     tail = [
@@ -464,6 +464,119 @@ def build_track(
             )
             artifacts["bigbed"] = bb_path
     return artifacts
+
+
+def merge_ucscgb_tracks(
+    track_dirs: Sequence[str],
+    out: str,
+    chrom_sizes: str,
+    as_file: str,
+    bedtobigbed: str = "bedToBigBed",
+    sort_mem: str = "8G",
+    sort_threads: str = "8",
+    keep_bed: bool = False,
+) -> Dict[str, str]:
+    """Merge per-chunk Cas12a UCSC tracks (each produced by a single-pass
+    :func:`build_track`) into one track.
+
+    Each ``track_dir`` must contain ``guides.bed`` (bed9+, last column =
+    ``_offset`` = uncompressed byte offset into that piece's
+    ``crisprDetails.tab``; ``0`` = non-unique sentinel) and
+    ``crisprDetails.tab.gz``. The off-target details carry no guide key, so the
+    BED ``_offset`` is the only link: we stream each piece's details, map every
+    data line's old byte offset to its offset in the merged file, rewrite that
+    piece's BED ``_offset``, then sort + ``bedToBigBed`` and ``bgzip`` + index.
+    One shared header sits at byte 0 (the ``0`` sentinel). Merge order is
+    arbitrary -- offsets are reassigned here and the bigBed is sorted at the end.
+    Returns the artifact paths.
+    """
+    header = b"_mismatchCounts\t_crisprOfftargets\n"
+
+    def _zcat_lines(path):
+        p = subprocess.Popen(["bgzip", "-dc", "-@", "4", path], stdout=subprocess.PIPE, bufsize=1024 * 1024)
+        try:
+            for line in p.stdout:
+                yield line
+        finally:
+            p.stdout.close()
+            if p.wait() != 0:
+                raise RuntimeError(f"bgzip -dc failed for {path}")
+
+    os.makedirs(out, exist_ok=True)
+    merged_tab = os.path.join(out, DETAILS_NAME)
+    merged_bed = os.path.join(out, "guides.merged.bed")
+
+    n_guides = n_unique = 0
+    running = 0  # byte offset in the merged uncompressed details
+    with open(merged_tab, "wb") as outf, open(merged_bed, "wb") as bedout:
+        outf.write(header)
+        running = len(header)
+        for tdir in track_dirs:
+            det = os.path.join(tdir, DETAILS_NAME + ".gz")
+            bed = os.path.join(tdir, "guides.bed")
+            if not (os.path.exists(det) and os.path.exists(bed)):
+                raise FileNotFoundError(f"missing track files in {tdir}")
+            # 1. stream this piece's details -> old(byte in piece) -> new(byte in merged)
+            offmap = {}
+            piece_off = 0
+            for i, line in enumerate(_zcat_lines(det)):
+                if i == 0:  # per-piece header at byte 0 -> not copied (merged has its own at 0)
+                    if line != header:
+                        raise ValueError(f"unexpected details header in {det}: {line!r}")
+                    piece_off += len(line)
+                    continue
+                offmap[piece_off] = running
+                outf.write(line)
+                running += len(line)
+                piece_off += len(line)
+            # 2. rewrite this piece's BED with remapped _offset (last column)
+            with open(bed, "rb") as bf:
+                for row in bf:
+                    row = row.rstrip(b"\n")
+                    if not row:
+                        continue
+                    fields = row.split(b"\t")
+                    old = int(fields[-1])
+                    if old == 0:
+                        new = 0
+                    else:
+                        try:
+                            new = offmap[old]
+                        except KeyError:
+                            raise KeyError(f"BED _offset {old} not found in {det} (offset map mismatch)")
+                        n_unique += 1
+                    fields[-1] = str(new).encode()
+                    bedout.write(b"\t".join(fields) + b"\n")
+                    n_guides += 1
+            offmap.clear()
+            print(f"  merged {os.path.basename(tdir)}: cum_guides={n_guides} merged_bytes={running}", flush=True)
+
+    # 3. sort the merged BED and build the bigBed
+    sorted_bed = os.path.join(out, "guides.sorted.bed")
+    subprocess.run(
+        f"LC_ALL=C sort -S{sort_mem} --parallel={sort_threads} -T {out} -k1,1 -k2,2n {merged_bed} > {sorted_bed}",
+        shell=True,
+        check=True,
+    )
+    bb = os.path.join(out, BB_NAME)
+    subprocess.run([bedtobigbed, "-tab", "-type=bed9+", f"-as={as_file}", sorted_bed, chrom_sizes, bb], check=True)
+    # 4. bgzip + index the merged details (offsets are uncompressed; .gzi handles the seek)
+    subprocess.run(["bgzip", "-f", "-@", "8", merged_tab], check=True)
+    subprocess.run(["bgzip", "-r", merged_tab + ".gz"], check=True)
+    shutil.copy(as_file, os.path.join(out, AS_NAME))
+    os.remove(merged_bed)
+    if not keep_bed:
+        os.remove(sorted_bed)
+    print(
+        f"\nMERGE DONE -> {out}\n  guides={n_guides}  unique(with details)={n_unique}  details_bytes={running}",
+        flush=True,
+    )
+    return {
+        "bigbed": bb,
+        "details_gz": merged_tab + ".gz",
+        "details_gzi": merged_tab + ".gz.gzi",
+        "autosql": os.path.join(out, AS_NAME),
+    }
 
 
 def _cli() -> None:

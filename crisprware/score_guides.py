@@ -13,9 +13,14 @@
 from typing import List, Optional, Union
 
 import pandas as pd
+import copy
+import math
+import multiprocessing
+import os
 import subprocess
 import argparse
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from rs3.seq import predict_seq
 
 # from scipy.stats import norm
@@ -293,6 +298,30 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Also score off-targets with the 2xNLS-Cas12a matrix and emit its TTTV/TTTN "
         "specificity columns (a second, aggregated off-target pass — the off-target list "
         "still comes from the enCas12a pass). [default: on; use --no-ucscgb_2xnls to skip]",
+    )
+    ucsc.add_argument(
+        "--ucscgb_chunk_max",
+        type=int,
+        default=0,
+        help="If >0, build the track in chunks of at most this many guides and merge the "
+        "per-chunk tracks into one (recomputing crisprDetails.tab byte offsets). Bounds "
+        "peak memory and disk, and enables multi-GPU fan-out via --ucscgb_gpus. 0 = single "
+        "pass over all guides. [default: 0]",
+    )
+    ucsc.add_argument(
+        "--ucscgb_gpus",
+        type=str,
+        default=None,
+        help="Comma-separated CUDA device ids to fan --ucscgb_chunk_max chunks across "
+        "(e.g. '0,1,2,3,4,5,6,7'); each concurrent chunk's off-target pass is pinned to one "
+        "device, so chunks never share a GPU. Only used when --ucscgb_chunk_max>0. "
+        "[default: single device 0].",
+    )
+    ucsc.add_argument(
+        "--ucscgb_keep_chunks",
+        action="store_true",
+        help="Keep the per-chunk working dir (<ucscgb>/chunks/) after merging, for "
+        "inspection or resume. [default: delete after a successful merge].",
     )
 
 
@@ -599,8 +628,164 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         print(f"\t  {k}: {v}")
 
 
-def main(args: Optional[argparse.Namespace] = None) -> None:
+def _ucscgb_pool_init(gpu_queue) -> None:
+    """Pool-worker initializer: claim one GPU from the shared queue and pin this
+    worker process to it for its whole lifetime, so concurrent chunks never share
+    a device (the queue holds exactly one token per GPU, and the pool has exactly
+    one worker per GPU)."""
+    try:
+        gpu = gpu_queue.get_nowait()
+    except Exception:
+        gpu = None
+    if gpu is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
+
+def _ucscgb_chunk_worker(chunk_args: argparse.Namespace) -> str:
+    """Score one chunk as an isolated single-pass --ucscgb run (in a spawned
+    subprocess with clean CUDA/TF state). Returns the chunk's track dir."""
+    main(chunk_args)
+    return chunk_args.ucscgb
+
+
+def run_ucscgb_chunked(args: argparse.Namespace) -> None:
+    """Split the guide BED into ``<=--ucscgb_chunk_max``-guide chunks, score each as
+    an isolated single-pass ``--ucscgb`` run (fanned across ``--ucscgb_gpus``, one GPU
+    per concurrent chunk), then merge the per-chunk tracks into one (recomputing
+    ``crisprDetails.tab`` byte offsets). Reproduces the external chunk_guides.py +
+    SLURM array + merge_tracks.py workflow as a single command, bounding peak memory
+    and disk (each chunk's large off-target intermediates are deleted once it
+    assembles, so peak disk ~= the concurrently-running chunks)."""
+    import shutil
+
+    from crisprware import ucsc_track
+
+    outdir = args.ucscgb
+    os.makedirs(outdir, exist_ok=True)
+    chunk_root = os.path.join(outdir, "chunks")
+    os.makedirs(chunk_root, exist_ok=True)
+    chunk_max = args.ucscgb_chunk_max
+
+    # 1. split the guide BED into <=chunk_max chunks (each keeps the header line)
+    with open(args.grna_bed) as fh:
+        header = fh.readline()
+        n = sum(1 for _ in fh)
+    nchunks = max(1, math.ceil(n / chunk_max))
+    size = math.ceil(n / nchunks)
+    chunk_beds = []
+    with open(args.grna_bed) as fh:
+        fh.readline()  # skip header
+        idx = written = 0
+        cur = None
+        for line in fh:
+            if cur is None or written == size:
+                if cur:
+                    cur.close()
+                cb = os.path.join(chunk_root, f"chunk_{idx:03d}.bed")
+                cur = open(cb, "w")
+                cur.write(header)
+                chunk_beds.append(cb)
+                idx += 1
+                written = 0
+            cur.write(line)
+            written += 1
+        if cur:
+            cur.close()
+
+    # 2. GPU pool: one persistent worker per GPU (concurrent chunks never share a device).
+    # Explicit --ucscgb_gpus wins; otherwise fan across exactly the devices this process was
+    # given (SLURM sets CUDA_VISIBLE_DEVICES to the job's allocation), falling back to GPU 0.
+    if args.ucscgb_gpus:
+        gpus = [g.strip() for g in args.ucscgb_gpus.split(",") if g.strip()]
+    elif args.ucscgb_scanner == "gpu":
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+        gpus = [g.strip() for g in cvd.split(",") if g.strip()] if cvd else ["0"]
+    else:
+        gpus = [None]
+    n_workers = max(1, len(gpus))
+    print(
+        f"\n\t--ucscgb_chunk_max {chunk_max}: {n} guides -> {len(chunk_beds)} chunk(s) "
+        f"(~{size} each) across {n_workers} worker(s) on GPU(s) {gpus}\n",
+        flush=True,
+    )
+
+    # 3. build per-chunk args and fan out (spawned, GPU-pinned subprocesses)
+    def _chunk_args(i, cb):
+        ca = copy.deepcopy(args)
+        ca.grna_bed = cb
+        ca.ucscgb = os.path.join(chunk_root, f"track_{i:03d}")
+        ca.ucscgb_chunk_max = 0  # single pass inside the worker
+        ca.ucscgb_gpus = None
+        ca.ucscgb_keep_chunks = True
+        ca.output_directory = os.path.join(chunk_root, f"out_{i:03d}")
+        os.makedirs(ca.output_directory, exist_ok=True)
+        return ca
+
+    ctx = multiprocessing.get_context("spawn")
+    manager = ctx.Manager()
+    gpu_queue = manager.Queue()
+    for g in gpus:
+        gpu_queue.put(g)
+
+    track_dirs = [None] * len(chunk_beds)
+    failures = []
+    _t_all = time.time()
+    with ProcessPoolExecutor(
+        max_workers=n_workers, mp_context=ctx, initializer=_ucscgb_pool_init, initargs=(gpu_queue,)
+    ) as ex:
+        fut2meta = {}
+        for i, cb in enumerate(chunk_beds):
+            ca = _chunk_args(i, cb)
+            fut2meta[ex.submit(_ucscgb_chunk_worker, ca)] = (i, ca.ucscgb)
+        for fut in as_completed(fut2meta):
+            i, tdir = fut2meta[fut]
+            try:
+                fut.result()
+                track_dirs[i] = tdir
+                # bound peak disk: drop this chunk's large off-target intermediates
+                for fn in (
+                    "offtargets.csv",
+                    "offtargets.csv.ot.tsv",
+                    "offtargets.csv.guides.tsv",
+                    "guides.kmers.csv",
+                ):
+                    p = os.path.join(tdir, fn)
+                    if os.path.exists(p):
+                        os.remove(p)
+                done = sum(1 for t in track_dirs if t)
+                print(f"\t[chunk {i:03d}] done ({done}/{len(chunk_beds)}) -> {tdir}", flush=True)
+            except Exception as e:  # report and fail after the pool drains
+                failures.append((i, repr(e)))
+                print(f"\t[chunk {i:03d}] FAILED: {e!r}", flush=True)
+    if failures:
+        raise RuntimeError(f"{len(failures)} chunk(s) failed (chunk dirs kept for inspection): {failures}")
+
+    # 4. merge per-chunk tracks (order arbitrary; the merge re-sorts the bigBed)
+    track_dirs = sorted(t for t in track_dirs if t)
+    as_file = os.path.join(track_dirs[0], ucsc_track.AS_NAME)
+    print(
+        f"\n\t[TIMING] all {len(track_dirs)} chunks scored: {time.time() - _t_all:.1f}s; merging -> {outdir}\n",
+        flush=True,
+    )
+    _t = time.time()
+    art = ucsc_track.merge_ucscgb_tracks(
+        track_dirs=track_dirs,
+        out=outdir,
+        chrom_sizes=args.chrom_sizes,
+        as_file=as_file,
+        sort_threads=str(args.threads),
+    )
+    print(f"\n\t[TIMING] merge {len(track_dirs)} chunks: {time.time() - _t:.1f}s", flush=True)
+
+    # 5. cleanup
+    if not getattr(args, "ucscgb_keep_chunks", False):
+        shutil.rmtree(chunk_root, ignore_errors=True)
+    print("\n\tUCSC Cas12a track (chunked) written:")
+    for k, v in art.items():
+        print(f"\t  {k}: {v}")
+
+
+def main(args: Optional[argparse.Namespace] = None) -> None:
     if args is None:
         args = parse_arguments()
 
@@ -658,6 +843,14 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         raise ValueError(
             "\n\tEither --tracr (SpCas9 RS3) or --cas12a_scorer must be set, or pass --skip_rs3 to skip on-target scoring entirely.\n"
         )
+
+    # Chunked (optionally multi-GPU) track build: split the guide BED, score each
+    # chunk as an isolated single-pass --ucscgb run (one GPU each) in a spawned
+    # subprocess, then merge the per-chunk tracks. Bypasses the whole-genome single
+    # pass below; everything downstream stays unchanged for chunk_max == 0.
+    if args.ucscgb and getattr(args, "ucscgb_chunk_max", 0) and args.ucscgb_chunk_max > 0:
+        run_ucscgb_chunked(args)
+        return
 
     pams = ""
     if args.alt_pams:
