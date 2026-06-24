@@ -1,0 +1,8 @@
+/* Slightly wider content so code blocks and tables breathe. */
+.wy-nav-content { max-width: 960px; }
+
+/* Tighter admonition spacing. */
+.rst-content .admonition { margin-bottom: 16px; }
+
+/* Monospace a touch smaller for long command blocks. */
+.rst-content pre { font-size: 0.84rem; line-height: 1.35; }

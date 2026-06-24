@@ -7,6 +7,23 @@ CRISPRware is a comprehensive toolkit designed to preprocess NGS data and identi
 
 **v0.2 highlights**: 12 new in-tree on-target scorers spanning SpCas9 (DeepSpCas9, DeepHF × 3 variants) and Cas12a (DeepCpf1, enPAM+GB, enseq-DeepCpf1, seq-DeepCpf1variants × 23 variants including AsCas12a Ultra / 2xNLS), all bit-equivalence-tested against their upstream reference implementations. Off-target scoring is now driven by an in-tree Rust backend (`crispr-ots`, ~6× faster than the previous `guidescan` shell-out) with bundled Cas12a CFD matrices. `--cas9_scorer` and `--cas12a_scorer` accept multiple values, so a single CLI call can emit any combination of scores. See [Additional scoring methods](#additional-scoring-methods).
 
+## Implemented scoring methods
+
+On- and off-target methods built into `score_guides`; each links to its
+[documentation](https://crisprware.readthedocs.io) page:
+
+| Method | Type | Nuclease | Reference |
+|--------|------|----------|-----------|
+| [RuleSet3](https://crisprware.readthedocs.io/en/latest/scoring/ontarget.html#ruleset3) | on-target | SpCas9 | DeWeirdt 2022 |
+| [DeepSpCas9](https://crisprware.readthedocs.io/en/latest/scoring/ontarget.html#deepspcas9) | on-target | SpCas9 | Kim 2019 |
+| [DeepHF](https://crisprware.readthedocs.io/en/latest/scoring/ontarget.html#deephf) (3 variants) | on-target | SpCas9 | Wang 2019 |
+| [DeepCpf1](https://crisprware.readthedocs.io/en/latest/scoring/ontarget.html#deepcpf1) | on-target | Cas12a | Kim 2018 |
+| [enPAM+GB](https://crisprware.readthedocs.io/en/latest/scoring/ontarget.html#enpam-gb) | on-target | enAsCas12a | DeWeirdt 2021 |
+| [enseq-DeepCpf1](https://crisprware.readthedocs.io/en/latest/scoring/ontarget.html#enseq-deepcpf1) | on-target | Cas12a | Chen 2025 |
+| [seq-DeepCpf1variants](https://crisprware.readthedocs.io/en/latest/scoring/ontarget.html#seq-deepcpf1variants) | on-target | 23 Cas12a variants | Chen 2025 |
+| [crispr-ots](https://crisprware.readthedocs.io/en/latest/scoring/offtarget.html#crispr-ots) (CFD) | off-target | SpCas9 + Cas12a | DeWeirdt 2021 / Doench 2016 |
+| [Guidescan2](https://crisprware.readthedocs.io/en/latest/scoring/offtarget.html#guidescan2) | off-target | SpCas9 + Cas12a | Schmidt 2023 |
+
 ## Table of Contents
 1. [Installation](#installation)
 2. [Tutorials](#tutorials)
@@ -24,14 +41,23 @@ CRISPRware is a comprehensive toolkit designed to preprocess NGS data and identi
 If you have not already, install one of the package managers [miniconda](https://docs.anaconda.com/miniconda/) or [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html)
 
 ### Linux installation
-With conda installed perform the following commands.
-(If you installed micromamba, conda -> micromamba)
+
+Install the Python environment, then put the `crispr-ots` off-target scanner on your `PATH`
+(if you installed micromamba, `conda` -> `micromamba`):
 
 ```
 git clone https://github.com/ericmalekos/crisprware crisprware && cd crisprware
-
 conda env create -f environment.yml && conda activate crisprware
+pip install .
 ```
+
+`crispr-ots` is a standalone Rust binary. Download the prebuilt build for your platform from the
+[Releases page](https://github.com/ericmalekos/crisprware/releases) and put it on your `PATH`, or build
+it with `cd crispr-ots && cargo install --path crates/crispr-cli`. It defaults to a portable x86-64
+baseline (runs on any CPU); add `RUSTFLAGS="-C target-cpu=x86-64-v3"` for a faster binary on Haswell+
+(2013+) hardware. See the
+[installation docs](https://crisprware.readthedocs.io/en/latest/installation.html) for the full target
+list and the baseline-vs-v3 note.
 
 ### MacOs installation and troubleshooting
 Try running `git -h`, if you hit an error `xcrun: error: invalid developer path ...`, you may need to install the Command Line Tools package with `xcode-select --install`
@@ -79,7 +105,7 @@ either or both engines in `score_guides`. Each engine writes to its own
 `<name>_<engine>/` directory.
 
 ```
-crisprware index_genome -f tests/test_data/ce11/chrIII_sequence.fasta
+crisprware index_genome -f tests/test_data/ce11/chrIII_sequence.fasta -p NGG -l 20
 ```
 
 We can build gene models from NCBI GTF,

@@ -9,6 +9,7 @@
 !environment.yml
 !license.txt
 !pyproject.toml
+!.readthedocs.yaml
 
 # Directories: must un-ignore both the dir and its contents
 !.github/
@@ -27,6 +28,8 @@
 !dist/**
 !docker/
 !docker/**
+!docs/
+!docs/**
 !images/
 !images/**
 !parasol_scripts/
@@ -43,6 +46,7 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 *.egg-info/
+docs/build/
 
 # Rust workspace artifacts (crispr-ots/)
 crispr-ots/target/

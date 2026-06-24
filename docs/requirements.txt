@@ -1,0 +1,8 @@
+# Build deps for the docs site (install into a dedicated sphinx-docs env).
+sphinx
+myst-parser
+sphinx-rtd-theme
+sphinx-copybutton
+sphinx-design
+sphinxcontrib-mermaid
+sphinx-autobuild
