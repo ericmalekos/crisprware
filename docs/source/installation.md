@@ -70,3 +70,10 @@ crispr-ots --version   # scanner on PATH
 docker pull ericmalekos/crisprware:latest
 docker run crisprware -h
 ```
+
+## Memory
+
+`index_genome` and `score_guides` can be memory-heavy on large genomes. `score_guides --chunk_size N`
+processes `N` guides at a time (default 100000), lower it to cut memory, raise it for speed. Guidescan2
+also offers prebuilt indices for some species at <https://guidescan.com/downloads>, avoiding a local
+`index_genome` build.

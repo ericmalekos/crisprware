@@ -5,9 +5,9 @@ copyright = "2026, Eric Malekos"
 release = "0.2"
 
 extensions = [
-    "myst_parser",            # author pages in Markdown
-    "sphinx_copybutton",      # copy button on code blocks
-    "sphinx_design",          # cards / grids / tabs
+    "myst_parser",  # author pages in Markdown
+    "sphinx_copybutton",  # copy button on code blocks
+    "sphinx_design",  # cards / grids / tabs
     "sphinxcontrib.mermaid",  # pipeline diagrams
 ]
 

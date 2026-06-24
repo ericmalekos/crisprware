@@ -29,6 +29,7 @@ walk each module with a runnable example on the bundled *C. elegans* chrIII test
 
 installation
 quickstart
+tutorials
 ```
 
 ```{toctree}
@@ -36,6 +37,7 @@ quickstart
 :maxdepth: 1
 
 modules/index
+ngs
 ```
 
 ```{toctree}
@@ -51,4 +53,12 @@ scoring/index
 
 ucsc_cas12a/index
 reading_the_track/index
+```
+
+```{toctree}
+:caption: Reference
+:maxdepth: 1
+
+command_reference
+references
 ```
