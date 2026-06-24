@@ -5,7 +5,7 @@ Filter scored guides, then select and rank the best few per target (gene, transc
 ```bash
 crisprware rank_guides -k chrIII_sequence_scoredgRNA/chrIII_sequence_scoredgRNA.bed \
   -t tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf -f CDS \
-  -c RS3_score_Chen2013 specificity_chrIII_sequence_gscan2 -m 0 0.2 -p 5 65 \
+  -c RS3_score_Chen2013 specificity_chrIII_sequence_crisprots -m 0 0.2 -p 5 65 \
   -r RS3_score_Chen2013 --output_all
 ```
 

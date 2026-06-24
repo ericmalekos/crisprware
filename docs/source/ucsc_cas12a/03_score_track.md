@@ -7,7 +7,7 @@ off-target passes across every allocated GPU, and merges the pieces** into a sin
 ```bash
 crisprware score_guides \
   -b $PROJ/hg38_primary_chr_gRNA/hg38_primary_chr_gRNA.bed \
-  -i $PROJ/hg38_primary_chr_gscan2/hg38_primary_chr_gscan2 \
+  -i $PROJ/hg38_primary_chr_crisprots/hg38_primary_chr_crisprots \
   --cas12a_scorer deepcpf1 enpam_gb enseq_deepcpf1 seq_deepcpf1variants \
   --cas12a_variant AsCas12a \
   --ucscgb $PROJ/track_hg38_cas12a \

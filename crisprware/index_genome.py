@@ -156,14 +156,14 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
     # original_fasta = args.fasta
     args.fasta, was_gzipped = decompress_gzip_if_needed(args.fasta)
 
-    index_output_path, _ = create_output(args.fasta, outdir=args.output_directory, extension="gscan2")
+    index_output_path, _ = create_output(args.fasta, outdir=args.output_directory, extension="crisprots")
 
     if not args.locations_to_keep:
         guideScanIndex(
             args.fasta, index_output_path, args.pam, args.protospacer_length, args.pam_5_prime, args.bin_width
         )
     else:
-        bed_output_path, _ = create_output(args.fasta, extension="gscan2", tmp=False)
+        bed_output_path, _ = create_output(args.fasta, extension="crisprots", tmp=False)
         bed_output_path += "_merged.bed"
 
         locs_to_keep = merge_targets(
@@ -174,7 +174,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
 
         locs_to_keep.saveas(bed_output_path)
 
-        fasta_output_path, _ = create_output(args.fasta, extension="gscan2", tmp=False)
+        fasta_output_path, _ = create_output(args.fasta, extension="crisprots", tmp=False)
         fasta_output_path += "_subset.fasta"
 
         print(f"\n\tSaving subset fasta to {fasta_output_path}")

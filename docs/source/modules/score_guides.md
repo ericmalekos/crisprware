@@ -6,11 +6,11 @@ comes from each `-i` index (engine auto-detected).
 
 ```bash
 crisprware score_guides -b chrIII_sequence_gRNA/chrIII_sequence_gRNA.bed \
-  -i chrIII_sequence_gscan2/chrIII_sequence_gscan2 --tracr Chen2013 --threads 8
+  -i chrIII_sequence_crisprots/chrIII_sequence_crisprots --tracr Chen2013 --threads 8
 ```
 
 ```text
-#chr   start  stop   context                         strand sequence             RS3_score_Chen2013  specificity_chrIII_sequence_gscan2
+#chr   start  stop   context                         strand sequence             RS3_score_Chen2013  specificity_chrIII_sequence_crisprots
 chrIII 10569  10589  GCTGCCTACATGTACTTTTATTTGAGGGTC  +      CCTACATGTACTTTTATTTG -1.4272             1.0
 chrIII 10590  10610  TTGAGGGTCCCCATGATCTTGAAGAGGAGA  +      GGGTCCCCATGATCTTGAAG -0.0695             1.0
 ```

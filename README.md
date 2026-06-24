@@ -98,11 +98,9 @@ We demonstrate usage with ce11 chromosome III fasta and NCBI GTF, included in th
 
 Note the example off-target index is limited to chrIII, not the full ce11 genome
 
-By default `index_genome` builds a **crispr-ots** index (fast, exact-mismatch). Pass
-`--indexer guidescan2` to build a Guidescan2 index instead (slower, but supports RNA/DNA
-bulges), or `--indexer crispr-ots guidescan2` to build one of each so you can score with
-either or both engines in `score_guides`. Each engine writes to its own
-`<name>_<engine>/` directory.
+`index_genome` builds a **crispr-ots** off-target index (fast, exact-mismatch) into a
+`<name>_crisprots/` directory. `score_guides` auto-detects the engine from each `-i` index, so it can
+also score a Guidescan2 index (built with Guidescan2's own tooling) for RNA/DNA-bulge searches.
 
 ```
 crisprware index_genome -f tests/test_data/ce11/chrIII_sequence.fasta -p NGG -l 20
@@ -388,17 +386,7 @@ options:
   -h, --help            show this help message and exit
   -f FASTA, --fasta FASTA
                         FASTA file to use as a reference for index creation.
-  --indexer {crispr-ots,guidescan2} [{crispr-ots,guidescan2} ...]
-                        Off-target index engine(s) to build. 'crispr-ots'
-                        (fast exact-mismatch scanner; default) and/or
-                        'guidescan2' (slower, but supports RNA/DNA bulges).
-                        Pass both (e.g. '--indexer crispr-ots guidescan2') to
-                        build one index of each type; score_guides can then
-                        score against either or both. Each engine writes to
-                        its own '<name>_<engine>' directory. [default: crispr-ots]
-  -o OUTPUT_DIRECTORY, --output_directory OUTPUT_DIRECTORY
-                        Path to output. [default: current directory]
-  --locations_to_keep [LOCATIONS_TO_KEEP ...]
+  -k [LOCATIONS_TO_KEEP ...], --locations_to_keep [LOCATIONS_TO_KEEP ...]
                         List of BED/GTF files with coordinates to use for
                         index creation. These locations will be used for off-
                         target scoring. If multiple files are passed,
@@ -415,6 +403,23 @@ options:
                         expand the window around the final intervals e.g. '-w
                         1000 1500' expands chr1 2000 3500 -> chr1 1000 5000
                         Good for CRISPRi/a [default: 20 20]
+  -p PAM, --pam PAM     PAM motif as an IUPAC string, e.g. NGG (SpCas9), NAG,
+                        TTTV or TTTN (Cas12a). With --protospacer_length and
+                        --pam_5_prime this fully defines the indexed off-
+                        target sites.
+  -l PROTOSPACER_LENGTH, --protospacer_length PROTOSPACER_LENGTH
+                        Protospacer (spacer) length in bases, e.g. 20 for
+                        SpCas9 or 23 for Cas12a.
+  --pam_5_prime         Set if the PAM is 5' of the protospacer
+                        (Cas12a-style). Omit for a 3' PAM (SpCas9-style).
+                        [default: False]
+  --bin_width BIN_WIDTH
+                        crispr-ots bin-prefix width (1-15); higher = faster
+                        GPU scan but a larger index. Sweet spots: ~9-10 SpCas9
+                        full-human, 14 for Cas12a full-human on a 24 GB GPU.
+                        [default: engine default]
+  -o OUTPUT_DIRECTORY, --output_directory OUTPUT_DIRECTORY
+                        Path to output. [default: current directory]
 ```
 ```
 crisprware generate_guides

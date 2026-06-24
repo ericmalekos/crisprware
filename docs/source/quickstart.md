@@ -27,7 +27,7 @@ chrIII_ce11.ncbiRefSeq/
 crisprware index_genome -f tests/test_data/ce11/chrIII_sequence.fasta -p NGG -l 20
 ```
 
-Builds the `crispr-ots` off-target index into `chrIII_sequence_gscan2/` (the `.crot` mmap database).
+Builds the `crispr-ots` off-target index into `chrIII_sequence_crisprots/` (the `.crot` mmap database).
 
 ## 3. Generate guides
 
@@ -48,14 +48,14 @@ chrIII 1482   1502   chrIII:1483:+,GGAATGTACTTCTTCCCAAA,NGG,chrIII,1483,+   TGTT
 
 ```bash
 crisprware score_guides -b chrIII_sequence_gRNA/chrIII_sequence_gRNA.bed \
-  -i chrIII_sequence_gscan2/chrIII_sequence_gscan2 --tracr Chen2013 --threads 8
+  -i chrIII_sequence_crisprots/chrIII_sequence_crisprots --tracr Chen2013 --threads 8
 ```
 
 Adds an RS3 on-target column and a `crispr-ots` off-target specificity column (the engine is
 auto-detected from the index) -> `chrIII_sequence_scoredgRNA/...bed`:
 
 ```text
-#chr   start  stop   context                         strand sequence             RS3_score_Chen2013  specificity_chrIII_sequence_gscan2
+#chr   start  stop   context                         strand sequence             RS3_score_Chen2013  specificity_chrIII_sequence_crisprots
 chrIII 10569  10589  GCTGCCTACATGTACTTTTATTTGAGGGTC  +      CCTACATGTACTTTTATTTG -1.4272             1.0
 chrIII 10590  10610  TTGAGGGTCCCCATGATCTTGAAGAGGAGA  +      GGGTCCCCATGATCTTGAAG -0.0695             1.0
 ```
@@ -67,7 +67,7 @@ RS3 is a z-score (centered at 0); specificity is 0-1 (1.0 = no off-targets).
 ```bash
 crisprware rank_guides -k chrIII_sequence_scoredgRNA/...bed \
   -t tests/test_data/ce11/chrIII_ce11.ncbiRefSeq.gtf -f CDS \
-  -c RS3_score_Chen2013 specificity_chrIII_sequence_gscan2 -m 0 0.2 -p 5 65 \
+  -c RS3_score_Chen2013 specificity_chrIII_sequence_crisprots -m 0 0.2 -p 5 65 \
   -r RS3_score_Chen2013 --output_all
 ```
 

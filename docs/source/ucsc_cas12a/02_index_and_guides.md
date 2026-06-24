@@ -22,7 +22,7 @@ crisprware index_genome \
 | `--pam_5_prime` | PAM sits 5' of the spacer (Cas12a geometry). |
 | `--bin_width 14` | index bin width; 14 is the measured throughput optimum that still fits a 24 GB GPU. |
 
-Output: `hg38_primary_chr_gscan2/` (the index, ~7 GB for hg38). Build is single-threaded-ish and
+Output: `hg38_primary_chr_crisprots/` (the index, ~7 GB for hg38). Build is single-threaded-ish and
 memory-light (~19 GB RAM, ~9-22 min for a human genome).
 
 ## 2. Enumerate `TTTV` protospacers
