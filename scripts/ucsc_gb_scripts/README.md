@@ -7,7 +7,7 @@ T2T-CHM13v2 genome-wide track (~141 M guides).
 
 ## Why two scripts
 
-`score_guides --ucscgb` builds one self-contained track (`minimumCas12A.bb`,
+`score_guides --ucscgb` builds one self-contained track (`cas12a.bb`,
 `crisprDetails.tab.gz` + `.gzi`, `cas12aTargets.as`) per run, and the GPU
 off-target `enumerate` is one-GPU-per-run. For a whole genome you therefore want to
 **fan the scoring out** (per chromosome or finer) and **merge** the results — but the

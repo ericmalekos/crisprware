@@ -238,7 +238,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         type=str,
         default=None,
         help="Alternative output path: write a UCSC Genome Browser Cas12a track "
-        "(minimumCas12A.bb, crisprDetails.tab.gz + .gzi, cas12aTargets.as) to this "
+        "(cas12a.bb, crisprDetails.tab.gz + .gzi, cas12aTargets.as) to this "
         "directory. Runs the selected --cas12a_scorer on-target models plus a "
         "streaming crispr-ots off-target pass (--output-mode both, skipping "
         "off-targets for perfect-match guides) against the first -i index. "

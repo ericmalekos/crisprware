@@ -6,9 +6,9 @@ off-target output (Mode-1 aggregated CSV + Mode-2 per-off-target TSV + the
 guide sidecar) and emits the three files pinned by
 ``cas12a_track_output_spec.md``:
 
-* ``minimumCas12A.bb``        bigBed (bed9+) of on-target guides
-* ``crisprDetails.tab.gz``    bgzip per-guide off-target details (+ ``.gzi``)
-* ``cas12aTargets.as``        autoSql schema (build input)
+* ``cas12a.bb``             bigBed (bed9+) of on-target guides
+* ``crisprDetails.tab.gz``  bgzip per-guide off-target details (+ ``.gzi``)
+* ``cas12aTargets.as``      autoSql schema (build input)
 
 Coordinate conventions (validated against hg38, both strands):
 
@@ -43,8 +43,8 @@ PAM_LEN = 4
 # then enpam_gb). Any subset actually present in the guide table is emitted.
 DISPLAY_SCORE_COLS = ["ascas12a_deepcpf1_score", "enseq_deepcpf1_score", "deepcpf1_score", "enpam_gb_score"]
 
-# Track filenames (must not be renamed — the browser config references them).
-BB_NAME = "minimumCas12A.bb"
+# Track filenames; the deployed browser config must reference these same names.
+BB_NAME = "cas12a.bb"
 DETAILS_NAME = "crisprDetails.tab"
 AS_NAME = "cas12aTargets.as"
 
@@ -87,8 +87,8 @@ def build_autosql(
     # the on-target efficiencies. Descriptions align to the widest field name.
     extra = [("unique_TTTV", "TTTV PAM unique"), ("unique_TTTN", "TTTN PAM unique")]
     for field, display in spec_matrices:
-        extra.append((f"TTTV_{field}_specificity", f"{display} TTTV CFD"))
-        extra.append((f"TTTN_{field}_specificity", f"{display} TTTN CFD"))
+        extra.append((f"TTTV_{field}_specificity", f"{display} TTTV specificity"))
+        extra.append((f"TTTN_{field}_specificity", f"{display} TTTN specificity"))
     for c in score_cols:
         extra.append((c, score_descs.get(c, "efficiency")))
     width = max(len(f) for f, _ in extra) + 2  # "field;" + >=1 space before the description
