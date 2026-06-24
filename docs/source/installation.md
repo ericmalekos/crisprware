@@ -31,8 +31,8 @@ crispr-ots --version
 ```
 
 Targets published per release: `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl` (fully static,
-no glibc dependency, for old distros), `aarch64-apple-darwin` (Apple Silicon), `x86_64-apple-darwin`
-(Intel Mac), `x86_64-pc-windows-msvc`.
+no glibc dependency, for old distros), `aarch64-apple-darwin` (Apple Silicon), `x86_64-pc-windows-msvc`.
+Intel Macs aren't prebuilt; build from source (below) or use the Docker image.
 
 ### Build it yourself
 
