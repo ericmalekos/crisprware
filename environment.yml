@@ -1,25 +1,16 @@
 name: crisprware
-# To pick up the locally-built `crispr-ots` package, set the
-# CRISPR_OTS_CHANNEL env var to the absolute path of the conda channel
-# dir before running `conda env create -f environment.yml` — e.g.
-#
-#   ./conda-recipe/build_local_channel.sh
-#   CRISPR_OTS_CHANNEL=$PWD/conda-channel conda env create -f environment.yml
-#
-# (or, on a cluster, point it at a shared location like
-# `/scratch/$USER/conda-channel`). conda evaluates the channel list
-# in order, so a `file://` channel listed first beats bioconda for the
-# `crispr-ots` package while everything else still resolves through
-# the public channels.
+# This installs only the Python environment. The off-target scanner `crispr-ots` is
+# a standalone Rust binary distributed via the GitHub Releases page (prebuilt, per
+# platform) or built locally with cargo -- download/build it and put it on your PATH.
+# See the docs "Installation" page. (`crisprware --ucscgb` can also take an explicit
+# --crispr_ots_bin path.)
 channels:
-  - file://${CRISPR_OTS_CHANNEL}
   - conda-forge
   - bioconda
   - nodefaults
 dependencies:
   - python=3.11
   - biopython>=1.8
-  - crispr-ots          # off-target scanner; drop-in for guidescan
   - pybedtools>=0.9
   - matplotlib
   - pybigwig

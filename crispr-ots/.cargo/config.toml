@@ -1,23 +1,21 @@
-# Bake the modern-x86 baseline (Haswell 2013+) into every release build so
-# the `wide` crate's SIMD types compile to AVX2 / BMI2 / POPCNT instead of
-# silently falling back to scalar emulation. This is the standard
-# `x86_64-v3` micro-architecture level documented in
-# https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels.
+# Off-target-scanner build profile.
 #
-# For maximum performance on the build machine specifically (e.g. AVX-512
-# on Ice Lake / Tiger Lake / Sapphire Rapids / Zen 4), users can override
-# at the shell level with:
+# Default to the portable x86-64 **baseline** so `cargo build` compiles and
+# runs on ANY x86-64 machine, including older login/build nodes. The previous
+# default (`target-cpu=x86-64-v3`) applied to the host too, so the build's own
+# proc-macros were compiled for Haswell-or-newer (2013+) and SIGILL at build
+# time on a pre-Haswell host, and the finished binary likewise refused to run
+# on older CPUs. Baseline avoids both failure modes (the `wide` crate's SIMD
+# falls back to scalar, which is the only cost).
 #
+# Opt in to a faster binary on modern hardware at build time:
+#
+#     # x86-64-v3 (AVX2 / BMI2 / POPCNT; Intel Haswell 2013+ / AMD Excavator+):
+#     RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release
+#
+#     # or tune for the exact build machine (e.g. AVX-512 on Zen 4 / Sapphire Rapids):
 #     RUSTFLAGS="-C target-cpu=native" cargo build --release
 #
-# Apple Silicon / aarch64 keeps its default baseline (NEON is part of the
-# AArch64 ABI), so the x86-only target-cpu has no effect there.
-
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=x86-64-v3"]
-
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-cpu=x86-64-v3"]
-
-[target.x86_64-apple-darwin]
-rustflags = ["-C", "target-cpu=x86-64-v3"]
+# The conda package (conda-recipe/crispr-ots) builds x86-64-v3 by default for
+# distribution (its CI hosts are modern); set CRISPR_OTS_TARGET_CPU=x86-64 to
+# build the package on an older host.

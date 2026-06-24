@@ -16,6 +16,14 @@ WORKDIR /app/crisprware
 # Create conda environment from environment.yml
 RUN conda env create -f environment.yml
 
+# Build the crispr-ots off-target scanner (portable x86-64 baseline) onto PATH, then
+# drop the Rust toolchain to keep the image small.
+RUN apt-get update && apt-get install -y build-essential curl && rm -rf /var/lib/apt/lists/* \
+    && curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal \
+    && . "$HOME/.cargo/env" \
+    && (cd crispr-ots && cargo install --path crates/crispr-cli --root /usr/local) \
+    && rustup self uninstall -y
+
 # Activate conda environment
 SHELL ["conda", "run", "-n", "crisprware", "/bin/bash", "-c"]
 

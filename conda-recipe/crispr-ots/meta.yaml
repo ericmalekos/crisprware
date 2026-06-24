@@ -20,9 +20,18 @@ build:
   # cargo install lands the binary at $PREFIX/bin/crispr-ots, which is
   # exactly where conda expects executables to live. --locked enforces
   # Cargo.lock; --no-track skips writing crate metadata into the prefix.
+  #
+  # OPTIONAL build path. The primary way to get crispr-ots is a prebuilt binary
+  # from the GitHub Releases page, or `cargo install --path crates/crispr-cli`
+  # (see the docs). This recipe is for users who specifically want a conda package.
+  #
+  # Builds the portable x86-64 baseline by default (matching .cargo/config.toml,
+  # the release binaries, and a bare `cargo build`), so the package runs on any
+  # x86-64 host. For a faster Haswell+ (2013+) package, export
+  # CRISPR_OTS_TARGET_CPU=x86-64-v3 before building.
   script:
     - cd crispr-ots
-    - cargo install --no-track --locked --path crates/crispr-cli --root $PREFIX
+    - RUSTFLAGS="-C target-cpu=${CRISPR_OTS_TARGET_CPU:-x86-64}" cargo install --no-track --locked --path crates/crispr-cli --root $PREFIX
 
 requirements:
   build:
@@ -33,12 +42,9 @@ requirements:
     - {{ compiler('c') }}
     - make
   run: []
-  # Rust statically links everything except glibc, so there are no
-  # run-time conda dependencies. The resulting binary uses the
-  # `target-cpu=x86-64-v3` baseline from crispr-ots/.cargo/config.toml,
-  # which requires Haswell-or-newer (Intel 2013+, AMD Excavator+) at
-  # runtime. Every node on an A100/A5500-equipped HPC cluster will
-  # satisfy this.
+  # Rust statically links everything except glibc, so there are no run-time conda
+  # dependencies. Built for the x86-64 baseline by default, so it runs on any
+  # x86-64 CPU (set CRISPR_OTS_TARGET_CPU=x86-64-v3 for a faster Haswell+ build).
 
 test:
   commands:
