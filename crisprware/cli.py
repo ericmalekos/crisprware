@@ -19,7 +19,7 @@ SUBCOMMANDS = {
     },
     "index_genome": {
         "module_path": "crisprware.index_genome",
-        "help": "Build crispr-ots and/or Guidescan2 indices for off-target assessment.",
+        "help": "Build a crispr-ots off-target index (PAM, protospacer length, and PAM orientation define the enzyme).",
     },
     "score_guides": {
         "module_path": "crisprware.score_guides",

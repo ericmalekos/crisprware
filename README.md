@@ -351,32 +351,31 @@ options:
                         Output is always after tpm filtering has been applied.
                         Multiple entries are allowed e.g. --model metagene
                         consensus longest [default: None]
-  -w  TSS_WINDOW TSS_WINDOW, --tss_window TSS_WINDOW TSS_WINDOW
+  -w TSS_WINDOW TSS_WINDOW, --tss_window TSS_WINDOW TSS_WINDOW
                         Pass two, space-separated, integers to specifiy the bp
                         window around the TSS as '<upstream>' '<downstream>'.
                         Strand-orientation is inferred, i.e. '<upstream>' will
                         be in the 5' direction of the TSS and <downstream> in
                         the 3' direction. e.g. --tss_window 250 150. [default:
                         None]
-  -e  TES_WINDOW TES_WINDOW, --tes_window TES_WINDOW TES_WINDOW
+  -e TES_WINDOW TES_WINDOW, --tes_window TES_WINDOW TES_WINDOW
                         Pass two, space-separated, integers to specifiy the bp
                         window around the transcription end site, TES, as
                         '<upstream>' '<downstream>'. Strand-orientation is
                         inferred, i.e. '<upstream>' will be in the 5'
                         direction of the TES and <downstream> in the 3'
                         direction. e.g. --tss_window 0 150. [default: None]
-  -x  TX_TO_GENE, --tx_to_gene TX_TO_GENE
+  -x TX_TO_GENE, --tx_to_gene TX_TO_GENE
                         A TSV with transcript IDs in the first column and Gene
                         IDs in the second. The transcript IDs must match the
                         first column entries of the --quant_files. If this is
                         not provided it will be deduced from the GTF/GFF3 and
-                        saved as
-                        './annotations/intermediateFiles/tx2gene.tsv'.
-  --strip_tx_id         Set this flag if there are transcript IDs in the 
-                        quantification files but not in the GTF/GFF3. [default: False]
+                        saved as './tmp/tx2gene.tsv'.
+  --strip_tx_id         Set this flag if there are transcript IDs in the
+                        quantification files but not in the GTF/GFF3.
+                        [default: False]
   -o OUTPUT_DIRECTORY, --output_directory OUTPUT_DIRECTORY
                         Path to output. [default: current directory]
-
 ```
 
 ```
@@ -501,32 +500,38 @@ options:
                         For purposes of keeping or discarding sgRNAs, overlap
                         with the active site coordinates will be used
                         regardless [default: True]
+  -t THREADS, --threads THREADS
+                        Number of worker processes. Parallelism scales with
+                        the number of genome windows (see --chunk_size), not
+                        the PAM count, so this can usefully exceed it.
+                        [default: 4]
+  --chunk_size CHUNK_SIZE
+                        Genome window size in bp for parallel scanning;
+                        smaller = more/finer tasks (better load balance,
+                        slightly more overhead). [default: 5,000,000]
   -o OUTPUT_DIRECTORY, --output_directory OUTPUT_DIRECTORY
                         Path to output. [default: current directory]
-  -t THREADS, --threads THREADS
-                        Number of threads. [default: 4]
 ```
 ```
 crisprware score_guides
 
 options:
   -h, --help            show this help message and exit
-  -b SGRNA_BED, --sgrna_bed SGRNA_BED
-                        sgrnas.bed ouput of GenerateGuides.
+  -b GRNA_BED, --grna_bed GRNA_BED
+                        grnas.bed ouput of generate_guides.
   -i [GUIDESCAN2_INDICES ...], --guidescan2_indices [GUIDESCAN2_INDICES ...]
-                        One or more, space-separated off-target indices
-                        (crispr-ots and/or guidescan2; the engine is auto-
-                        detected from each index's files). A separate
-                        specificity column is produced for each index, so
-                        passing one index of each type scores guides with both
-                        methods in a single run.
+                        One or more, space-separate Guidescan2 indices. A
+                        specificity score will be calculated against each
+                        index separately.
   --tracr {Hsu2013,Chen2013,both}
                         TracrRNA version for cleavage scoring. Either
                         'Hsu2013' or 'Chen2013' or 'both', see
                         https://github.com/gpp-rnd/rs3 for details.
+  -t THREADS, --threads THREADS
+                        Number of threads [default: 8]
   --threshold THRESHOLD
                         Threshold for Guidescan2 off-target hits. If off-
-                        targets are found this distance away the sgRNA will be
+                        targets are found this distance away the gRNA will be
                         discarded, i.e. set to 2 to discard any guides with a
                         0, 1 or 2 mismatches from another PAM adjacent
                         sequence. --threshold=-1 to retain all guides
@@ -535,11 +540,11 @@ options:
                         Number of mismatches for Guidescan2 off-target scoring
                         [default: 3]
   --rna_bulges RNA_BULGES
-                        RNA bulges for off-target scoring. guidescan2 indices
-                        only; crispr-ots requires 0 [default: 0]
+                        RNA bulges for Guidescan2 off-target scoring [default:
+                        0]
   --dna_bulges DNA_BULGES
-                        DNA bulges for off-target scoring. guidescan2 indices
-                        only; crispr-ots requires 0 [default: 0]
+                        DNA bulges for Guidescan2 off-target scoring [default:
+                        0]
   --mode {succinct,complete}
                         Whether Guidescan2 temporary output should be succinct
                         or complete mode [default: 0]
@@ -547,7 +552,7 @@ options:
                         One or more, space-separate alternative pams for off-
                         target consideration. e.g. NAG
   -d, --drop_duplicates
-                        Drop exact duplicate sgRNAs before scoring to save
+                        Drop exact duplicate gRNAs before scoring to save
                         time. Set flag to retain duplicates. [default: True]
   --skip_rs3            Set flag to skip RS3 scoring [default: False]
   --skip_gs2            Set flag to skip Guidescan2 scoring [default: False]
@@ -557,36 +562,124 @@ options:
                         available in rank_guides.py. Applying at this stage
                         can increase speed by filtering before off-target
                         scoring. [default: None]
-  --cas12a_scorer       One or more Cas12a on-target scorers (space-separated).
-                        Choices: none, enpam_gb, deepcpf1, enseq_deepcpf1,
-                        seq_deepcpf1variants, both (legacy alias for
-                        'enpam_gb deepcpf1'). Mutually exclusive with --tracr;
-                        implies --skip_rs3. [default: none]
-  --cas12a_variant      Cas12a variant name, required when --cas12a_scorer
-                        includes seq_deepcpf1variants. 23 variants supported;
-                        names are case- and separator-insensitive. e.g.
-                        AsCas12a_Ultra, enAsCas12a-HF1, LbCas12a.
-  --cas9_scorer         One or more additional SpCas9 on-target scorers
-                        (space-separated) to run alongside RS3. Choices: none,
-                        deepspcas9, deephf_wt_u6, deephf_esp, deephf_hf.
-                        Runs in parallel with --tracr (no mutex). [default: none]
-  --min_deepcpf1        Minimum DeepCpf1 score threshold. [default: None]
-  --min_enpam_gb        Minimum enPAM+GB score threshold. [default: None]
-  --min_enseq_deepcpf1  Minimum enseq-DeepCpf1 / seq-DeepCpf1variants score
-                        threshold. [default: None]
-  --min_deepspcas9      Minimum DeepSpCas9 score threshold. [default: None]
-  --min_deephf          Minimum DeepHF score threshold. [default: None]
+  --cas12a_scorer {none,enpam_gb,deepcpf1,enseq_deepcpf1,seq_deepcpf1variants,both} [{none,enpam_gb,deepcpf1,enseq_deepcpf1,seq_deepcpf1variants,both} ...]
+                        One or more Cas12a on-target scorers (space-
+                        separated). enpam_gb for en(As)Cas12a; deepcpf1 for
+                        wildtype AsCas12a/LbCas12a (Kim 2018); enseq_deepcpf1
+                        for wildtype AsCas12a (Chen 2025, modern);
+                        seq_deepcpf1variants for variant-specific scoring
+                        (requires --cas12a_variant). 'both' is the legacy
+                        alias for 'enpam_gb deepcpf1'. Multiple values may be
+                        combined (e.g. --cas12a_scorer enpam_gb deepcpf1
+                        enseq_deepcpf1). Mutually exclusive with --tracr (RS3
+                        is SpCas9-only); implies --skip_rs3. [default: none]
+  --cas12a_variant CAS12A_VARIANT
+                        Cas12a variant name (e.g. AsCas12a_Ultra,
+                        enAsCas12a-HF1, LbCas12a, HyperFi-AsCas12a). Required
+                        when --cas12a_scorer is seq_deepcpf1variants. See
+                        crisprware.scorers.seq_deepcpf1variants for the full
+                        23-variant list.
+  --min_deepcpf1 MIN_DEEPCPF1
+                        Minimum DeepCpf1 score (raw regression, ~[0, 100]).
+                        Applied after scoring; analogous to --min_rs3.
+                        [default: None]
+  --min_enpam_gb MIN_ENPAM_GB
+                        Minimum enPAM+GB score (probability-like, [0, 1]).
+                        Applied after scoring; analogous to --min_rs3.
+                        [default: None]
+  --min_enseq_deepcpf1 MIN_ENSEQ_DEEPCPF1
+                        Minimum enseq-DeepCpf1 / seq-DeepCpf1variants score
+                        (probability, [0, 1]). Applied after scoring.
+                        [default: None]
+  --cas9_scorer {none,deepspcas9,deephf_wt_u6,deephf_esp,deephf_hf} [{none,deepspcas9,deephf_wt_u6,deephf_esp,deephf_hf} ...]
+                        One or more additional SpCas9 on-target scorers
+                        (space-separated) to run alongside RS3. deepspcas9:
+                        Kim 2019 inception-CNN (Sci Adv); 30-nt context (4 +
+                        20 protospacer + 3 PAM + 3 downstream); unbounded
+                        regression. deephf_*: Wang 2019 BiLSTM (Nat Commun)
+                        for three Cas9 variants -- wildtype SpCas9 (wt_u6),
+                        eSpCas9 (esp), SpCas9-HF1 (hf); 23-nt protospacer+PAM
+                        input; output in [0, 1]. Multiple values may be
+                        combined (e.g. --cas9_scorer deepspcas9 deephf_wt_u6
+                        deephf_esp deephf_hf). Runs in parallel with --tracr
+                        (no mutex). [default: none]
+  --min_deepspcas9 MIN_DEEPSPCAS9
+                        Minimum DeepSpCas9 score (unbounded regression, ~[0,
+                        100]). Applied after scoring; analogous to --min_rs3.
+                        [default: None]
+  --min_deephf MIN_DEEPHF
+                        Minimum DeepHF score (probability, [0, 1]). Applied to
+                        whichever deephf_* variant is selected. [default:
+                        None]
   --chunk_size CHUNK_SIZE
-                        Number of sgRNAs to hold in memory for cleavage
-                        scoring and off-target filtering. Reduce if memory
+                        Number of gRNAs to hold in memory for cleavage scoring
+                        and off-target filtering. Reduce if memory
                         constrained. Increasing may improve runtime [default:
                         100000]
-  -o OUTPUT_DIRECTORY, --output_directory OUTPUT_DIRECTORY
-                        Path to output. [default: current directory]
   -k, --keep_tmp        Set flag to keep temporary Guidescan2 output [default:
                         False]
-  -t THREADS, --threads THREADS
-                        Number of threads [default: 8]
+  -o OUTPUT_DIRECTORY, --output_directory OUTPUT_DIRECTORY
+                        Path to output. [default: current directory]
+
+UCSC browser track (Cas12a):
+  --ucscgb UCSCGB       Alternative output path: write a UCSC Genome Browser
+                        Cas12a track (cas12a.bb, crisprDetails.tab.gz + .gzi,
+                        cas12aTargets.as) to this directory. Runs the selected
+                        --cas12a_scorer on-target models plus a streaming
+                        crispr-ots off-target pass (--output-mode both,
+                        skipping off-targets for perfect-match guides) against
+                        the first -i index. Implies Cas12a mode and retains
+                        duplicate guides. [default: None]
+  --chrom_sizes CHROM_SIZES
+                        chrom.sizes file (chrom<TAB>size) for bedToBigBed when
+                        --ucscgb is set.
+  --crispr_ots_bin CRISPR_OTS_BIN
+                        Path to the crispr-ots binary used for the --ucscgb
+                        streaming pass (must support --output-mode/--scanner;
+                        default: 'crispr-ots' on PATH).
+  --ucscgb_scanner {gpu,cpu}
+                        Scanner for the --ucscgb off-target pass [default:
+                        gpu].
+  --ucscgb_cfd_threshold UCSCGB_CFD_THRESHOLD
+                        CFD floor for the off-target list written to
+                        crisprDetails (counts are unaffected — they come from
+                        the unfloored Mode-1 totals). [default: 0.023]
+  --ucscgb_list_cap UCSCGB_LIST_CAP
+                        Max off-targets listed per guide in crisprDetails (top
+                        by score) [default: 100].
+  --ucscgb_blank_threshold UCSCGB_BLANK_THRESHOLD
+                        Guides with more than this many off-targets get an
+                        empty list (counts kept) — the viewer shows 'Too many
+                        off-targets'. [default: 2000]
+  --ucscgb_reuse_offtargets
+                        Reuse an existing off-target enumerate output
+                        (offtargets.csv + .ot.tsv) in the --ucscgb dir instead
+                        of re-running crispr-ots. Use when re-assembling a
+                        track after an adapter-only change (the engine output
+                        is unchanged), skipping the GPU pass. [default: off]
+  --ucscgb_2xnls, --no-ucscgb_2xnls
+                        Also score off-targets with the 2xNLS-Cas12a matrix
+                        and emit its TTTV/TTTN specificity columns (a second,
+                        aggregated off-target pass — the off-target list still
+                        comes from the enCas12a pass). [default: on; use --no-
+                        ucscgb_2xnls to skip]
+  --ucscgb_chunk_max UCSCGB_CHUNK_MAX
+                        If >0, build the track in chunks of at most this many
+                        guides and merge the per-chunk tracks into one
+                        (recomputing crisprDetails.tab byte offsets). Bounds
+                        peak memory and disk, and enables multi-GPU fan-out
+                        via --ucscgb_gpus. 0 = single pass over all guides.
+                        [default: 0]
+  --ucscgb_gpus UCSCGB_GPUS
+                        Comma-separated CUDA device ids to fan
+                        --ucscgb_chunk_max chunks across (e.g.
+                        '0,1,2,3,4,5,6,7'); each concurrent chunk's off-target
+                        pass is pinned to one device, so chunks never share a
+                        GPU. Only used when --ucscgb_chunk_max>0. [default:
+                        single device 0].
+  --ucscgb_keep_chunks  Keep the per-chunk working dir (<ucscgb>/chunks/)
+                        after merging, for inspection or resume. [default:
+                        delete after a successful merge].
 ```
 ```
 crisprware rank_guides
@@ -594,15 +687,15 @@ crisprware rank_guides
 options:
   -h, --help            show this help message and exit
   -k SCORED_GUIDES, --scored_guides SCORED_GUIDES
-                        <score_guides_output>.tsv output from score_guides.
+                        <score_guides_output>.bed output from score_guides.
   -t TARGETS, --targets TARGETS
                         BED/GTF/GFF used to select final guides per target.
                         For GTF/GFF, set --target_mode to either 'gene' or
-                        'transcript'. For BED, targets are each entry. Use '--
+                        'tx'. For BED, targets are each entry. Use '--
                         number_of_targets' to set the number of guides chosen
                         for each target.
   --target_mode {gene,tx}
-                        If a GTF/GFF is used to select targets, sgRNAs can be
+                        If a GTF/GFF is used to select targets, gRNAs can be
                         grouped at either the 'tx' or 'gene' level e.g. '--
                         target_mode gene -n 10' chooses 10 guides per gene, '
                         --target_mode tx -n 10' chooses 10 per transcript
@@ -613,7 +706,7 @@ options:
                         in the third column of the GTF/GFF [default: CDS].
   -p PERCENTILE_RANGE PERCENTILE_RANGE, --percentile_range PERCENTILE_RANGE PERCENTILE_RANGE
                         Allowable range of guide for each transcript and
-                        feature set, e.g. '-p 60 80 -f exon' returns sgRNAs in
+                        feature set, e.g. '-p 60 80 -f exon' returns gRNAs in
                         the 60th to 80th percentile of exons for a given
                         transcript. Default setting returns guides anywhere in
                         the CDS for each transcript [default: 0 100]
@@ -625,10 +718,10 @@ options:
                         given target. e.g. --min_spacing 10, requires guides
                         10 nts appart. 0 to allow overlapping guides.[default:
                         0]
-  --output_all          Set flag to save sgRNA-target TSVs at each stage of
+  --output_all          Set flag to save gRNA-target TSVs at each stage of
                         filtering rather than just the end.[default: False]
   --plot_histogram      Set flag to plot a histogram of the distribution of
-                        sgRNAs per target after each filtering step. Sets '--
+                        gRNAs per target after each filtering step. Sets '--
                         output_all' to True.[default: False]
   -c [FILTERING_COLUMNS ...], --filtering_columns [FILTERING_COLUMNS ...]
                         One or more space-separated column names used for
@@ -651,8 +744,13 @@ options:
   --normalize_columns   Scale ranking column values to 0 to 1 [default: True]
   -o OUTPUT_DIRECTORY, --output_directory OUTPUT_DIRECTORY
                         Path to output. [default: current directory]
+```
 
+The legacy R crisprScore methods (RuleSet1, Azimuth, Lindel, CRISPRscan, CRISPRater, ...) are
+available via a packaged wrapper; see the
+[crisprScore integration docs](https://crisprware.readthedocs.io/en/latest/scoring/crisprscore_integration.html).
 
+```
 conda activate <crisprscore env>
 
 crisprscore_multi.R
@@ -701,7 +799,6 @@ crisprscore_multi.R
 	Optional arguments:
 	--chunk-size <size>: Process dataframe in chunks of specified size (default: entire file)
 	--debug: Show detailed trimming information for each method (shows what sequence is sent to each scoring function)
-
 ```
 
 ## References 

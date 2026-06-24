@@ -51,6 +51,14 @@ jobs:
         working-directory: crispr-ots
         run: cargo build --release --locked -p crispr-cli --target ${{ matrix.target }}
 
+      - name: Smoke test (the binary actually runs on this platform)
+        shell: bash
+        run: |
+          BIN="crispr-ots/target/${{ matrix.target }}/release/crispr-ots"
+          [ "${{ runner.os }}" = "Windows" ] && BIN="${BIN}.exe"
+          "$BIN" --version
+          "$BIN" enumerate --help >/dev/null
+
       - name: Package
         id: package
         shell: bash
