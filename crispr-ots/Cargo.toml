@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 # 1.89 is the first stable rustc with the AVX-512 512-bit intrinsics
 # (`_mm512_popcnt_epi64`, `_mm512_loadu_si512`, …) used by the VPOPCNTDQ

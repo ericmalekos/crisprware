@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "crispr-cli"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "crispr-db"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bincode",
  "bytemuck",
@@ -182,14 +182,14 @@ dependencies = [
 
 [[package]]
 name = "crispr-encoding"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "crispr-scan"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "crispr-db",
  "crispr-encoding",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "crispr-scan-gpu"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "crispr-db",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "crispr-score"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "crispr-encoding",
 ]

@@ -1,5 +1,5 @@
 {% set name = "crispr-ots" %}
-{% set version = "0.1.0" %}
+{% set version = "0.3.0" %}
 
 package:
   name: {{ name }}
