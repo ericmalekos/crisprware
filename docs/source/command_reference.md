@@ -275,6 +275,7 @@ usage: crisprware score_guides [-h] -b GRNA_BED [-i [GUIDESCAN2_INDICES ...]]
                                [--chunk_size CHUNK_SIZE] [-k]
                                [-o OUTPUT_DIRECTORY] [--ucscgb UCSCGB]
                                [--chrom_sizes CHROM_SIZES]
+                               [--ucscgb_genome UCSCGB_GENOME]
                                [--crispr_ots_bin CRISPR_OTS_BIN]
                                [--ucscgb_scanner {gpu,cpu}]
                                [--ucscgb_cfd_threshold UCSCGB_CFD_THRESHOLD]
@@ -407,6 +408,16 @@ UCSC browser track (Cas12a):
   --chrom_sizes CHROM_SIZES
                         chrom.sizes file (chrom<TAB>size) for bedToBigBed when
                         --ucscgb is set.
+  --ucscgb_genome UCSCGB_GENOME
+                        Reference FASTA (indexed; .fai alongside) the -i off-
+                        target index was built from. Enables the AsCas12a TTTV
+                        correction: crispr-ots scores the AsCas12a (2xNLS) CFD
+                        PAM-blind, so the reference PAM of each off-target is
+                        read here to zero TTTT off-targets (which AsCas12a
+                        cannot cleave) in the details popup and drive the
+                        AsCas12a close-off-target grey from TTTV-only mismatch
+                        counts. Omit to fall back to the EnCas12a (TTTN) basis.
+                        [default: None]
   --crispr_ots_bin CRISPR_OTS_BIN
                         Path to the crispr-ots binary used for the --ucscgb
                         streaming pass (must support --output-mode/--scanner;

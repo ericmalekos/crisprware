@@ -120,5 +120,124 @@ def test_blank_list_when_too_many(tmp_path):
     assert lst == ""  # blanked
 
 
+def _write_fasta(path, contigs):
+    """Single-line-per-contig FASTA + a matching .fai (offsets read from the bytes
+    actually written), so Genome works without samtools in the test env."""
+    content = "".join(f">{name}\n{seq}\n" for name, seq in contigs)
+    with open(path, "w") as f:
+        f.write(content)
+    b = content.encode()
+    with open(path + ".fai", "w") as f:
+        for name, seq in contigs:
+            seq_off = b.index(f">{name}\n".encode()) + len(name) + 2  # '>' + name + '\n'
+            f.write(f"{name}\t{len(seq)}\t{seq_off}\t{len(seq)}\t{len(seq) + 1}\n")
+
+
+def _write_dual_enum(prefix):
+    """One unique guide with two floored off-targets: chr1:500(+) has a TTTT PAM
+    (AsCas12a can't cleave -> Layer 2/3 exclude it), chr3:800(-) a TTTV PAM (kept)."""
+    with open(prefix, "w") as f:
+        f.write(
+            "id,specificity_tttn,specificity_tttv,specificity_tttn_2xnls,specificity_tttv_2xnls,"
+            "max_cfd,off_target_count,mismatch_counts,saturated,dropped\n"
+        )
+        f.write("g_uniq,0.5,0.6,0.55,0.9,0.9,2,0;1;1;0;0,0,0\n")
+    with open(prefix + ".guides.tsv", "w") as f:
+        f.write("guide_id\tid\tchrom\tposition\tstrand\tsequence\ton_count\n")
+        f.write("0\tg_uniq\tchr22\t1000\t+\tACGTACGTACGTACGTACGTACG\t1\n")
+    with open(prefix + ".ot.tsv", "w") as f:
+        f.write("guide_id\tchrom\tstart\tstrand\tmm\tcfd\tcfd2\n")
+        f.write("0\tchr1\t500\t+\t1\t0.80\t0.80\n")  # TTTT PAM -> L2 zeroes cfd2, L3 excludes
+        f.write("0\tchr3\t800\t-\t2\t0.30\t0.30\n")  # TTTV PAM -> kept, counts into tttv_mm[2]
+
+
+def _dual_genome(tmp_path):
+    # chr1[500:504] = TTTT (a + off-target's PAM is [pos, pos+4)).
+    # chr3[823:827] = TAAA, so a - off-target at 800 reads revcomp -> TTTA (TTTV).
+    chr1 = "A" * 500 + "TTTT" + "A" * 36  # len 540 (>= 527 for the 27-nt + site)
+    chr3 = "A" * 823 + "TAAA" + "A" * 13  # len 840 (>= 827 for the 27-nt - site)
+    fa = str(tmp_path / "genome.fa")
+    _write_fasta(fa, [("chr1", chr1), ("chr3", chr3)])
+    return fa
+
+
+def test_build_details_layer2_zeroes_tttt_ascas12a(tmp_path):
+    """With a genome, the AsCas12a (cfd2) of a TTTT off-target is zeroed in the popup
+    list (Layer 2) and excluded from the TTTV close-off-target counts (Layer 3)."""
+    prefix = str(tmp_path / "off.csv")
+    _write_dual_enum(prefix)
+    mode1 = pd.read_csv(prefix)
+    fa = _dual_genome(tmp_path)
+
+    # --- with genome ---
+    dp = str(tmp_path / "d_g.tab")
+    offsets, tttv_mm = ucsc_track._build_details(
+        prefix + ".ot.tsv", prefix + ".guides.tsv", mode1, dp, 100, 0, genome=ucsc_track.Genome(fa)
+    )
+    # L3: only the TTTV (chr3, 2-mm) off-target counts; the TTTT (chr1, 1-mm) is excluded
+    assert tttv_mm["g_uniq"] == [0, 0, 1]
+    raw = open(dp, "rb").read()
+    entries = raw[offsets["g_uniq"]:].split(b"\n", 1)[0].decode().split("\t")[1].split("|")
+    # sorted by cfd desc: chr1 (0.80) then chr3 (0.30); chr1's AsCas12a score is zeroed
+    assert entries[0] == "chr1;500+;800;0"  # L2: cfd2 800 -> 0 (TTTT)
+    assert entries[1] == "chr3;800-;300;300"  # TTTV kept
+
+    # --- without genome (backward compatible) ---
+    dp0 = str(tmp_path / "d_none.tab")
+    offsets0, tttv_mm0 = ucsc_track._build_details(
+        prefix + ".ot.tsv", prefix + ".guides.tsv", mode1, dp0, 100, 0, genome=None
+    )
+    assert tttv_mm0 == {}
+    raw0 = open(dp0, "rb").read()
+    entries0 = raw0[offsets0["g_uniq"]:].split(b"\n", 1)[0].decode().split("\t")[1].split("|")
+    assert entries0[0] == "chr1;500+;800;800"  # cfd2 NOT zeroed without a genome
+
+
+def test_build_track_layer3_grey_uses_tttv(tmp_path):
+    """A guide whose only close off-target is TTTT must NOT be close-greyed once the
+    genome is supplied (AsCas12a can't cleave it); without a genome it greys."""
+    prefix = str(tmp_path / "off.csv")
+    with open(prefix, "w") as f:
+        f.write(
+            "id,specificity_tttn,specificity_tttv,specificity_tttn_2xnls,specificity_tttv_2xnls,"
+            "max_cfd,off_target_count,mismatch_counts,saturated,dropped\n"
+        )
+        f.write("g,0.5,0.6,0.55,0.9,0.9,1,0;0;1;0;0,0,0\n")  # one 2-mm off-target (TTTN basis)
+    with open(prefix + ".guides.tsv", "w") as f:
+        f.write("guide_id\tid\tchrom\tposition\tstrand\tsequence\ton_count\n")
+        f.write("0\tg\tchr22\t1000\t+\tACGTACGTACGTACGTACGTACG\t1\n")
+    with open(prefix + ".ot.tsv", "w") as f:
+        f.write("guide_id\tchrom\tstart\tstrand\tmm\tcfd\tcfd2\n")
+        f.write("0\tchr1\t500\t+\t2\t0.30\t0.30\n")  # the single 2-mm off-target, TTTT PAM
+    fa = str(tmp_path / "g.fa")
+    _write_fasta(fa, [("chr1", "A" * 500 + "TTTT" + "A" * 36)])
+    gdf = pd.DataFrame(
+        {
+            "id": ["g"],
+            "chrom": ["chr22"],
+            "start": [104],
+            "stop": [127],
+            "strand": ["+"],
+            "guideSeq": ["ACGTACGTACGTACGTACGTACG"],
+            "pam": ["TTTA"],
+            "deepcpf1_score": [42.0],
+            "enseq_deepcpf1_score": [0.6],
+            "ascas12a_deepcpf1_score": [80.0],
+        }
+    )
+
+    def _rgb(genome_fa):
+        d = str(tmp_path / ("out_g" if genome_fa else "out_n"))
+        art = ucsc_track.build_track(gdf.copy(), prefix, d, run_tools=False, genome_fa=genome_fa)
+        row = open(art["bed"]).readline().rstrip("\n").split("\t")
+        return row[8]  # itemRgb
+
+    # without a genome: the TTTN 2-mm count greys it (120,120,120)
+    assert _rgb(None) == "120,120,120"
+    # with a genome: the only close off-target is TTTT -> TTTV counts are empty -> not greyed
+    assert _rgb(fa) != "120,120,120"
+    assert _rgb(fa) not in {"150,150,150", "120,120,120", "90,90,90", "50,50,50"}
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

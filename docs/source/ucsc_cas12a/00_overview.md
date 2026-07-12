@@ -28,6 +28,14 @@ stored, the guide is either non-unique or already perfectly specific (see
 The **guide** PAM is `TTTV` (the strong, canonical set). The **off-target index** uses `TTTN`, because
 enCas12a also cleaves the weak `TTTT` PAM.
 
+This splits the two nucleases' **operative** specificity: **AsCas12a** cannot cleave a TTTT PAM, so its
+score, item color, and low-specificity grey use the **TTTV** aggregate (TTTT off-targets excluded);
+**enCas12a** does cleave TTTT, so it uses the **TTTN** aggregate. Both TTTV and TTTN aggregates are stored
+for each nuclease (four specificity columns); only which one drives the score/color differs. Passing
+`--ucscgb_genome` at scoring time is what lets the pipeline read each off-target's reference PAM to apply
+this exclusion (zeroing the AsCas12a CFD of TTTT off-targets and keeping them out of the AsCas12a
+close-off-target grey).
+
 ```{note}
 Throughout, "specificity" is an aggregate over a guide's per-off-target CFD scores: 1.0 = perfectly
 unique, lower = more / closer off-targets. On-target scores (DeepCpf1 and friends) are a separate axis

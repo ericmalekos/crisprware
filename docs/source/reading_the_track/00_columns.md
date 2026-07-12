@@ -8,7 +8,7 @@ chrom        chr1
 chromStart   1000166                    0-based start of the 27-nt PAM+spacer site
 chromEnd     1000193                    chromStart + 27
 name         (blank)
-score        96                         drives the browser score filter (see below)
+score        100                        drives the browser score filter (see below)
 strand       +
 thickStart   1000170                    spacer start (chromStart + 4); the thin 4 nt is the PAM
 thickEnd     1000193
@@ -25,7 +25,7 @@ ascas12a_deepcpf1_score     96% (0.8212)
 enseq_deepcpf1_score        61% (0.6454)
 deepcpf1_score              57% (53.5321)
 enpam_gb_score              19% (0.7867)
-_mouseOver   EnCas12a Spec: 85, AsCas12a Spec: 87, EnCas12a-DeepCpf1: 61, ...
+_mouseOver   EnCas12a Spec: 85, AsCas12a Spec: 89, EnCas12a-DeepCpf1: 61, ...
 _offset      27614949                   byte offset into crisprDetails.tab (0 = no list)
 ```
 
@@ -40,11 +40,14 @@ Four **off-target specificity** columns = {enCas12a, AsCas12a} x {scanned vs the
 
 ## score and color
 
-- **score** (field 5, 0-1000): `round(AsCas12a TTTN specificity_raw x 100)`, e.g. `0.9628 -> 96`. The
-  browser's score filter is therefore a specificity filter.
+- **score** (field 5, 0-1000): `round(AsCas12a TTTV specificity_raw x 100)`, e.g. `0.9958 -> 100`. The
+  browser's score filter is therefore a specificity filter. It uses the **TTTV** aggregate because
+  AsCas12a does not cleave a TTTT PAM (the hover's EnCas12a Spec stays TTTN, since enCas12a does).
 - **itemRgb** (field 9): ramps on the **AsCas12a-DeepCpf1 percentile**, green `>75`, yellow `>50`, red
-  `<=50`; overridden to grey for low specificity, then 1/2-mismatch, then non-unique. The row above is
-  green because AsCas12a-DeepCpf1 = 96%.
+  `<=50`; overridden (in this order) by grey for low **AsCas12a-TTTV** specificity (an **absolute**
+  two-tier cutoff: `< 0.20` darkest `50,50,50`, `0.20-0.50` lighter `90,90,90`), then `120,120,120` for a
+  TTTV 1/2-mismatch off-target, then `150,150,150` non-unique. The row above is green because
+  AsCas12a-DeepCpf1 = 96% and its TTTV specificity (0.9958) is well above 0.50.
 
 ```{warning}
 Percentiles are per-chunk (see the [scoring step](../ucsc_cas12a/03_score_track.md)), so `score`,

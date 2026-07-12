@@ -29,4 +29,6 @@ One output column per scorer and per index. RuleSet3 is a z-score (centered at 0
 - **Speed / memory**: `--threads`, `--chunk_size` (guides held in memory at once), `--skip_rs3`,
   `--skip_gs2`, `--min_<scorer>` (drop low scorers before the off-target pass).
 - **Genome-wide Cas12a track**: `--ucscgb <dir>` writes a UCSC Genome Browser Cas12a track instead of a
-  scored BED (see the Cas12a UCSC tracks section).
+  scored BED (see the Cas12a UCSC tracks section). `--ucscgb_genome <fasta>` (the FASTA the index was
+  built from) enables the AsCas12a TTTV correction (TTTT off-targets excluded from the AsCas12a CFD and
+  close-off-target grey, since AsCas12a does not cleave TTTT).

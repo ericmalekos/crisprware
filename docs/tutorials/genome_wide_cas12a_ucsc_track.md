@@ -125,6 +125,7 @@ crisprware score_guides \
   --cas12a_scorer deepcpf1 enpam_gb enseq_deepcpf1 seq_deepcpf1variants --cas12a_variant AsCas12a \
   --ucscgb track_hg38_cas12a \
   --chrom_sizes hg38.chrom.sizes \
+  --ucscgb_genome GRCh38.primary_assembly.genome.fa \
   --crispr_ots_bin /path/to/target-gpu/release/crispr-ots \
   --ucscgb_scanner gpu \
   --ucscgb_cfd_threshold 0.023 \
@@ -153,6 +154,14 @@ What each part does:
   same scan. You get `TTTV_enCas12a_specificity`, `TTTN_enCas12a_specificity`,
   `TTTV_AsCas12a_specificity`, `TTTN_AsCas12a_specificity`. Add `--no-ucscgb_2xnls` to
   score only EnCas12a.
+- **`--ucscgb_genome GRCh38.primary_assembly.genome.fa`** (the same FASTA the index was
+  built from) enables the **AsCas12a TTTV correction**. AsCas12a does **not** cleave a
+  TTTT PAM (only enCas12a does), but the scanner scores the AsCas12a CFD PAM-blind, so
+  the reference PAM of each off-target is read from this FASTA to (1) zero the AsCas12a
+  CFD of TTTT off-targets in the details popup and (2) drive the AsCas12a close-off-target
+  grey from **TTTV-only** mismatch counts. Omit it and the AsCas12a off-target scores fall
+  back to the enCas12a (TTTN) basis (a warning is printed). Pass an indexed FASTA; a
+  `.fai` is built automatically if missing.
 - **`--ucscgb_cfd_threshold 0.023`** is the CFD floor for which off-targets are *listed*
   in `crisprDetails` (the per-bucket mismatch *counts* are unfloored).
 - **`--ucscgb_list_cap 1000`** caps the stored off-target list per guide (top by CFD) to

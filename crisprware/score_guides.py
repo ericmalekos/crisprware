@@ -251,6 +251,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="chrom.sizes file (chrom<TAB>size) for bedToBigBed when --ucscgb is set.",
     )
     ucsc.add_argument(
+        "--ucscgb_genome",
+        type=str,
+        default=None,
+        help="Reference FASTA (indexed; .fai alongside) the -i off-target index was "
+        "built from. Enables the AsCas12a TTTV correction: crispr-ots scores the "
+        "AsCas12a (2xNLS) CFD PAM-blind, so the reference PAM of each off-target is "
+        "read here to zero TTTT off-targets (which AsCas12a cannot cleave) in the "
+        "details popup and drive the AsCas12a close-off-target grey from TTTV-only "
+        "mismatch counts. Omit to fall back to the EnCas12a (TTTN) basis. [default: None]",
+    )
+    ucsc.add_argument(
         "--crispr_ots_bin",
         type=str,
         default="crispr-ots",
@@ -612,6 +623,26 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
     if var_cols:
         guide_df["ascas12a_deepcpf1_score"] = gRNADF[var_cols[0]].to_numpy()
 
+    # AsCas12a TTTV correction: crispr-ots scores the AsCas12a (2xNLS) CFD PAM-blind,
+    # so the reference PAM is read here to exclude TTTT off-targets (Layer 2 + Layer 3).
+    # Needs an indexed FASTA (.fai); warn (do not fail) if absent so the pipeline still
+    # produces a track on the EnCas12a (TTTN) basis.
+    genome_fa = getattr(args, "ucscgb_genome", None)
+    if genome_fa and getattr(args, "ucscgb_2xnls", True):
+        if not os.path.exists(genome_fa):
+            raise FileNotFoundError(f"\n\t--ucscgb_genome not found: {genome_fa}\n")
+        if not os.path.exists(genome_fa + ".fai"):
+            print(f"\n\tUCSC track: indexing {genome_fa} (samtools faidx) for the AsCas12a PAM lookup\n", flush=True)
+            subprocess.run(["samtools", "faidx", genome_fa], check=True)
+    elif getattr(args, "ucscgb_2xnls", True):
+        genome_fa = None
+        print(
+            "\n\tUCSC track: --ucscgb_genome not set; AsCas12a off-target scores use the "
+            "EnCas12a (TTTN) basis (TTTT off-targets NOT excluded). Pass the reference "
+            "FASTA via --ucscgb_genome to enable the AsCas12a-TTTV correction.\n",
+            flush=True,
+        )
+
     _t_asm = time.time()
     art = ucsc_track.build_track(
         guide_df,
@@ -621,6 +652,7 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         list_cap=args.ucscgb_list_cap,
         blank_threshold=args.ucscgb_blank_threshold,
         run_tools=True,
+        genome_fa=genome_fa,
     )
     print(f"\n\t[TIMING] track assembly (sort+stream+bigBed+bgzip): {time.time() - _t_asm:.1f}s", flush=True)
     print("\n\tUCSC Cas12a track written:")

@@ -59,5 +59,7 @@ crispr-ots/**/perf.data*
 crispr-ots/target-gpu/
 crispr-ots/gpu_build.log
 crispr-ots/dualmat_build.*
+# Generated genome-wide Cas12a track outputs (large; not source)
+crispr-ots/cas12a_tracks/
 tests/test_data/**/*.fai
 tests/test_data/**/*.dna

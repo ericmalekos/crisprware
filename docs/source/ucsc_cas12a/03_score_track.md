@@ -12,6 +12,7 @@ crisprware score_guides \
   --cas12a_variant AsCas12a \
   --ucscgb $PROJ/track_hg38_cas12a \
   --chrom_sizes $PROJ/hg38.chrom.sizes \
+  --ucscgb_genome $PROJ/hg38_primary_chr.fna \
   --crispr_ots_bin $BIN \
   --ucscgb_scanner gpu \
   --ucscgb_cfd_threshold 0.023 \
@@ -37,7 +38,12 @@ crisprware score_guides \
 **Off-target scoring**
 : `--ucscgb` is the switch that emits the UCSC track (its value is the output track dir). The pass runs
   the engine with **two CFD matrices** (enCas12a + AsCas12a/2xNLS, the second is on by default), giving
-  both nucleases' specificity. `--mismatches 4` is the search radius.
+  both nucleases' specificity. `--mismatches 4` is the search radius. `--ucscgb_genome` (the FASTA the
+  index was built from) enables the **AsCas12a TTTV correction**: AsCas12a cannot cleave a TTTT PAM, but
+  the scanner scores its CFD PAM-blind, so the reference PAM of each off-target is read from the FASTA to
+  zero the AsCas12a CFD of TTTT off-targets in the details popup and to drive the AsCas12a close-off-target
+  grey from **TTTV-only** mismatch counts. Omit it and AsCas12a off-target scores fall back to the enCas12a
+  (TTTN) basis (a warning prints); a `.fai` is built automatically if missing.
 
 **Off-target list shaping**
 : `--ucscgb_cfd_threshold 0.023` floors which off-targets are *listed* (counts are unfloored).

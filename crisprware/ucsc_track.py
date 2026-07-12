@@ -27,6 +27,7 @@ the ``_crisprOfftargets`` list comes from Mode-2 (floored at the run's
 
 from __future__ import annotations
 
+import mmap
 import os
 import shutil
 import subprocess
@@ -38,6 +39,74 @@ import pandas as pd
 SITE_LEN = 27
 SPACER_LEN = 23
 PAM_LEN = 4
+
+
+# ----------------------------------------------------------------------------
+# Genome PAM reader (off-target TTTV/TTTN classification, shared with the
+# re-derive script). AsCas12a does not cleave TTTT-prefixed off-targets, so the
+# AsCas12a per-off-target CFD is zeroed for them (Layer 2) and they are excluded
+# from the AsCas12a close-off-target grey (Layer 3). The scanner is PAM-blind for
+# the per-off-target CFD, so the PAM is recovered here from the reference FASTA.
+# ----------------------------------------------------------------------------
+_COMP = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+
+
+def _revcomp(s: str) -> str:
+    return s.translate(_COMP)[::-1]
+
+
+class Genome:
+    """Minimal mmap FASTA reader (needs a ``.fai``). Output is UPPERCASED so
+    soft-masked (lowercase) repeats -- exactly where TTTT PAMs concentrate -- are
+    classified correctly. Random access is O(1); safe for genome-scale streaming."""
+
+    def __init__(self, fna: str):
+        self._fh = open(fna, "rb")
+        self._mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
+        self._idx: dict = {}
+        with open(fna + ".fai") as f:
+            for line in f:
+                name, length, offset, lb, lw = line.rstrip("\n").split("\t")[:5]
+                self._idx[name] = (int(offset), int(lb), int(lw), int(length))
+
+    def _byte(self, meta, p: int) -> int:
+        offset, lb, lw, _ = meta
+        return offset + (p // lb) * lw + (p % lb)
+
+    def fetch(self, chrom: str, start: int, end: int) -> str:
+        """0-based half-open [start, end) on the + strand, uppercase, newline-stripped."""
+        meta = self._idx.get(chrom)
+        if meta is None:
+            return ""
+        start, end = max(0, start), min(meta[3], end)
+        if start >= end:
+            return ""
+        b, e = self._byte(meta, start), self._byte(meta, end - 1) + 1
+        return self._mm[b:e].replace(b"\n", b"").decode("ascii", "replace").upper()
+
+    def pam(self, chrom: str, pos: int, strand: str) -> str:
+        """4-nt 5' Cas12a PAM of an off-target whose 27-nt site starts at ``pos``
+        (``+``: [pos, pos+4); ``-``: revcomp of [pos+23, pos+27))."""
+        if strand == "+":
+            return self.fetch(chrom, pos, pos + 4)
+        return _revcomp(self.fetch(chrom, pos + 23, pos + 27))
+
+    def spacer(self, chrom: str, pos: int, strand: str) -> str:
+        """23-nt protospacer of an off-target whose 27-nt site starts at ``pos``
+        (``+``: [pos+4, pos+27); ``-``: revcomp of [pos, pos+23)). Same geometry as
+        the on-target site; reproduces the guide's stored guideSeq. The pipeline
+        drives Layer 3 off the scanner's `mm` field, so this is not used at
+        generation, but the re-derive imports it to re-Hamming from the genome."""
+        if strand == "+":
+            return self.fetch(chrom, pos + 4, pos + 27)
+        return _revcomp(self.fetch(chrom, pos, pos + 23))
+
+
+def is_tttt(pam: str) -> bool:
+    """TTTT PAM -- AsCas12a does not cleave it (enCas12a does). Anything not a clean
+    4-nt TTTT (Ns, or a truncated read near a contig edge) is treated as keep."""
+    return pam == "TTTT"
+
 
 # On-target display score columns, in track column order (enseq, then deepcpf1,
 # then enpam_gb). Any subset actually present in the guide table is emitted.
@@ -149,15 +218,35 @@ def _mismatch_buckets(mm_counts: pd.Series) -> pd.DataFrame:
     )
 
 
-def _item_rgb(dropped, mm0, mm1, mm2, spec_pct, eff_pct) -> np.ndarray:
-    """Color hierarchy (mirrors parasol_scripts/combine_on_off_tsvs.choose_itemRgb):
-    grey for non-unique (0-mm), dark grey for close (1/2-mm) off-targets, dark for
-    low specificity, else a red/yellow/green ramp on the AsCas12a-DeepCpf1 percentile."""
-    n = len(dropped)
-    out = np.full(n, "255,100,100", dtype=object)  # default red
+# Absolute AsCas12a-TTTV specificity thresholds for the two-tier low-specificity
+# greys. TTTV (not TTTN) because AsCas12a does not cleave TTTT-prefixed sites, and
+# ABSOLUTE (not a percentile rank) so a genome of uniformly specific guides (e.g.
+# yeast, where ~93% would otherwise be greyed despite median specificity 1.0) is
+# colored by efficiency. Mirrors CRISPOR's "specificity > 50 is good"; the browser
+# score filter is the same raw x100.
+SPEC_GREY_BAD = 0.20  # raw AsCas12a-TTTV < 0.20      -> darkest grey (bad)
+SPEC_GREY_MARGINAL = 0.50  # 0.20 <= raw < 0.50       -> lighter grey (marginal)
+
+
+def _spec_eff_color(spec_raw, eff_pct) -> np.ndarray:
+    """Color for a unique guide with no close (1/2-mm) off-targets: two-tier
+    ABSOLUTE low-specificity grey on the raw AsCas12a-TTTV specificity, else the
+    red/yellow/green efficiency ramp on the AsCas12a-DeepCpf1 percentile. Missing
+    specificity is treated as fully specific (not greyed)."""
     enp = np.where(np.isnan(eff_pct), 100.0, eff_pct)
     out = np.where(enp <= 50, "255,100,100", np.where(enp <= 75, "255,255,0", "0,200,0"))
-    out = np.where((~np.isnan(spec_pct)) & (spec_pct <= 55), "80,80,80", out)
+    sr = np.where(np.isnan(spec_raw), 1.0, spec_raw)
+    out = np.where(sr < SPEC_GREY_MARGINAL, "90,90,90", out)  # marginal 0.20-0.50
+    out = np.where(sr < SPEC_GREY_BAD, "50,50,50", out)  # bad < 0.20 (overrides marginal)
+    return out
+
+
+def _item_rgb(dropped, mm0, mm1, mm2, spec_raw, eff_pct) -> np.ndarray:
+    """Color hierarchy (highest priority applied last): efficiency ramp / two-tier
+    absolute low-specificity grey (see _spec_eff_color), then grey for close (1/2-mm)
+    off-targets, then light grey for non-unique (0-mm / dropped). ``spec_raw`` is the
+    raw AsCas12a-TTTV specificity; ``mm*`` are the (TTTV-restricted for AsCas12a) counts."""
+    out = _spec_eff_color(spec_raw, eff_pct)
     out = np.where((mm1 > 0) | (mm2 > 0), "120,120,120", out)
     out = np.where(dropped | (mm0 > 0), "150,150,150", out)
     return out
@@ -177,15 +266,23 @@ def _build_details(
     details_path: str,
     list_cap: int,
     blank_threshold: int,
-) -> Dict[str, int]:
-    """Write crisprDetails.tab and return ``id -> uncompressed byte offset``.
+    genome: Optional["Genome"] = None,
+):
+    """Write crisprDetails.tab and return ``(offsets, tttv_mm)``.
 
     **Streams** an arbitrarily large Mode-2 TSV: external-sort by guide_id, then
-    group on the fly, so peak memory is one guide's off-targets — not the whole
+    group on the fly, so peak memory is one guide's off-targets, not the whole
     (tens-of-GB) file. One line per non-dropped guide with off_target_count > 0:
     ``mismatchCounts<TAB>offtargetList`` (browser ``pos``/strand/round(cfd*1000),
     score desc). ``list_cap <= 0`` keeps the full list; ``blank_threshold <= 0``
     never blanks. Guides with no line get _offset 0 ("No off-targets found").
+
+    ``offsets`` maps ``id -> uncompressed byte offset``. When ``genome`` is given the
+    AsCas12a per-off-target CFD (``cfd2``) is zeroed for TTTT off-targets (Layer 2;
+    AsCas12a does not cleave them) and ``tttv_mm`` maps ``id -> [mm0, mm1, mm2]`` over
+    the TTTV-restricted (non-TTTT) off-targets that cleared the CFD floor, for the
+    AsCas12a close-off-target grey (Layer 3). Without a genome ``tttv_mm`` is empty and
+    callers fall back to the Mode-1 (TTTN) mismatch counts.
     """
     import shlex
 
@@ -199,6 +296,7 @@ def _build_details(
     cap = list_cap if list_cap and list_cap > 0 else None
     blank = blank_threshold if blank_threshold and blank_threshold > 0 else None
     offsets: Dict[str, int] = {}
+    tttv_mm: Dict[str, list] = {}
     seen: set = set()
     have_ot = os.path.exists(mode2_path) and os.path.getsize(mode2_path) > 0
 
@@ -228,6 +326,14 @@ def _build_details(
                 if gid_str is None:
                     return
                 seen.add(gid_str)
+                # Layer 3: TTTV-restricted [mm0, mm1, mm2] over ALL floored
+                # off-targets of this guide (before capping/blanking), TTTT excluded.
+                if genome is not None:
+                    b = [0, 0, 0]
+                    for _e, _si, mm, tttt in entries:
+                        if not tttt and 0 <= mm < 3:
+                            b[mm] += 1
+                    tttv_mm[gid_str] = b
                 oc = oc_by_id.get(gid_str)
                 if blank is not None and oc is not None and oc > blank:
                     _emit(gid_str, "")
@@ -253,16 +359,20 @@ def _build_details(
                     # reverse-complements if '-', and reads 4-nt PAM + 23-nt match.
                     start, strand = int(p[2]), p[3]
                     pos = start
+                    mm = int(p[4])
                     si = int(round(float(p[5]) * 1000))
+                    # AsCas12a (2xNLS) does not cleave a TTTT PAM; crispr-ots scores
+                    # cfd2 PAM-blind, so read the reference PAM here and zero it (L2).
+                    tttt = genome is not None and is_tttt(genome.pam(p[1], pos, strand))
                     # Single-pass dual scoring: the Mode-2 TSV has a 2nd CFD column
                     # (cfd2). Per the spec, each off-target is
                     # chrom;posStrand;scoreInt1[;scoreInt2] (EnCas12a, then WT/2xNLS).
                     if len(p) > 6 and p[6] != "":
-                        si2 = int(round(float(p[6]) * 1000))
+                        si2 = 0 if tttt else int(round(float(p[6]) * 1000))
                         entry = f"{p[1]};{pos}{strand};{si};{si2}"
                     else:
                         entry = f"{p[1]};{pos}{strand};{si}"
-                    entries.append((entry, si))
+                    entries.append((entry, si, mm, tttt))
             if cur is not None:
                 _flush(cur, entries)
             os.remove(sorted_path)
@@ -274,7 +384,7 @@ def _build_details(
             if gid_str in seen or oc is None or pd.isna(oc) or oc <= 0:
                 continue
             _emit(gid_str, "")
-    return offsets
+    return offsets, tttv_mm
 
 
 # ----------------------------------------------------------------------------
@@ -288,6 +398,7 @@ def build_track(
     list_cap: int = 100,
     blank_threshold: int = 2000,
     run_tools: bool = True,
+    genome_fa: Optional[str] = None,
 ) -> Dict[str, str]:
     """Assemble the UCSC track from ``guide_df`` + crispr-ots output at
     ``enum_prefix`` (Mode-1 = ``enum_prefix``, Mode-2 = ``enum_prefix.ot.tsv``,
@@ -296,6 +407,13 @@ def build_track(
     ``guide_df`` must have: ``id, chrom, start, stop, strand, guideSeq, pam`` and
     any of ``DISPLAY_SCORE_COLS``. ``start``/``stop`` bound the 23-nt spacer
     (0-based, + strand). Returns a dict of the artifacts written.
+
+    ``genome_fa`` (an indexed FASTA, ``.fai`` alongside) enables the AsCas12a
+    TTTV correction: crispr-ots scores the AsCas12a (2xNLS) CFD PAM-blind, so
+    without the reference PAM a TTTT off-target (which AsCas12a cannot cleave)
+    would wrongly count against the AsCas12a specificity. With the genome, TTTT
+    off-target CFDs are zeroed in the details popup (Layer 2) and the AsCas12a
+    close-off-target grey is driven by TTTV-restricted mismatch counts (Layer 3).
     """
     os.makedirs(outdir, exist_ok=True)
     mode1 = pd.read_csv(enum_prefix)
@@ -305,8 +423,13 @@ def build_track(
     score_cols = [c for c in DISPLAY_SCORE_COLS if c in guide_df.columns]
 
     # --- crisprDetails.tab + offsets ---
+    # A genome enables the AsCas12a-TTTV correction (Layer 2 + Layer 3); crispr-ots
+    # scores cfd2 PAM-blind, so the reference PAM must be read here to exclude TTTT.
+    genome = Genome(genome_fa) if genome_fa else None
     details_path = os.path.join(outdir, DETAILS_NAME)
-    offsets = _build_details(mode2_path, sidecar_path, mode1, details_path, list_cap, blank_threshold)
+    offsets, tttv_mm = _build_details(
+        mode2_path, sidecar_path, mode1, details_path, list_cap, blank_threshold, genome=genome
+    )
 
     # --- join guides with Mode-1 aggregates on the composite id ---
     m1 = mode1.set_index("id")
@@ -343,23 +466,33 @@ def build_track(
     thick_end = np.where(is_plus, chrom_end, chrom_end - PAM_LEN)
 
     # --- scores / colors / display strings ---
-    # Operative specificity = TTTN: guides are TTTV-only but off-targets are
-    # scored against TTTT too (enCas12a cleaves TTTT), so the bigBed score/color
-    # come from specificity_tttn (Sigma cfd over ALL off-targets incl TTTT). Both
-    # TTTN and TTTV are still emitted as display columns below.
+    # enCas12a display specificity (primary matrix). enCas12a DOES cleave TTTT, so its
+    # operative aggregate is TTTN; both TTTV and TTTN are emitted as display columns.
     spec_tttv = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
     spec_tttn = pd.to_numeric(g.get("specificity_tttn"), errors="coerce")
     spec_pct = _pct(spec_tttn).to_numpy()
-    # Column 5 (score) + the UCSC score filter use AsCas12a (WT) TTTN specificity
-    # ×100 when the secondary matrix is present, else EnCas12a TTTN. extra_spec_data
-    # rows are (field, display, spec_tttv, spec_tttn) -> [0][3] is the AsCas12a TTTN.
-    score_spec_tttn = extra_spec_data[0][3] if extra_spec_data else spec_tttn
-    score = np.clip(np.rint(score_spec_tttn.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
-    # The low-specificity greying band keys off the SAME (AsCas12a) spec as the score
-    # column; the hover still reports EnCas12a Spec separately via spec_pct.
-    color_spec_pct = _pct(score_spec_tttn).to_numpy()
+    # Column 5 (score), the UCSC score filter, and the low-spec greying use AsCas12a (WT)
+    # **TTTV** specificity when the 2xNLS matrix is present, else EnCas12a TTTN. AsCas12a
+    # does not cleave TTTT, so its operative specificity excludes TTTT off-targets.
+    # extra_spec_data rows are (field, display, spec_tttv, spec_tttn) -> [0][2] = AsCas12a TTTV.
+    score_spec = extra_spec_data[0][2] if extra_spec_data else spec_tttv
+    score = np.clip(np.rint(score_spec.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
+    # Greying keys off the SAME raw AsCas12a-TTTV specificity as the score, via an ABSOLUTE
+    # two-tier threshold (not a percentile). Hover still reports EnCas12a Spec via spec_pct.
+    color_spec_raw = score_spec.to_numpy()
 
-    buckets = _mismatch_buckets(g["mismatch_counts"])
+    # Close-off-target grey (120,120,120) is driven by 1/2-mm counts. With a genome
+    # these are TTTV-restricted (Layer 3): AsCas12a does not cleave TTTT, so a close
+    # TTTT off-target must not grey the guide. Mode-1 mismatch_counts are TTTN (they
+    # include TTTT); without a genome, fall back to them.
+    if tttv_mm:
+        tv = np.array([tttv_mm.get(gid, (0, 0, 0)) for gid in g["id"].to_numpy()], dtype=int)
+        mm0, mm1, mm2 = tv[:, 0], tv[:, 1], tv[:, 2]
+    else:
+        buckets = _mismatch_buckets(g["mismatch_counts"])
+        mm0 = buckets["mm0"].to_numpy()
+        mm1 = buckets["mm1"].to_numpy()
+        mm2 = buckets["mm2"].to_numpy()
     enpam_pct = _pct(g["enpam_gb_score"]).to_numpy() if "enpam_gb_score" in g.columns else np.full(len(g), np.nan)
     enseq_pct = (
         _pct(g["enseq_deepcpf1_score"]).to_numpy() if "enseq_deepcpf1_score" in g.columns else np.full(len(g), np.nan)
@@ -369,14 +502,7 @@ def build_track(
     # itemRgb efficiency ramp is driven by AsCas12a-DeepCpf1 (falls back to
     # EnCas12a-DeepCpf1 when the AsCas12a score isn't present). Also shown on hover.
     color_pct = ascas12a_pct if has_ascas12a else enseq_pct
-    item_rgb = _item_rgb(
-        dropped,
-        buckets["mm0"].to_numpy(),
-        buckets["mm1"].to_numpy(),
-        buckets["mm2"].to_numpy(),
-        color_spec_pct,
-        color_pct,
-    )
+    item_rgb = _item_rgb(dropped, mm0, mm1, mm2, color_spec_raw, color_pct)
 
     # unique flags: non-dropped guides cleared the --threshold 0 screen (no 0-mm
     # off-target) -> unique; dropped (non-unique) -> False. (TTTV vs TTTN nuance
@@ -413,8 +539,9 @@ def build_track(
     def _pf(v):
         return "" if np.isnan(v) else int(round(v))
 
-    # percentiles of each extra matrix's TTTN specificity (for the hover)
-    extra_spec_pct = [(display, _pct(etttn).to_numpy()) for _field, display, _etttv, etttn in extra_spec_data]
+    # each extra matrix's OPERATIVE specificity percentile for the hover: AsCas12a is
+    # TTTV (excludes TTTT off-targets, which it does not cleave).
+    extra_spec_pct = [(display, _pct(etttv).to_numpy()) for _field, display, etttv, _etttn in extra_spec_data]
 
     def _hover(i):
         # operative (primary) specificity; non-unique guides have none.
