@@ -67,10 +67,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "-p",
         "--pam",
         type=str,
-        required=True,
+        default=None,
         help="PAM motif as an IUPAC string, e.g. NGG (SpCas9), NAG, TTTV or TTTN \
             (Cas12a). With --protospacer_length and --pam_5_prime this fully \
-            defines the indexed off-target sites.",
+            defines the indexed off-target sites. Mutually exclusive with \
+            --pam_list_file; exactly one is required.",
+    )
+
+    parser.add_argument(
+        "--pam_list_file",
+        type=str,
+        default=None,
+        help="File of explicit PAMs (whitespace/comma/newline separated, '#' \
+            comments allowed), unioned into the index. Use for enzymes whose \
+            accepted PAMs are not a single IUPAC pattern, e.g. the enAsCas12a \
+            tier 1+2+3 set of 47 four-mers. Mutually exclusive with --pam.",
     )
 
     parser.add_argument(
@@ -114,28 +125,40 @@ def parse_arguments() -> argparse.Namespace:
 def guideScanIndex(
     fasta: str,
     output: str,
-    pam: str,
-    protospacer_length: int,
+    pam: Optional[str] = None,
+    protospacer_length: int = 20,
     pam_5_prime: bool = False,
     bin_width: Optional[int] = None,
+    pam_list_file: Optional[str] = None,
 ) -> int:
     """
     Build a crispr-ots off-target index for a FASTA, for the enzyme defined by
     the PAM motif, protospacer length, and PAM orientation (no enzyme presets).
 
+    Provide exactly one of ``pam`` (a single IUPAC motif) or ``pam_list_file``
+    (a file of explicit PAMs, unioned). The latter is for enzymes whose accepted
+    PAM set is not a single IUPAC pattern, e.g. the enAsCas12a tier 1+2+3 set.
+
     Parameters:
         fasta (str): Path to the input FASTA.
         output (str): Output index prefix.
-        pam (str): IUPAC PAM motif (e.g. NGG, TTTV).
+        pam (str | None): IUPAC PAM motif (e.g. NGG, TTTV).
         protospacer_length (int): Spacer length in bases (e.g. 20, 23).
         pam_5_prime (bool): True if the PAM is 5' of the protospacer (Cas12a).
         bin_width (int | None): crispr-ots bin-prefix width (1-15), or None for the default.
+        pam_list_file (str | None): Path to a file of explicit PAMs.
 
     Returns:
         int: A success code (1) indicating that the index was generated successfully.
     """
+    if (pam is None) == (pam_list_file is None):
+        raise ValueError("provide exactly one of pam or pam_list_file")
 
-    cmd = ["crispr-ots", "index", "--index", output, "--pam", pam, "-l", str(protospacer_length)]
+    cmd = ["crispr-ots", "index", "--index", output, "-l", str(protospacer_length)]
+    if pam is not None:
+        cmd += ["--pam", pam]
+    else:
+        cmd += ["--pam-list-file", pam_list_file]
     if pam_5_prime:
         cmd.append("--pam-5-prime")
     if bin_width is not None:
@@ -158,9 +181,18 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
 
     index_output_path, _ = create_output(args.fasta, outdir=args.output_directory, extension="crisprots")
 
+    if (args.pam is None) == (args.pam_list_file is None):
+        raise SystemExit("index_genome: provide exactly one of --pam or --pam_list_file")
+
     if not args.locations_to_keep:
         guideScanIndex(
-            args.fasta, index_output_path, args.pam, args.protospacer_length, args.pam_5_prime, args.bin_width
+            args.fasta,
+            index_output_path,
+            args.pam,
+            args.protospacer_length,
+            args.pam_5_prime,
+            args.bin_width,
+            args.pam_list_file,
         )
     else:
         bed_output_path, _ = create_output(args.fasta, extension="crisprots", tmp=False)
@@ -190,6 +222,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             args.protospacer_length,
             args.pam_5_prime,
             args.bin_width,
+            args.pam_list_file,
         )
 
         args.fasta = fasta_output_path

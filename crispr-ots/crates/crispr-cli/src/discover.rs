@@ -1190,7 +1190,17 @@ fn run_discover_streaming(
 
     // ---- write Mode 1 + sidecar ----
     if want_agg {
-        let mut agg = crate::ot_stream::AggWriter::create(&config.output, is_cas12a, cas12a_dual)?;
+        // Name the secondary columns after the matrix actually in that slot.
+        // This used to emit a hardcoded `2xnls` suffix regardless of which
+        // matrix was passed second, so `--score cfd-cas12a:2xnls --score
+        // cfd-cas12a:encas12a` produced columns named `*_2xnls` holding
+        // enCas12a values.
+        let secondary_matrix = cas12a
+            .as_ref()
+            .and_then(|c| c.secondary.as_ref())
+            .map(crispr_score::Cas12aCfd::matrix_name);
+        let mut agg =
+            crate::ot_stream::AggWriter::create(&config.output, is_cas12a, secondary_matrix)?;
         for (i, rec) in guide_records.iter().enumerate() {
             if dropped[i] {
                 // Pre-screened out (off-target within --threshold): omit, unless
@@ -1854,6 +1864,104 @@ pub fn enzyme_from_pam(
     Ok(Enzyme::from_iupac(&name, &codes, side, protospacer_len))
 }
 
+/// Build an enzyme from an explicit set of PAM patterns, unioned.
+///
+/// Each entry in `pams` is an IUPAC string (concrete or ambiguous) and is
+/// expanded to literal PAMs; the expansions are unioned and de-duplicated. This
+/// is the multi-PAM analogue of [`enzyme_from_pam`], for enzymes whose accepted
+/// PAM set is not a single IUPAC pattern, e.g. the enAsCas12a tier 1+2+3 set of
+/// 47 four-mers, which no single IUPAC string can express.
+///
+/// All entries must expand to the same PAM length (the index encodes one PAM
+/// width). Concrete four-mers and short IUPAC patterns can be freely mixed as
+/// long as they agree on length.
+///
+/// # Errors
+/// Empty list, an unparseable IUPAC base, entries of differing PAM length, or a
+/// total site length exceeding `MAX_SITE_LEN`.
+pub fn enzyme_from_pam_list(
+    pams: &[String],
+    protospacer_len: u8,
+    five_prime: bool,
+) -> Result<crispr_encoding::Enzyme, String> {
+    use crispr_encoding::{expand_iupac, Base, Enzyme, IupacCode, PamSide, MAX_SITE_LEN};
+    if pams.is_empty() {
+        return Err("--pam-list must contain at least one PAM".to_string());
+    }
+
+    let mut pam_len: Option<usize> = None;
+    // De-duplicate on the ASCII byte form so overlapping patterns (e.g. TTTN
+    // and TTTA) collapse cleanly, and keep insertion order stable for a
+    // deterministic index and a reproducible header.
+    let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    let mut canonical: Vec<Vec<Base>> = Vec::new();
+
+    for raw in pams {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let codes: Vec<IupacCode> = token
+            .bytes()
+            .map(|b| {
+                IupacCode::from_ascii(b.to_ascii_uppercase()).ok_or_else(|| {
+                    format!(
+                        "invalid PAM base '{}' in '{token}' (expected IUPAC: \
+                         A C G T R Y S W K M B D H V N)",
+                        b as char
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        match pam_len {
+            None => pam_len = Some(codes.len()),
+            Some(n) if n != codes.len() => {
+                return Err(format!(
+                    "all PAMs in --pam-list must have the same length; got {n} and {} \
+                     (from '{token}')",
+                    codes.len()
+                ));
+            }
+            Some(_) => {}
+        }
+        for literal in expand_iupac(&codes) {
+            let bytes: Vec<u8> = literal.iter().map(|b| b.to_ascii()).collect();
+            if seen.insert(bytes) {
+                canonical.push(literal);
+            }
+        }
+    }
+
+    let pam_len = pam_len.ok_or_else(|| "--pam-list contained no non-empty PAMs".to_string())?;
+    let total = pam_len + usize::from(protospacer_len);
+    if total > MAX_SITE_LEN {
+        return Err(format!(
+            "PAM ({pam_len}) + protospacer ({protospacer_len}) = {total} \
+             exceeds the {MAX_SITE_LEN}-base site limit"
+        ));
+    }
+
+    let side = if five_prime {
+        PamSide::FivePrime
+    } else {
+        PamSide::ThreePrime
+    };
+    let name = format!(
+        "PAMset-{}-{}-{}nt",
+        canonical.len(),
+        if five_prime { "5p" } else { "3p" },
+        protospacer_len
+    );
+    let pam_len_u8 = u8::try_from(pam_len).map_err(|_| "PAM length exceeds 255".to_string())?;
+    Ok(Enzyme::from_canonical(
+        &name,
+        canonical,
+        side,
+        pam_len_u8,
+        protospacer_len,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1902,6 +2010,51 @@ mod tests {
         assert!(enzyme_from_pam("", 20, false).is_err());
         assert!(enzyme_from_pam("NXG", 20, false).is_err());
         assert!(enzyme_from_pam("NGG", 30, false).is_err());
+    }
+
+    #[test]
+    fn pam_list_unions_and_dedups() {
+        use crispr_encoding::{Base, PamSide};
+
+        // A concrete four-mer, an ambiguous pattern that expands to several, and
+        // a duplicate that overlaps the pattern's expansion.
+        let pams = ["TTTA".to_string(), "TTCN".to_string(), "TTCA".to_string()];
+        let e = enzyme_from_pam_list(&pams, 20, true).expect("valid list");
+        assert_eq!(e.pam_len, 4);
+        assert_eq!(e.protospacer_len, 20);
+        assert!(matches!(e.pam_side, PamSide::FivePrime));
+
+        // Expected union: {TTTA} ∪ {TTCA,TTCC,TTCG,TTCT} ∪ {TTCA} = 5 distinct.
+        assert_eq!(e.canonical_pams.len(), 5, "overlapping TTCA must dedup");
+        let as_str: std::collections::HashSet<String> = e
+            .canonical_pams
+            .iter()
+            .map(|p| p.iter().map(|b| b.to_ascii() as char).collect())
+            .collect();
+        for want in ["TTTA", "TTCA", "TTCC", "TTCG", "TTCT"] {
+            assert!(as_str.contains(want), "missing {want}");
+        }
+        // Every canonical PAM is concrete ACGT of the right length.
+        for p in &e.canonical_pams {
+            assert_eq!(p.len(), 4);
+            assert!(p.iter().all(|b| matches!(b, Base::A | Base::C | Base::G | Base::T)));
+        }
+    }
+
+    #[test]
+    fn pam_list_rejects_bad_input() {
+        // Empty list, mixed lengths, bad base, and over the site-length limit.
+        assert!(enzyme_from_pam_list(&[], 20, true).is_err());
+        assert!(enzyme_from_pam_list(
+            &["TTTA".to_string(), "TTN".to_string()],
+            20,
+            true
+        )
+        .is_err());
+        assert!(enzyme_from_pam_list(&["TTXA".to_string()], 20, true).is_err());
+        assert!(enzyme_from_pam_list(&["TTTN".to_string()], 25, true).is_err());
+        // Whitespace-only tokens are skipped, so an all-blank list is empty.
+        assert!(enzyme_from_pam_list(&["  ".to_string()], 20, true).is_err());
     }
 
     #[test]

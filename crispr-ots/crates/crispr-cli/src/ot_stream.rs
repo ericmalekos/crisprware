@@ -330,6 +330,30 @@ impl OtTsvWriter {
     }
 }
 
+/// Turn a matrix name into a CSV-safe column suffix: lowercase, and any run of
+/// non-alphanumeric characters collapsed to a single `_`.
+/// `"2xNLS-Cas12a"` -> `"2xnls_cas12a"`, `"enCas12a"` -> `"encas12a"`.
+fn matrix_column_slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut pending_sep = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            if pending_sep && !out.is_empty() {
+                out.push('_');
+            }
+            pending_sep = false;
+            out.push(c.to_ascii_lowercase());
+        } else {
+            pending_sep = true;
+        }
+    }
+    if out.is_empty() {
+        "secondary".to_string()
+    } else {
+        out
+    }
+}
+
 /// Mode-1 aggregated per-guide writer.
 #[derive(Debug)]
 pub struct AggWriter {
@@ -340,20 +364,31 @@ pub struct AggWriter {
 
 impl AggWriter {
     /// Create the file and write the header. `cas12a` selects the column set;
-    /// `cas12a_dual` additionally emits a second-matrix specificity pair
-    /// (`specificity_tttn_2xnls,specificity_tttv_2xnls`) right after the primary
-    /// pair. Trailing `dropped` column flags guides removed by the `--threshold`
-    /// pre-screen (only present, as `1`, when `--keep-dropped` is set).
+    /// `secondary_matrix` is the name of the second `--score` matrix, when two
+    /// were requested, and adds a second specificity pair
+    /// (`specificity_tttn_<name>,specificity_tttv_<name>`) right after the
+    /// primary pair. Trailing `dropped` column flags guides removed by the
+    /// `--threshold` pre-screen (only present, as `1`, when `--keep-dropped` is
+    /// set).
+    ///
+    /// The suffix is derived from the matrix's own name rather than hardcoded.
+    /// It used to be the literal string `2xnls`, which silently mislabelled the
+    /// output whenever the matrices were passed in the other order: the primary
+    /// (unsuffixed) columns always hold the FIRST `--score`, so
+    /// `--score cfd-cas12a:2xnls --score cfd-cas12a:encas12a` produced columns
+    /// named `*_2xnls` that actually contained enCas12a values.
     ///
     /// # Errors
     /// I/O failure.
-    pub fn create(path: &Path, cas12a: bool, cas12a_dual: bool) -> io::Result<Self> {
+    pub fn create(path: &Path, cas12a: bool, secondary_matrix: Option<&str>) -> io::Result<Self> {
         let mut w = BufWriter::new(File::create(path)?);
+        let cas12a_dual = secondary_matrix.is_some();
         if cas12a {
-            if cas12a_dual {
+            if let Some(name) = secondary_matrix {
+                let s = matrix_column_slug(name);
                 writeln!(
                     w,
-                    "id,specificity_tttn,specificity_tttv,specificity_tttn_2xnls,specificity_tttv_2xnls,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
+                    "id,specificity_tttn,specificity_tttv,specificity_tttn_{s},specificity_tttv_{s},max_cfd,off_target_count,mismatch_counts,saturated,dropped"
                 )?;
             } else {
                 writeln!(
@@ -679,7 +714,7 @@ mod tests {
     fn agg_dual_header_and_row_order() {
         let path = std::env::temp_dir().join(format!("crispr_agg_dual_{}.csv", std::process::id()));
         {
-            let mut w = AggWriter::create(&path, true, true).expect("create");
+            let mut w = AggWriter::create(&path, true, Some("enCas12a")).expect("create");
             w.write_cas12a(
                 "g1",
                 0.8,
@@ -696,9 +731,11 @@ mod tests {
         } // drop flushes the BufWriter
         let body = std::fs::read_to_string(&path).expect("read");
         let mut lines = body.lines();
+        // The secondary suffix is derived from the matrix name passed to
+        // `create` (here `enCas12a`), not hardcoded to `2xnls`.
         assert_eq!(
             lines.next().unwrap(),
-            "id,specificity_tttn,specificity_tttv,specificity_tttn_2xnls,specificity_tttv_2xnls,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
+            "id,specificity_tttn,specificity_tttv,specificity_tttn_encas12a,specificity_tttv_encas12a,max_cfd,off_target_count,mismatch_counts,saturated,dropped"
         );
         let row = lines.next().unwrap();
         assert_eq!(row.split(',').count(), 10, "dual row has 10 columns");
@@ -710,6 +747,12 @@ mod tests {
             "dual dropped row has 10 columns"
         );
         assert!(dropped.ends_with(",0,1"));
+        // Slug derivation, including the case that motivated this fix: passing
+        // 2xNLS as the SECOND matrix must not produce a header claiming the
+        // opposite of what the primary columns hold.
+        assert_eq!(matrix_column_slug("2xNLS-Cas12a"), "2xnls_cas12a");
+        assert_eq!(matrix_column_slug("enCas12a"), "encas12a");
+        assert_eq!(matrix_column_slug(""), "secondary");
         std::fs::remove_file(&path).ok();
     }
 

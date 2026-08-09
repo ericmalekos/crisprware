@@ -15,7 +15,7 @@ use std::process::ExitCode;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crispr_cli::discover::enzyme_from_pam;
+use crispr_cli::discover::{enzyme_from_pam, enzyme_from_pam_list};
 use crispr_cli::{
     run_build, run_discover_with, BuildConfig, DiscoverConfig, DiscoverInput, OtFormat,
     OutputFormat, OutputMode, ScannerKind, ScoreMetric, SpecConvention,
@@ -76,9 +76,25 @@ struct IndexArgs {
 
     /// PAM motif as an IUPAC string, e.g. `NGG` (SpCas9), `NAG`, `TTTV` or
     /// `TTTN` (Cas12a). With `--protospacer-length` and `--pam-5-prime` this
-    /// fully defines the recognised sites — there are no enzyme presets.
-    #[arg(long)]
-    pam: String,
+    /// fully defines the recognised sites; there are no enzyme presets.
+    /// Mutually exclusive with `--pam-list` / `--pam-list-file`; exactly one
+    /// of the three must be given.
+    #[arg(long, conflicts_with_all = ["pam_list", "pam_list_file"])]
+    pam: Option<String>,
+
+    /// Explicit PAM set, unioned. Repeatable: `--pam-list TTTA --pam-list TTCC
+    /// ...`. Each entry is an IUPAC string (concrete or ambiguous) and all
+    /// must share one length. Use this for enzymes whose accepted PAMs are not
+    /// a single IUPAC pattern, e.g. the enAsCas12a tier 1+2+3 set. For a large
+    /// set prefer `--pam-list-file`.
+    #[arg(long, value_name = "PAM")]
+    pam_list: Vec<String>,
+
+    /// Explicit PAM set read from a file: whitespace-, comma- or
+    /// newline-separated PAMs, `#` line comments and blank lines ignored.
+    /// The ergonomic form of `--pam-list` for large sets (e.g. 47 four-mers).
+    #[arg(long, value_name = "PATH", conflicts_with = "pam_list")]
+    pam_list_file: Option<PathBuf>,
 
     /// Protospacer (spacer) length in bases, e.g. 20 (SpCas9) or 23 (Cas12a).
     #[arg(short = 'l', long)]
@@ -390,8 +406,7 @@ fn real_main() -> Result<()> {
 }
 
 fn run_index_cmd(args: IndexArgs) -> Result<()> {
-    let enzyme = enzyme_from_pam(&args.pam, args.protospacer_length, args.pam_5_prime)
-        .map_err(|e| anyhow!(e))?;
+    let enzyme = resolve_index_enzyme(&args)?;
     let crot_path = resolve_index_crot_path(&args.index);
     let config = BuildConfig {
         reference: args.fasta,
@@ -402,6 +417,43 @@ fn run_index_cmd(args: IndexArgs) -> Result<()> {
     run_build(&config).context("index build failed")?;
     emit_stub_index_files(&args.index).context("stub-file emission failed")?;
     Ok(())
+}
+
+/// Resolve the index enzyme from exactly one of `--pam`, `--pam-list`, or
+/// `--pam-list-file`. clap's `conflicts_with` guarantees at most one is set;
+/// this enforces that at least one is.
+fn resolve_index_enzyme(args: &IndexArgs) -> Result<crispr_encoding::Enzyme> {
+    let from_list = |pams: &[String]| {
+        enzyme_from_pam_list(pams, args.protospacer_length, args.pam_5_prime).map_err(|e| anyhow!(e))
+    };
+    match (&args.pam, args.pam_list.as_slice(), &args.pam_list_file) {
+        (Some(pam), [], None) => {
+            enzyme_from_pam(pam, args.protospacer_length, args.pam_5_prime).map_err(|e| anyhow!(e))
+        }
+        (None, list, None) if !list.is_empty() => from_list(list),
+        (None, [], Some(path)) => {
+            let body = std::fs::read_to_string(path)
+                .with_context(|| format!("could not read --pam-list-file {}", path.display()))?;
+            let pams = parse_pam_list_file(&body);
+            if pams.is_empty() {
+                bail!("--pam-list-file {} contained no PAMs", path.display());
+            }
+            from_list(&pams)
+        }
+        _ => bail!("provide exactly one of --pam, --pam-list, or --pam-list-file"),
+    }
+}
+
+/// Parse a PAM-list file: PAMs separated by any whitespace or commas, `#` line
+/// comments and blank lines ignored.
+fn parse_pam_list_file(body: &str) -> Vec<String> {
+    body.lines()
+        .map(|line| line.split('#').next().unwrap_or(""))
+        .flat_map(|line| line.split([',', ' ', '\t']))
+        .map(str::trim)
+        .filter(|tok| !tok.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn run_enumerate_cmd(args: EnumerateArgs) -> Result<()> {
@@ -614,7 +666,9 @@ mod tests {
             Command::Index(args) => {
                 assert_eq!(args.fasta, PathBuf::from("/tmp/ref.fa.gz"));
                 assert_eq!(args.index, PathBuf::from("/tmp/db"));
-                assert_eq!(args.pam, "NGG");
+                assert_eq!(args.pam.as_deref(), Some("NGG"));
+                assert!(args.pam_list.is_empty());
+                assert!(args.pam_list_file.is_none());
                 assert_eq!(args.protospacer_length, 20);
                 assert!(!args.pam_5_prime);
             }
