@@ -429,10 +429,10 @@ def secondary_specificity_suffixes(columns: Sequence[str]) -> list[str]:
     return out
 
 
-def build_autosql_ascas12a(include_ontarget: bool = True) -> str:
+def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
     """autoSql for the single-enzyme **AsCas12a** track: bed9 + guideSeq/pam + a
-    single ``unique`` flag + one ``AsCas12a_specificity`` column + (optionally) the
-    AsCas12a-DeepCpf1 on-target column + the ``_mouseOver``/``_offset`` trailer.
+    single ``unique`` flag + one ``AsCas12a_specificity`` column + one column per
+    on-target model in ``ontarget_cols`` + the ``_mouseOver``/``_offset`` trailer.
     AsCas12a is scored against a TTTV-only off-target index, so there is NO TTTN
     column and NO enCas12a column. Column order MUST match the BED written by
     :func:`build_track` with ``enzyme="ascas12a"``."""
@@ -456,8 +456,12 @@ def build_autosql_ascas12a(include_ontarget: bool = True) -> str:
         ("unique", "Guide has a unique on-target (TTTV off-target search)"),
         ("AsCas12a_specificity", "AsCas12a (WT/2xNLS) CFD specificity, 0-1; TTTV off-target search"),
     ]
-    if include_ontarget:
-        extra.append(("ascas12a_deepcpf1_score", "AsCas12a-DeepCpf1 on-target efficiency"))
+    ot_descs = {
+        "deepcpf1_score": "DeepCpf1 (Kim 2018) AsCas12a on-target efficiency",
+        "ascas12a_deepcpf1_score": "AsCas12a seq-DeepCpf1 variant (Chen 2025) on-target efficiency",
+    }
+    for c in ontarget_cols:
+        extra.append((c, ot_descs.get(c, "AsCas12a on-target efficiency")))
     width = max(len(f) for f, _ in extra) + 2
     body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
     tail = [
@@ -545,7 +549,7 @@ def build_track(
         bb_name = bb_name or "ascas12a.bb"
         details_name = details_name or "ascas12a_crisprDetails.tab"
         as_name = as_name or "ascas12aTargets.as"
-        score_cols = [c for c in ["ascas12a_deepcpf1_score"] if c in guide_df.columns]
+        score_cols = [c for c in ["deepcpf1_score", "ascas12a_deepcpf1_score"] if c in guide_df.columns]
     else:
         bb_name = bb_name or BB_NAME
         details_name = details_name or DETAILS_NAME
@@ -616,19 +620,25 @@ def build_track(
     unique = np.where(dropped, "False", "True")
 
     # --- AsCas12a single-enzyme track (TTTV-only off-target search) ---
-    # One matrix (cfd-cas12a:2xnls), one specificity (TTTV == TTTN under a TTTV index),
-    # AsCas12a-DeepCpf1 on-target only. No enCas12a, no TTTN references, no genome.
+    # One matrix (cfd-cas12a:2xnls), one specificity (TTTV == TTTN under a TTTV index).
+    # Two AsCas12a on-target models are shown: DeepCpf1 (Kim 2018) and the AsCas12a
+    # seq-DeepCpf1 variant (Chen 2025). No enCas12a, no TTTN references, no genome.
     if enzyme == "ascas12a":
         spec = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
         spec_pct = _pct(spec).to_numpy()
         score = np.clip(np.rint(spec.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
-        has_as = "ascas12a_deepcpf1_score" in g.columns
-        as_pct = _pct(g["ascas12a_deepcpf1_score"]).to_numpy() if has_as else np.full(len(g), np.nan)
+        # percentile per on-target model (score_cols is already the AsCas12a-only set)
+        ot_pct = {c: _pct(g[c]).to_numpy() for c in score_cols}
+        OT_LABELS = {"deepcpf1_score": "DeepCpf1", "ascas12a_deepcpf1_score": "AsCas12a-DeepCpf1"}
+        # The color ramp is driven by ONE on-target model: prefer the AsCas12a-variant
+        # model, else DeepCpf1. Both are still emitted as display columns + hover.
+        ramp_col = next((c for c in ("ascas12a_deepcpf1_score", "deepcpf1_score") if c in ot_pct), None)
+        ramp_pct = ot_pct[ramp_col] if ramp_col else np.full(len(g), np.nan)
         # Mode-1 mismatch_counts are already TTTV (TTTV-only index), so the close-off-target
         # grey uses them directly -- no genome re-derivation.
         buckets = _mismatch_buckets(g["mismatch_counts"])
         mm0, mm1, mm2 = buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy()
-        item_rgb = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), as_pct)
+        item_rgb = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), ramp_pct)
 
         def _hover_as(i):
             if dropped[i]:
@@ -636,8 +646,10 @@ def build_track(
             else:
                 p = spec_pct[i]
                 parts = [f"AsCas12a Spec: {int(round(p))}" if not np.isnan(p) else "AsCas12a Spec: 100"]
-            if has_as and not np.isnan(as_pct[i]):
-                parts.append(f"AsCas12a-DeepCpf1: {int(round(as_pct[i]))}")
+            for c in score_cols:
+                pc = ot_pct[c][i]
+                if not np.isnan(pc):
+                    parts.append(f"{OT_LABELS.get(c, c)}: {int(round(pc))}")
             return ", ".join(parts)
 
         out = {
@@ -655,11 +667,11 @@ def build_track(
             "unique": unique,
             "AsCas12a_specificity": _fmt_raw(spec).to_numpy(),
         }
-        if has_as:
-            out["ascas12a_deepcpf1_score"] = _fmt_pct_raw(g["ascas12a_deepcpf1_score"], as_pct).to_numpy()
+        for c in score_cols:
+            out[c] = _fmt_pct_raw(g[c], ot_pct[c]).to_numpy()
         out["_mouseOver"] = [_hover_as(i) for i in range(len(g))]
         out["_offset"] = [offsets.get(gid, 0) for gid in g["id"].to_numpy()]
-        as_content = build_autosql_ascas12a(include_ontarget=has_as)
+        as_content = build_autosql_ascas12a(score_cols)
         return _write_track(out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes, run_tools)
 
     # --- scores / colors / display strings ---

@@ -303,6 +303,7 @@ def _ascas12a_guide_df():
                 "TTTTGGGGCCCCAAAATTTTGGG",
             ],
             "pam": ["TTTA", "TTTC", "TTTG"],
+            "deepcpf1_score": [30.0, 55.0, 5.0],
             "ascas12a_deepcpf1_score": [80.0, 45.0, 10.0],
         }
     )
@@ -321,12 +322,13 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
 
     # schema: single AsCas12a specificity, NO TTTN / enCas12a anywhere
     aso = open(art["autosql"]).read()
-    assert "AsCas12a_specificity" in aso and "ascas12a_deepcpf1_score" in aso
+    assert "AsCas12a_specificity" in aso
+    assert "DeepCpf1 (Kim 2018)" in aso and "seq-DeepCpf1 variant" in aso  # BOTH AsCas12a on-target models
     for banned in ("TTTN", "EnCas12a", "enCas12a", "unique_TTTV", "unique_TTTN", "specificity_tttv_"):
         assert banned not in aso
 
     bed = [line.rstrip("\n").split("\t") for line in open(art["bed"])]
-    assert all(len(r) == 16 for r in bed)  # bed9 + guideSeq,pam,unique,spec,ontarget,_mouseOver,_offset
+    assert all(len(r) == 17 for r in bed)  # bed9 + guideSeq,pam,unique,spec,deepcpf1,ascas12a_deepcpf1,_mouseOver,_offset
     assert all(r[3] == "" for r in bed)  # name is empty (Cas9-matching), not a click-fragile " "
     assert all("%" not in r[12] for r in bed)  # AsCas12a_specificity is raw CFD (0-1), not a degenerate percentile
     by_score = {int(r[4]): r for r in bed}
