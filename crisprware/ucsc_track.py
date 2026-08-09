@@ -199,6 +199,16 @@ def _fmt_pct_raw(raw: pd.Series, pct: pd.Series) -> pd.Series:
     return pd.Series(out, index=raw.index, dtype="object")
 
 
+def _fmt_raw(raw: pd.Series) -> pd.Series:
+    """Raw value to <=4 decimals as a string; blank for NaN. Used for the specificity
+    column: a percentile rank is degenerate there because the vast majority of guides
+    tie at a perfectly-specific 1.0, so the raw CFD specificity (0-1) is what's shown."""
+    out = []
+    for r in raw:
+        out.append("" if pd.isna(r) else f"{round(float(r), 4)}")
+    return pd.Series(out, index=raw.index, dtype="object")
+
+
 def _mismatch_buckets(mm_counts: pd.Series) -> pd.DataFrame:
     """Split the ';'-joined Mode-1 mismatch_counts into mm0/mm1/mm2 columns
     (enough for the itemRgb hierarchy). Missing/blank -> 0."""
@@ -444,7 +454,7 @@ def build_autosql_ascas12a(include_ontarget: bool = True) -> str:
     ]
     extra = [
         ("unique", "Guide has a unique on-target (TTTV off-target search)"),
-        ("AsCas12a_specificity", "AsCas12a (WT/2xNLS) specificity; TTTV off-target search"),
+        ("AsCas12a_specificity", "AsCas12a (WT/2xNLS) CFD specificity, 0-1; TTTV off-target search"),
     ]
     if include_ontarget:
         extra.append(("ascas12a_deepcpf1_score", "AsCas12a-DeepCpf1 on-target efficiency"))
@@ -634,7 +644,7 @@ def build_track(
             "#chr": g["chrom"].to_numpy(),
             "start": chrom_start,
             "stop": chrom_end,
-            "name": " ",
+            "name": "",
             "score": score,
             "strand": g["strand"].to_numpy(),
             "thickStart": thick_start,
@@ -643,7 +653,7 @@ def build_track(
             "guideSeq": g["guideSeq"].to_numpy(),
             "pam": g["pam"].to_numpy(),
             "unique": unique,
-            "AsCas12a_specificity": _fmt_pct_raw(spec, spec_pct).to_numpy(),
+            "AsCas12a_specificity": _fmt_raw(spec).to_numpy(),
         }
         if has_as:
             out["ascas12a_deepcpf1_score"] = _fmt_pct_raw(g["ascas12a_deepcpf1_score"], as_pct).to_numpy()
@@ -695,7 +705,7 @@ def build_track(
         "#chr": g["chrom"].to_numpy(),
         "start": chrom_start,
         "stop": chrom_end,
-        "name": " ",
+        "name": "",
         "score": score,
         "strand": g["strand"].to_numpy(),
         "thickStart": thick_start,

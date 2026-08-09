@@ -327,6 +327,8 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
 
     bed = [line.rstrip("\n").split("\t") for line in open(art["bed"])]
     assert all(len(r) == 16 for r in bed)  # bed9 + guideSeq,pam,unique,spec,ontarget,_mouseOver,_offset
+    assert all(r[3] == "" for r in bed)  # name is empty (Cas9-matching), not a click-fragile " "
+    assert all("%" not in r[12] for r in bed)  # AsCas12a_specificity is raw CFD (0-1), not a degenerate percentile
     by_score = {int(r[4]): r for r in bed}
     assert set(by_score) == {90, 60, 0}  # score = round(specificity_tttv * 100)
 
