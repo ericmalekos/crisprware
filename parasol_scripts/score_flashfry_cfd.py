@@ -309,7 +309,42 @@ def dna_to_rna_base(b: str) -> str:
     return "U" if b == "T" else b
 
 
+_COMPLEMENT = {"A": "T", "C": "G", "G": "C", "T": "A"}
+
+
+def complement_base(b: str) -> str:
+    """Complement a DNA base, for building the matrix's `d` key."""
+    return _COMPLEMENT[b.upper()]
+
+
 def cfd_score_pair(target_dna: str, offtarget_dna: str, lookup: Dict[Tuple[int, str], float]) -> float:
+    """CFD for one (guide site, off-target site) pair. Both are PAM+protospacer.
+
+    The matrix's ``MM`` key is ``r<crRNA base>:d<DNA base>`` where the DNA base is
+    on the strand the crRNA BASE-PAIRS WITH, not the protospacer. Both sequences
+    here are protospacers (same strand as the guide), so the off-target base is
+    complemented before the lookup.
+
+    This previously used the off-target base uncomplemented, which had two
+    effects. Watson-Crick pairs (``rA:dT``, ``rC:dG``, ``rG:dC``, ``rU:dA``) are
+    absent from the matrices because they are matches, so an A<->T or G<->C
+    mismatch missed the table and, via a ``.get(..., 1.0)`` default, was scored
+    with NO PENALTY AT ALL -- one of every three mismatch types. The remaining
+    two got each other's penalties. On realistic sequence this overestimated
+    off-target activity by up to ~23x.
+
+    Evidence for the convention: Doench et al. 2016, which DeWeirdt et al. 2021
+    cite for the CFD calculation, builds the key as
+    ``'r'+wt[i]+':d'+revcom(sg[i])``; crisprScore reproduces the Doench matrix
+    240/240 exactly under this reading and 8/240 without it; ``rG:dT`` is the
+    most-tolerated of the 12 mismatch types, which makes sense only as a G:U
+    wobble on the pairing strand; and under this map the matrix's 12 keys cover
+    the 12 possible mismatch combinations exactly once.
+
+    Raises:
+        KeyError: if a mismatch has no matrix entry. Silently defaulting to 1.0
+            is what hid the original bug, so a gap is now fatal.
+    """
     t = target_dna.strip().upper()
     o = offtarget_dna.strip().upper()
     if len(t) < 5 or len(o) < 5:
@@ -321,9 +356,17 @@ def cfd_score_pair(target_dna: str, offtarget_dna: str, lookup: Dict[Tuple[int, 
     for i in range(L):
         tb, ob = t_sub[i], o_sub[i]
         if tb != ob:
-            mm = f"r{dna_to_rna_base(tb)}:d{ob}"
+            mm = f"r{dna_to_rna_base(tb)}:d{complement_base(ob)}"
             pos = i + 1
-            score *= lookup.get((pos, mm), 1.0)
+            try:
+                score *= lookup[(pos, mm)]
+            except KeyError:
+                raise KeyError(
+                    f"no matrix entry for {mm} at position {pos} "
+                    f"(guide {tb} vs off-target {ob}). Every one of the 12 "
+                    f"mismatch combinations must be present; a gap would score "
+                    f"as no penalty at all."
+                ) from None
     return float(score)
 
 

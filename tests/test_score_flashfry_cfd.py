@@ -1,4 +1,6 @@
 from __future__ import annotations
+import csv
+import pathlib
 import unittest
 import os
 import tempfile
@@ -7,6 +9,7 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from parasol_scripts.score_flashfry_cfd import (
+    complement_base,
     _split_zero_mismatch_cell,
     _has_ttTV,
     _has_tttt,
@@ -295,25 +298,82 @@ class TestCfdScorePair(unittest.TestCase):
     def test_single_mismatch(self):
         target = "TTTTACGTACGTACGTACGTACGTAC"
         offtarg = "TTTTCCGTACGTACGTACGTACGTAC"
-        # Position 1 after trim4: target A vs offtarget C => rA:dC
-        lookup = {(1, "rA:dC"): 0.5}
+        # Position 1 after trim4: guide A vs off-target protospacer C.
+        # The matrix's `d` base is on the strand the crRNA pairs with, so the
+        # key is rA:d<complement(C)> = rA:dG, NOT rA:dC.
+        lookup = {(1, "rA:dG"): 0.5}
         result = cfd_score_pair(target, offtarg, lookup)
         self.assertAlmostEqual(result, 0.5)
 
     def test_two_mismatches_multiply(self):
         target = "TTTTACGTACGTACGTACGTACGTAC"
         offtarg = "TTTTCCCTACGTACGTACGTACGTAC"
-        # After trim4: pos 1: A→C = rA:dC, pos 3: G→C = rG:dC
-        lookup = {(1, "rA:dC"): 0.5, (3, "rG:dC"): 0.4}
+        # After trim4: pos 1 guide A vs OT C -> rA:dG; pos 3 guide G vs OT C ->
+        # rG:dG. Note the old expectation `rG:dC` is a Watson-Crick pair and so
+        # does not exist in any real matrix — it only "worked" because this test
+        # supplies a synthetic lookup dict.
+        lookup = {(1, "rA:dG"): 0.5, (3, "rG:dG"): 0.4}
         result = cfd_score_pair(target, offtarg, lookup)
         self.assertAlmostEqual(result, 0.2)
 
-    def test_missing_lookup_defaults_to_1(self):
+    def test_missing_lookup_raises(self):
+        # Regression guard. This previously asserted that a missing entry
+        # defaults to 1.0. That default is exactly what hid the strand bug: with
+        # the off-target base uncomplemented, every A<->T and G<->C mismatch
+        # missed the table and was silently scored with no penalty at all. A gap
+        # is now fatal.
         target = "TTTTACGTACGTACGTACGTACGTAC"
         offtarg = "TTTTCCGTACGTACGTACGTACGTAC"
-        lookup = {}  # no entry for this mismatch
-        result = cfd_score_pair(target, offtarg, lookup)
-        self.assertAlmostEqual(result, 1.0)
+        with self.assertRaises(KeyError):
+            cfd_score_pair(target, offtarg, {})
+
+    def test_watson_crick_pairs_are_never_looked_up(self):
+        # A match must not consult the table at all, which is why the four
+        # Watson-Crick keys are absent from the real matrices.
+        seq = "TTTTACGTACGTACGTACGTACGTAC"
+        self.assertAlmostEqual(cfd_score_pair(seq, seq, {}), 1.0)
+
+    def test_complement_base(self):
+        self.assertEqual(complement_base("A"), "T")
+        self.assertEqual(complement_base("T"), "A")
+        self.assertEqual(complement_base("C"), "G")
+        self.assertEqual(complement_base("G"), "C")
+        self.assertEqual(complement_base("g"), "C")
+
+    def test_every_mismatch_type_resolves_against_the_real_matrix(self):
+        """The 12 matrix keys must cover all 12 possible mismatches, once each.
+
+        This is the structural property that distinguishes the two readings of
+        the `rX:dY` convention. Under the complementing map every mismatch finds
+        an entry and no entry is unreachable; without it, four lookups miss and
+        four entries are dead.
+        """
+        matrix = (
+            pathlib.Path(__file__).resolve().parent.parent
+            / "crispr-ots/crates/crispr-score/data/cas12a_2xnls.csv"
+        )
+        if not matrix.exists():  # pragma: no cover - layout guard
+            self.skipTest(f"matrix not found at {matrix}")
+        lookup = {}
+        with matrix.open() as fh:
+            for row in csv.DictReader(fh):
+                lookup[(int(row["Pos"]), row["MM"])] = float(row["avg_percent_active"])
+
+        bases = "ACGT"
+        used = set()
+        for guide in bases:
+            for ot in bases:
+                if guide == ot:
+                    continue
+                key = (1, f"r{dna_to_rna_base(guide)}:d{complement_base(ot)}")
+                self.assertIn(
+                    key, lookup, f"no entry for guide {guide} vs off-target {ot}"
+                )
+                used.add(key)
+        # Bijection: exactly the 12 position-1 keys, each used once.
+        pos1 = {k for k in lookup if k[0] == 1}
+        self.assertEqual(len(used), 12)
+        self.assertEqual(used, pos1, "keys at position 1 are not covered exactly once")
 
     def test_short_seqs(self):
         self.assertAlmostEqual(cfd_score_pair("ACG", "ACG", {}), 1.0)

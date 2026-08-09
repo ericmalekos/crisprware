@@ -107,6 +107,14 @@ pub enum Cas12aParseError {
     BadMmKey { line_number: usize, raw: String },
     /// A row's `avg_percent_active` field wasn't parseable as `f64`.
     BadScore { line_number: usize, raw: String },
+    /// The matrix did not cover every (guide base, off-target protospacer base)
+    /// mismatch at every position. A gap would be scored as penalty 1.0, i.e.
+    /// silently as no penalty at all, so it is rejected instead.
+    IncompleteMatrix {
+        position: usize,
+        guide: char,
+        off_target: char,
+    },
 }
 
 impl std::fmt::Display for Cas12aParseError {
@@ -136,6 +144,19 @@ impl std::fmt::Display for Cas12aParseError {
                 f,
                 "Cas12a matrix line {line_number}: invalid \
                  `avg_percent_active` (expected float), got {raw:?}"
+            ),
+            Self::IncompleteMatrix {
+                position,
+                guide,
+                off_target,
+            } => write!(
+                f,
+                "Cas12a matrix is incomplete: no entry for guide {guide} vs \
+                 off-target {off_target} at protospacer position {position}. \
+                 Every one of the 12 mismatch combinations must be present at \
+                 all 23 positions; a gap would silently score as penalty 1.0 \
+                 (no penalty at all). Note the `MM` column's `d` base is on the \
+                 strand the crRNA pairs with, so it is complemented on load"
             ),
         }
     }
@@ -175,6 +196,11 @@ impl Cas12aCfd {
         }
 
         let mut penalty = [[[1.0_f64; 23]; 4]; 4];
+        // Track coverage so a missing entry becomes a hard error instead of a
+        // silent penalty of 1.0. The diagonal is intentionally never populated:
+        // guide == off-target is a match, and the corresponding Watson-Crick
+        // keys are absent from the matrices by design.
+        let mut seen = [[[false; 23]; 4]; 4];
         let mut matrix_name = String::new();
         for (idx, raw_line) in lines.enumerate() {
             let line_number = idx + 2;
@@ -220,6 +246,25 @@ impl Cas12aCfd {
                 })?;
 
             penalty[guide_idx][ot_idx][pos - 1] = score;
+            seen[guide_idx][ot_idx][pos - 1] = true;
+        }
+
+        // Every off-diagonal cell must be covered. Under the complementing key
+        // map the 12 CSV keys map onto exactly the 12 possible mismatch
+        // combinations, so any gap means the matrix or the convention is wrong.
+        const BASES: [char; 4] = ['A', 'C', 'G', 'T'];
+        for pos in 0..23 {
+            for g in 0..4 {
+                for o in 0..4 {
+                    if g != o && !seen[g][o][pos] {
+                        return Err(Cas12aParseError::IncompleteMatrix {
+                            position: pos + 1,
+                            guide: BASES[g],
+                            off_target: BASES[o],
+                        });
+                    }
+                }
+            }
         }
 
         Ok(Self {
@@ -375,7 +420,26 @@ pub fn is_tttt_prefix(site: Site, protospacer_len: u32) -> bool {
 }
 
 /// Parse an `r{A,C,G,U}:d{A,C,G,T}` key into `(rna_base_2bit,
-/// dna_base_2bit)`. Returns `None` for any malformed key.
+/// offtarget_protospacer_base_2bit)`. Returns `None` for any malformed key.
+///
+/// The `d` base in the key is on the strand the crRNA **base-pairs with**, not
+/// the protospacer, so it is complemented here. That lets the scoring hot loop
+/// index `penalty[guide][offtarget_protospacer]` directly.
+///
+/// Evidence for this convention:
+/// - The four Watson-Crick pairs (`rA:dT`, `rC:dG`, `rG:dC`, `rU:dA`) are
+///   **absent** from the matrices: those are matches, not mismatches.
+/// - The four same-letter pairs **are** present, carrying genuine mismatch
+///   activities (`rA:dA` = 0.170, `rC:dC` = 0.094, `rU:dT` = 0.34 at position 1)
+///   rather than the ~1.0 a match would have.
+/// - Under this complementing map the 12 CSV keys cover the 12 possible
+///   (guide, off-target protospacer) mismatch combinations exactly once, with no
+///   missing keys and no unreachable entries. `from_csv` asserts exactly that.
+/// - `rG:dT`, which DeWeirdt et al. single out as unusually well tolerated, is a
+///   G:U wobble, which only exists on the pairing strand.
+/// - [`crate::cfd::parse_mm_key`] already does this for the SpCas9 CFD matrix,
+///   which uses the same `rX:dY` nomenclature and is validated bit-equivalent to
+///   FlashFry.
 fn parse_mm_key(key: &str) -> Option<(usize, usize)> {
     let bytes = key.as_bytes();
     if bytes.len() != 5 || bytes[0] != b'r' || bytes[2] != b':' || bytes[3] != b'd' {
@@ -395,7 +459,8 @@ fn parse_mm_key(key: &str) -> Option<(usize, usize)> {
         b'T' => 3,
         _ => return None,
     };
-    Some((rna, dna))
+    // Complement: 2-bit codes are A=0 C=1 G=2 T=3, so the complement is 3 - code.
+    Some((rna, 3 - dna))
 }
 
 #[cfg(test)]
@@ -427,36 +492,44 @@ mod tests {
 
     #[test]
     fn bundled_matrix_has_no_unset_mismatch_holes() {
-        // Each matrix should have 23 × 12 = 276 non-default penalties.
-        // We can't count them after the fact (1.0 is also a legal score),
-        // but we can spot-check: any (guide != ot) cell at position 1
-        // should be < 1.0 in the 2xNLS matrix (these are knockdown
-        // measurements, never "more active than perfect").
-        let scorer = Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls).unwrap();
-        for g in 0..4 {
-            for o in 0..4 {
-                if g == o {
-                    continue;
+        // 23 positions × 12 mismatch combinations = 276 penalties, and under
+        // the complementing key map (see `parse_mm_key`) those 276 CSV rows
+        // cover EVERY off-diagonal cell at every position. No cell may be
+        // skipped: a gap would sit at the 1.0 default and silently score as no
+        // penalty at all.
+        //
+        // The matrix's 12 keys are the non-Watson-Crick (crRNA, pairing-strand)
+        // combinations:
+        //   rA:dA, rA:dC, rA:dG   (no rA:dT — that pair is a MATCH)
+        //   rC:dA, rC:dC, rC:dT   (no rC:dG — match)
+        //   rG:dA, rG:dG, rG:dT   (no rG:dC — match)
+        //   rU:dC, rU:dG, rU:dT   (no rU:dA — match)
+        // After complementing the `d` base these land on exactly the 12
+        // off-diagonal (guide, off-target protospacer) cells. An earlier version
+        // of this test skipped the four cells (0,3),(1,2),(2,1),(3,0), which is
+        // precisely where the missing complement showed up as an unpenalised
+        // mismatch — do not reintroduce that skip.
+        for matrix in [Cas12aMatrix::TwoXNls, Cas12aMatrix::EnCas12a] {
+            let scorer = Cas12aCfd::from_matrix(matrix).unwrap();
+            for p in 0..23 {
+                for g in 0..4 {
+                    for o in 0..4 {
+                        if g == o {
+                            // A match: never scored, left at the 1.0 default.
+                            continue;
+                        }
+                        // Note 1.0 is a LEGAL value: the 2xNLS matrix genuinely
+                        // measures full retained activity at (pos 21, rA:dC)
+                        // and (pos 23, rC:dC). Coverage is enforced structurally
+                        // by the `seen` tracker in `from_csv`, not by value.
+                        let val = scorer.penalty[g][o][p];
+                        assert!(
+                            val > 0.0 && val <= 1.0,
+                            "{:?}: penalty at (g={g}, o={o}, p={p}) out of range: {val}",
+                            matrix
+                        );
+                    }
                 }
-                // rU:dT corresponds to (g=3, o=3) — but that's a *match*
-                // (U == T at the DNA level) and isn't in the table.
-                // The matrix omits 4 keys: dT for rU and the three
-                // same-base "rA:dA"... wait those ARE present. Let me
-                // re-check by listing what's in the matrix:
-                //   rA:dA, rA:dC, rA:dG (no rA:dT)
-                //   rC:dA, rC:dC, rC:dT (no rC:dG → that's a match)
-                //   rG:dA, rG:dG, rG:dT (no rG:dC → match)
-                //   rU:dC, rU:dG, rU:dT (no rU:dA → that's match)
-                // Skip the complementary-match pairs.
-                let match_pairs = [(0, 3), (1, 2), (2, 1), (3, 0)];
-                if match_pairs.contains(&(g, o)) {
-                    continue;
-                }
-                let val = scorer.penalty[g][o][0];
-                assert!(
-                    val > 0.0 && val < 1.0,
-                    "expected non-trivial penalty at (g={g}, o={o}, p=0), got {val}"
-                );
             }
         }
     }
@@ -478,21 +551,23 @@ mod tests {
         // Off-target with 1 mm:   TTTA | AAAACAAAAAAAAAAAAAAA  (pos 5 in
         //                                     site → matrix pos 2)
         // Guide base at protospacer pos 2 = A → key `rA:d?`.
-        // OT base at same pos = C → key `rA:dC`.
+        // The OT protospacer base is C, and the matrix's `d` base is on the
+        // strand the crRNA pairs with, so the key is `rA:dG` (complement of C),
+        // NOT `rA:dC`. See `parse_mm_key`.
         let target = encode("TTTAAAAAAAAAAAAAAAAAAAAAAAA");
         let off = encode("TTTAACAAAAAAAAAAAAAAAAAAAAA");
         let score = scorer.score_pair(target, off);
-        // Compare to the raw matrix entry for (pos=2, rA:dC):
+        // Compare to the raw matrix entry for (pos=2, rA:dG):
         let body = Cas12aMatrix::TwoXNls.csv();
         let mut expected: Option<f64> = None;
         for line in body.lines().skip(1) {
             let f: Vec<&str> = line.split(',').collect();
-            if f.len() == 4 && f[1] == "2" && f[2] == "rA:dC" {
+            if f.len() == 4 && f[1] == "2" && f[2] == "rA:dG" {
                 expected = Some(f[3].parse().unwrap());
                 break;
             }
         }
-        let expected = expected.expect("rA:dC at pos 2 in 2xNLS matrix");
+        let expected = expected.expect("rA:dG at pos 2 in 2xNLS matrix");
         assert!(
             (score - expected).abs() < 1e-12,
             "expected score = matrix value {expected}, got {score}"
@@ -504,18 +579,20 @@ mod tests {
         let scorer = Cas12aCfd::from_matrix(Cas12aMatrix::TwoXNls).unwrap();
         // Mismatches at protospacer positions 1 and 2.
         // Guide: TTTA AA AAAAAAAAAAAAAAAAAA
-        // OT:    TTTA CC AAAAAAAAAAAAAAAAAA   (rA:dC at pos 1 and pos 2)
+        // OT:    TTTA CC AAAAAAAAAAAAAAAAAA
+        // OT protospacer base C → key `rA:dG` (the matrix's `d` base is the
+        // complement of the protospacer base; see `parse_mm_key`).
         let target = encode("TTTAAAAAAAAAAAAAAAAAAAAAAAA");
         let off = encode("TTTACCAAAAAAAAAAAAAAAAAAAAA");
         let score = scorer.score_pair(target, off);
 
-        // Look up both pos=1 rA:dC and pos=2 rA:dC, multiply.
+        // Look up both pos=1 rA:dG and pos=2 rA:dG, multiply.
         let body = Cas12aMatrix::TwoXNls.csv();
         let mut p1 = 1.0_f64;
         let mut p2 = 1.0_f64;
         for line in body.lines().skip(1) {
             let f: Vec<&str> = line.split(',').collect();
-            if f.len() != 4 || f[2] != "rA:dC" {
+            if f.len() != 4 || f[2] != "rA:dG" {
                 continue;
             }
             let v: f64 = f[3].parse().unwrap();
