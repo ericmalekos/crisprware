@@ -311,6 +311,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "still comes from the enCas12a pass). [default: on; use --no-ucscgb_2xnls to skip]",
     )
     ucsc.add_argument(
+        "--ucscgb_enzyme",
+        choices=["ascas12a", "dual"],
+        default="ascas12a",
+        help="Which Cas12a track to build. 'ascas12a' (default): a single AsCas12a "
+        "(WT/2xNLS) track scored against a TTTV-only off-target index (pass a TTTV -i "
+        "index), one specificity, no enCas12a/TTTN columns. 'dual' (legacy): one track "
+        "carrying enCas12a (primary, TTTN) + AsCas12a (secondary) specificities. "
+        "[default: ascas12a]",
+    )
+    ucsc.add_argument(
         "--ucscgb_chunk_max",
         type=int,
         default=0,
@@ -558,13 +568,17 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
 
     reuse = getattr(args, "ucscgb_reuse_offtargets", False)
 
-    # One scan scores every requested CFD matrix. enCas12a is primary (drives the
-    # off-target list + score/color); 2xNLS-Cas12a ("WT") is added unless
-    # --no-ucscgb_2xnls. Both specificities land in one Mode-1 and both per-off-target
-    # CFDs (cfd + cfd2) in one Mode-2 — no second scan.
-    scores = ["cfd-cas12a:encas12a"]
-    if getattr(args, "ucscgb_2xnls", True):
-        scores.append("cfd-cas12a:2xnls")
+    # Which enzyme's track: "ascas12a" (default) scores ONLY the AsCas12a (2xNLS) matrix
+    # against a TTTV-only off-target index (single specificity, no TTTN / enCas12a). "dual"
+    # (legacy) scores enCas12a primary + 2xNLS secondary in one scan; both specificities
+    # land in one Mode-1 and both per-off-target CFDs (cfd + cfd2) in one Mode-2.
+    enzyme = getattr(args, "ucscgb_enzyme", "ascas12a")
+    if enzyme == "ascas12a":
+        scores = ["cfd-cas12a:2xnls"]
+    else:
+        scores = ["cfd-cas12a:encas12a"]
+        if getattr(args, "ucscgb_2xnls", True):
+            scores.append("cfd-cas12a:2xnls")
 
     enum_out = os.path.join(outdir, "offtargets.csv")
     cmd = [args.crispr_ots_bin, "enumerate", "--scanner", args.ucscgb_scanner, "--threads", str(args.threads)]
@@ -623,25 +637,28 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
     if var_cols:
         guide_df["ascas12a_deepcpf1_score"] = gRNADF[var_cols[0]].to_numpy()
 
-    # AsCas12a TTTV correction: crispr-ots scores the AsCas12a (2xNLS) CFD PAM-blind,
-    # so the reference PAM is read here to exclude TTTT off-targets (Layer 2 + Layer 3).
-    # Needs an indexed FASTA (.fai); warn (do not fail) if absent so the pipeline still
-    # produces a track on the EnCas12a (TTTN) basis.
-    genome_fa = getattr(args, "ucscgb_genome", None)
-    if genome_fa and getattr(args, "ucscgb_2xnls", True):
-        if not os.path.exists(genome_fa):
-            raise FileNotFoundError(f"\n\t--ucscgb_genome not found: {genome_fa}\n")
-        if not os.path.exists(genome_fa + ".fai"):
-            print(f"\n\tUCSC track: indexing {genome_fa} (samtools faidx) for the AsCas12a PAM lookup\n", flush=True)
-            subprocess.run(["samtools", "faidx", genome_fa], check=True)
-    elif getattr(args, "ucscgb_2xnls", True):
+    # The ascas12a track uses a TTTV-only off-target index, so no TTTT off-targets exist
+    # and no genome PAM lookup is needed. The legacy dual track scores AsCas12a PAM-blind
+    # against a TTTN index, so it reads the reference PAM to exclude TTTT off-targets
+    # (Layer 2 + Layer 3); needs an indexed FASTA (.fai).
+    if enzyme == "ascas12a":
         genome_fa = None
-        print(
-            "\n\tUCSC track: --ucscgb_genome not set; AsCas12a off-target scores use the "
-            "EnCas12a (TTTN) basis (TTTT off-targets NOT excluded). Pass the reference "
-            "FASTA via --ucscgb_genome to enable the AsCas12a-TTTV correction.\n",
-            flush=True,
-        )
+    else:
+        genome_fa = getattr(args, "ucscgb_genome", None)
+        if genome_fa and getattr(args, "ucscgb_2xnls", True):
+            if not os.path.exists(genome_fa):
+                raise FileNotFoundError(f"\n\t--ucscgb_genome not found: {genome_fa}\n")
+            if not os.path.exists(genome_fa + ".fai"):
+                print(f"\n\tUCSC track: indexing {genome_fa} (samtools faidx) for the AsCas12a PAM lookup\n", flush=True)
+                subprocess.run(["samtools", "faidx", genome_fa], check=True)
+        elif getattr(args, "ucscgb_2xnls", True):
+            genome_fa = None
+            print(
+                "\n\tUCSC track: --ucscgb_genome not set; AsCas12a off-target scores use the "
+                "EnCas12a (TTTN) basis (TTTT off-targets NOT excluded). Pass the reference "
+                "FASTA via --ucscgb_genome to enable the AsCas12a-TTTV correction.\n",
+                flush=True,
+            )
 
     _t_asm = time.time()
     art = ucsc_track.build_track(
@@ -653,6 +670,7 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         blank_threshold=args.ucscgb_blank_threshold,
         run_tools=True,
         genome_fa=genome_fa,
+        enzyme=("ascas12a" if enzyme == "ascas12a" else None),
     )
     print(f"\n\t[TIMING] track assembly (sort+stream+bigBed+bgzip): {time.time() - _t_asm:.1f}s", flush=True)
     print("\n\tUCSC Cas12a track written:")
@@ -794,7 +812,12 @@ def run_ucscgb_chunked(args: argparse.Namespace) -> None:
 
     # 4. merge per-chunk tracks (order arbitrary; the merge re-sorts the bigBed)
     track_dirs = sorted(t for t in track_dirs if t)
-    as_file = os.path.join(track_dirs[0], ucsc_track.AS_NAME)
+    # per-enzyme track filenames (must match what build_track wrote in each chunk)
+    if getattr(args, "ucscgb_enzyme", "ascas12a") == "ascas12a":
+        as_name, bb_name, details_name = "ascas12aTargets.as", "ascas12a.bb", "ascas12a_crisprDetails.tab"
+    else:
+        as_name, bb_name, details_name = ucsc_track.AS_NAME, ucsc_track.BB_NAME, ucsc_track.DETAILS_NAME
+    as_file = os.path.join(track_dirs[0], as_name)
     print(
         f"\n\t[TIMING] all {len(track_dirs)} chunks scored: {time.time() - _t_all:.1f}s; merging -> {outdir}\n",
         flush=True,
@@ -806,6 +829,9 @@ def run_ucscgb_chunked(args: argparse.Namespace) -> None:
         chrom_sizes=args.chrom_sizes,
         as_file=as_file,
         sort_threads=str(args.threads),
+        details_name=details_name,
+        bb_name=bb_name,
+        as_name=as_name,
     )
     print(f"\n\t[TIMING] merge {len(track_dirs)} chunks: {time.time() - _t:.1f}s", flush=True)
 

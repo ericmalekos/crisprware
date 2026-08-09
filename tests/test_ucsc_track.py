@@ -239,5 +239,108 @@ def test_build_track_layer3_grey_uses_tttv(tmp_path):
     assert _rgb(fa) not in {"150,150,150", "120,120,120", "90,90,90", "50,50,50"}
 
 
+def test_secondary_specificity_suffixes_use_matrix_name():
+    """The secondary specificity suffix comes from the matrix name.
+
+    It used to be a hardcoded `2xnls` for whichever matrix was passed second,
+    which mislabelled the enzyme when the two `--score` matrices were given in
+    the other order. New files spell it `specificity_*_2xnls_cas12a`; legacy
+    files must still resolve.
+    """
+    from crisprware.ucsc_track import (
+        SECONDARY_MATRIX_LABELS,
+        secondary_specificity_suffixes,
+    )
+
+    base = ["id", "specificity_tttn", "specificity_tttv"]
+    assert secondary_specificity_suffixes(base) == []
+    assert secondary_specificity_suffixes(
+        base + ["specificity_tttn_2xnls_cas12a", "specificity_tttv_2xnls_cas12a"]
+    ) == ["2xnls_cas12a"]
+    assert secondary_specificity_suffixes(
+        base + ["specificity_tttn_2xnls", "specificity_tttv_2xnls"]
+    ) == ["2xnls"]
+    assert secondary_specificity_suffixes(
+        base + ["specificity_tttv_encas12a"]
+    ) == ["encas12a"]
+
+    # Both spellings must map to the same displayed enzyme name.
+    assert SECONDARY_MATRIX_LABELS["2xnls_cas12a"] == "AsCas12a"
+    assert SECONDARY_MATRIX_LABELS["2xnls"] == "AsCas12a"
+
+
+def _write_ascas12a_enum(prefix):
+    """AsCas12a single-matrix scan against a TTTV-only index: every off-target is
+    TTTV (single ``cfd`` column, no ``cfd2``), Mode-1 has no ``_2xnls`` columns.
+    g_hi: unique, one distant (3-mm) off-target. g_close: unique, one 1-mm close
+    off-target. g_dup: dropped (non-unique)."""
+    with open(prefix, "w") as f:
+        f.write("id,specificity_tttn,specificity_tttv,max_cfd,off_target_count,mismatch_counts,saturated,dropped\n")
+        f.write("g_hi,0.9,0.9,0.4,1,0;0;0;1;0,0,0\n")
+        f.write("g_close,0.6,0.6,0.5,1,0;1;0;0;0,0,0\n")
+        f.write("g_dup,,,,,,0,1\n")
+    with open(prefix + ".guides.tsv", "w") as f:
+        f.write("guide_id\tid\tchrom\tposition\tstrand\tsequence\ton_count\n")
+        f.write("0\tg_hi\tchr22\t1000\t+\tACGTACGTACGTACGTACGTACG\t1\n")
+        f.write("1\tg_close\tchr22\t2000\t+\tGGGGCCCCAAAATTTTACGTACG\t1\n")
+    with open(prefix + ".ot.tsv", "w") as f:
+        f.write("guide_id\tchrom\tstart\tstrand\tmm\tcfd\n")
+        f.write("0\tchr1\t500\t+\t3\t0.40\n")
+        f.write("1\tchr3\t800\t-\t1\t0.50\n")
+
+
+def _ascas12a_guide_df():
+    return pd.DataFrame(
+        {
+            "id": ["g_hi", "g_close", "g_dup"],
+            "chrom": ["chr22", "chr22", "chr22"],
+            "start": [104, 204, 304],
+            "stop": [127, 227, 327],
+            "strand": ["+", "+", "-"],
+            "guideSeq": [
+                "ACGTACGTACGTACGTACGTACG",
+                "GGGGCCCCAAAATTTTACGTACG",
+                "TTTTGGGGCCCCAAAATTTTGGG",
+            ],
+            "pam": ["TTTA", "TTTC", "TTTG"],
+            "ascas12a_deepcpf1_score": [80.0, 45.0, 10.0],
+        }
+    )
+
+
+def test_build_track_ascas12a_single_enzyme(tmp_path):
+    prefix = str(tmp_path / "off.csv")
+    _write_ascas12a_enum(prefix)
+    art = ucsc_track.build_track(
+        _ascas12a_guide_df(), prefix, str(tmp_path), run_tools=False, enzyme="ascas12a"
+    )
+
+    # per-enzyme filenames
+    assert art["autosql"].endswith("ascas12aTargets.as")
+    assert art["details_tab"].endswith("ascas12a_crisprDetails.tab")
+
+    # schema: single AsCas12a specificity, NO TTTN / enCas12a anywhere
+    aso = open(art["autosql"]).read()
+    assert "AsCas12a_specificity" in aso and "ascas12a_deepcpf1_score" in aso
+    for banned in ("TTTN", "EnCas12a", "enCas12a", "unique_TTTV", "unique_TTTN", "specificity_tttv_"):
+        assert banned not in aso
+
+    bed = [line.rstrip("\n").split("\t") for line in open(art["bed"])]
+    assert all(len(r) == 16 for r in bed)  # bed9 + guideSeq,pam,unique,spec,ontarget,_mouseOver,_offset
+    by_score = {int(r[4]): r for r in bed}
+    assert set(by_score) == {90, 60, 0}  # score = round(specificity_tttv * 100)
+
+    hi, close, dup = by_score[90], by_score[60], by_score[0]
+    assert hi[8] in {"255,100,100", "255,255,0", "0,200,0"}  # spec 0.9, no close OT -> efficiency color
+    assert close[8] == "120,120,120"  # 1-mm close off-target (Mode-1 TTTV counts) -> grey
+    assert dup[8] == "150,150,150" and dup[-1] == "0"  # dropped -> grey, no details line
+
+    hovers = [r[-2] for r in bed]  # _mouseOver
+    assert any("AsCas12a Spec" in h for h in hovers)
+    assert all("EnCas12a" not in h and "TTTN" not in h for h in hovers)
+    assert "Not unique" in dup[-2]
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+

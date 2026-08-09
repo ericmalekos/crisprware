@@ -388,6 +388,115 @@ def _build_details(
 
 
 # ----------------------------------------------------------------------------
+# secondary-matrix specificity columns
+# ----------------------------------------------------------------------------
+# Display names for known matrix-name slugs. crispr-ots derives the column
+# suffix from the matrix's own name, so `2xNLS-Cas12a` -> `2xnls_cas12a`.
+SECONDARY_MATRIX_LABELS = {
+    "2xnls_cas12a": "AsCas12a",
+    "2xnls": "AsCas12a",  # legacy: suffix was hardcoded before the rename
+    "encas12a": "EnCas12a",
+}
+
+
+def secondary_specificity_suffixes(columns: Sequence[str]) -> list[str]:
+    """Matrix-name suffixes of any secondary specificity columns, in order.
+
+    A dual-matrix Mode-1 file carries `specificity_tttn_<matrix>` and
+    `specificity_tttv_<matrix>` alongside the unsuffixed primary pair. The
+    suffix used to be the hardcoded literal `2xnls` for whichever matrix was
+    passed second, which mislabelled the enzyme whenever the two `--score`
+    matrices were given in the other order. Matching by prefix keeps this
+    working for any matrix name, and the legacy spelling still resolves.
+    """
+    out: list[str] = []
+    for col in columns:
+        for stem in ("specificity_tttv_", "specificity_tttn_"):
+            if col.startswith(stem):
+                suffix = col[len(stem):]
+                if suffix and suffix not in out:
+                    out.append(suffix)
+    return out
+
+
+def build_autosql_ascas12a(include_ontarget: bool = True) -> str:
+    """autoSql for the single-enzyme **AsCas12a** track: bed9 + guideSeq/pam + a
+    single ``unique`` flag + one ``AsCas12a_specificity`` column + (optionally) the
+    AsCas12a-DeepCpf1 on-target column + the ``_mouseOver``/``_offset`` trailer.
+    AsCas12a is scored against a TTTV-only off-target index, so there is NO TTTN
+    column and NO enCas12a column. Column order MUST match the BED written by
+    :func:`build_track` with ``enzyme="ascas12a"``."""
+    head = [
+        "table AsCas12aTargets",
+        '"CRISPR AsCas12a (WT/2xNLS) guides, genome wide (bed9 + extra; TTTV off-target search; off-targets in external bgzip tab file)"',
+        "    (",
+        '    string  chrom;        "Reference sequence chromosome or scaffold"',
+        '    uint    chromStart;   "0-based start of the 27nt PAM+spacer site"',
+        '    uint    chromEnd;     "chromStart + 27"',
+        '    string  name;         "Guide ID (may be empty)"',
+        '    uint    score;        "AsCas12a-TTTV specificity x100 (0-100)"',
+        '    char[1] strand;       "+ or -"',
+        '    uint    thickStart;   "Start of protospacer (thick);"',
+        '    uint    thickEnd;     "End of protospacer (thick)"',
+        '    uint    itemRgb;      "Display color R,G,B"',
+        '    string  guideSeq;     "Guide sequence"',
+        '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
+    ]
+    extra = [
+        ("unique", "Guide has a unique on-target (TTTV off-target search)"),
+        ("AsCas12a_specificity", "AsCas12a (WT/2xNLS) specificity; TTTV off-target search"),
+    ]
+    if include_ontarget:
+        extra.append(("ascas12a_deepcpf1_score", "AsCas12a-DeepCpf1 on-target efficiency"))
+    width = max(len(f) for f, _ in extra) + 2
+    body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
+    tail = [
+        '    string  _mouseOver;   "Hover label (mouseOver)"',
+        '    bigint  _offset;      "Uncompressed byte offset into crisprDetails.tab, or 0 if non-unique"',
+        "    )",
+        "",
+    ]
+    return "\n".join(head + body + tail)
+
+
+def _write_track(
+    out: dict,
+    as_content: str,
+    outdir: str,
+    details_path: str,
+    bb_name: str,
+    as_name: str,
+    chrom_sizes: Optional[str],
+    run_tools: bool,
+) -> Dict[str, str]:
+    """Shared tail for :func:`build_track`: write the sorted BED + autoSql, then (if
+    the UCSC tools are on PATH) bgzip+index the details and build the bigBed. ``out``
+    is the ordered column dict; its key order MUST match ``as_content``."""
+    bed = pd.DataFrame(out)
+    bed_path = os.path.join(outdir, "guides.bed")
+    bed.sort_values(["#chr", "start"]).to_csv(bed_path, sep="\t", index=False, header=False)
+    as_path = os.path.join(outdir, as_name)
+    with open(as_path, "w") as fh:
+        fh.write(as_content)
+    artifacts = {"bed": bed_path, "details_tab": details_path, "autosql": as_path}
+    if run_tools:
+        bgzip = _have_tool("bgzip")
+        if bgzip:
+            subprocess.run([bgzip, "-f", "-i", details_path], check=True)
+            artifacts["details_gz"] = details_path + ".gz"
+            artifacts["details_gzi"] = details_path + ".gz.gzi"
+        bedtobigbed = _have_tool("bedToBigBed")
+        if bedtobigbed and chrom_sizes:
+            bb_path = os.path.join(outdir, bb_name)
+            subprocess.run(
+                [bedtobigbed, "-tab", "-type=bed9+", f"-as={as_path}", bed_path, chrom_sizes, bb_path],
+                check=True,
+            )
+            artifacts["bigbed"] = bb_path
+    return artifacts
+
+
+# ----------------------------------------------------------------------------
 # main entry
 # ----------------------------------------------------------------------------
 def build_track(
@@ -399,6 +508,10 @@ def build_track(
     blank_threshold: int = 2000,
     run_tools: bool = True,
     genome_fa: Optional[str] = None,
+    enzyme: Optional[str] = None,
+    bb_name: Optional[str] = None,
+    details_name: Optional[str] = None,
+    as_name: Optional[str] = None,
 ) -> Dict[str, str]:
     """Assemble the UCSC track from ``guide_df`` + crispr-ots output at
     ``enum_prefix`` (Mode-1 = ``enum_prefix``, Mode-2 = ``enum_prefix.ot.tsv``,
@@ -415,18 +528,31 @@ def build_track(
     off-target CFDs are zeroed in the details popup (Layer 2) and the AsCas12a
     close-off-target grey is driven by TTTV-restricted mismatch counts (Layer 3).
     """
+    # Per-enzyme filenames + on-target columns. enzyme="ascas12a" emits a single-matrix
+    # AsCas12a track (TTTV-only off-target search, no TTTN/enCas12a); enzyme=None keeps
+    # the legacy dual (enCas12a-primary + AsCas12a-secondary) track.
+    if enzyme == "ascas12a":
+        bb_name = bb_name or "ascas12a.bb"
+        details_name = details_name or "ascas12a_crisprDetails.tab"
+        as_name = as_name or "ascas12aTargets.as"
+        score_cols = [c for c in ["ascas12a_deepcpf1_score"] if c in guide_df.columns]
+    else:
+        bb_name = bb_name or BB_NAME
+        details_name = details_name or DETAILS_NAME
+        as_name = as_name or AS_NAME
+        score_cols = [c for c in DISPLAY_SCORE_COLS if c in guide_df.columns]
+
     os.makedirs(outdir, exist_ok=True)
     mode1 = pd.read_csv(enum_prefix)
     sidecar_path = enum_prefix + ".guides.tsv"
     mode2_path = enum_prefix + ".ot.tsv"
 
-    score_cols = [c for c in DISPLAY_SCORE_COLS if c in guide_df.columns]
-
     # --- crisprDetails.tab + offsets ---
-    # A genome enables the AsCas12a-TTTV correction (Layer 2 + Layer 3); crispr-ots
-    # scores cfd2 PAM-blind, so the reference PAM must be read here to exclude TTTT.
-    genome = Genome(genome_fa) if genome_fa else None
-    details_path = os.path.join(outdir, DETAILS_NAME)
+    # A genome enables the AsCas12a-TTTV correction (Layer 2 + Layer 3) for the legacy
+    # dual track; the ascas12a path uses a TTTV-only index (no TTTT off-targets exist),
+    # so no genome is needed and Mode-1 counts are already TTTV.
+    genome = Genome(genome_fa) if (genome_fa and enzyme != "ascas12a") else None
+    details_path = os.path.join(outdir, details_name)
     offsets, tttv_mm = _build_details(
         mode2_path, sidecar_path, mode1, details_path, list_cap, blank_threshold, genome=genome
     )
@@ -439,22 +565,32 @@ def build_track(
     dropped = g["dropped"].fillna(0).to_numpy() == 1
 
     # Single-pass dual scoring: the secondary matrix's specificity rides in the
-    # SAME Mode-1 (columns specificity_tttn_2xnls / specificity_tttv_2xnls). Emit
-    # the 2xNLS-Cas12a display columns when present.
+    # SAME Mode-1, as `specificity_tttn_<matrix>` / `specificity_tttv_<matrix>`.
+    #
+    # The suffix is derived from the matrix name (e.g. `2xnls_cas12a`,
+    # `encas12a`). It used to be the hardcoded literal `2xnls` regardless of
+    # which matrix was actually second, so matching on that literal would both
+    # miss the current column names and, historically, mislabel the enzyme
+    # whenever the two `--score` matrices were passed in the other order.
+    # Detect by prefix instead, and keep accepting the old literal so Mode-1
+    # files generated before the rename still load.
     extra_spec_data = []  # (field_label, display_name, spec_tttv, spec_tttn)
-    if "specificity_tttn_2xnls" in m1.columns or "specificity_tttv_2xnls" in m1.columns:
-        ids = g["id"]
+    ids = g["id"]
+    for suffix in secondary_specificity_suffixes(m1.columns):
+        label = SECONDARY_MATRIX_LABELS.get(suffix, suffix)
+        tttv_col = f"specificity_tttv_{suffix}"
+        tttn_col = f"specificity_tttn_{suffix}"
         etttv = (
-            pd.to_numeric(ids.map(m1["specificity_tttv_2xnls"]), errors="coerce")
-            if "specificity_tttv_2xnls" in m1.columns
+            pd.to_numeric(ids.map(m1[tttv_col]), errors="coerce")
+            if tttv_col in m1.columns
             else pd.Series(np.nan, index=g.index)
         )
         etttn = (
-            pd.to_numeric(ids.map(m1["specificity_tttn_2xnls"]), errors="coerce")
-            if "specificity_tttn_2xnls" in m1.columns
+            pd.to_numeric(ids.map(m1[tttn_col]), errors="coerce")
+            if tttn_col in m1.columns
             else pd.Series(np.nan, index=g.index)
         )
-        extra_spec_data.append(("AsCas12a", "AsCas12a", etttv, etttn))
+        extra_spec_data.append((label, label, etttv, etttn))
 
     # --- coordinates: spacer BED -> 27-nt site (5'-PAM, strand-aware) ---
     start = pd.to_numeric(g["start"], errors="coerce").fillna(0).astype(int).to_numpy()
@@ -464,6 +600,57 @@ def build_track(
     chrom_end = np.where(is_plus, stop, stop + PAM_LEN)
     thick_start = np.where(is_plus, chrom_start + PAM_LEN, chrom_start)
     thick_end = np.where(is_plus, chrom_end, chrom_end - PAM_LEN)
+
+    # unique: non-dropped guides cleared the --threshold 0 screen (no 0-mm off-target);
+    # dropped (non-unique) -> False.
+    unique = np.where(dropped, "False", "True")
+
+    # --- AsCas12a single-enzyme track (TTTV-only off-target search) ---
+    # One matrix (cfd-cas12a:2xnls), one specificity (TTTV == TTTN under a TTTV index),
+    # AsCas12a-DeepCpf1 on-target only. No enCas12a, no TTTN references, no genome.
+    if enzyme == "ascas12a":
+        spec = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
+        spec_pct = _pct(spec).to_numpy()
+        score = np.clip(np.rint(spec.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
+        has_as = "ascas12a_deepcpf1_score" in g.columns
+        as_pct = _pct(g["ascas12a_deepcpf1_score"]).to_numpy() if has_as else np.full(len(g), np.nan)
+        # Mode-1 mismatch_counts are already TTTV (TTTV-only index), so the close-off-target
+        # grey uses them directly -- no genome re-derivation.
+        buckets = _mismatch_buckets(g["mismatch_counts"])
+        mm0, mm1, mm2 = buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy()
+        item_rgb = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), as_pct)
+
+        def _hover_as(i):
+            if dropped[i]:
+                parts = ["Not unique"]
+            else:
+                p = spec_pct[i]
+                parts = [f"AsCas12a Spec: {int(round(p))}" if not np.isnan(p) else "AsCas12a Spec: 100"]
+            if has_as and not np.isnan(as_pct[i]):
+                parts.append(f"AsCas12a-DeepCpf1: {int(round(as_pct[i]))}")
+            return ", ".join(parts)
+
+        out = {
+            "#chr": g["chrom"].to_numpy(),
+            "start": chrom_start,
+            "stop": chrom_end,
+            "name": " ",
+            "score": score,
+            "strand": g["strand"].to_numpy(),
+            "thickStart": thick_start,
+            "thickEnd": thick_end,
+            "itemRgb": item_rgb,
+            "guideSeq": g["guideSeq"].to_numpy(),
+            "pam": g["pam"].to_numpy(),
+            "unique": unique,
+            "AsCas12a_specificity": _fmt_pct_raw(spec, spec_pct).to_numpy(),
+        }
+        if has_as:
+            out["ascas12a_deepcpf1_score"] = _fmt_pct_raw(g["ascas12a_deepcpf1_score"], as_pct).to_numpy()
+        out["_mouseOver"] = [_hover_as(i) for i in range(len(g))]
+        out["_offset"] = [offsets.get(gid, 0) for gid in g["id"].to_numpy()]
+        as_content = build_autosql_ascas12a(include_ontarget=has_as)
+        return _write_track(out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes, run_tools)
 
     # --- scores / colors / display strings ---
     # enCas12a display specificity (primary matrix). enCas12a DOES cleave TTTT, so its
@@ -503,11 +690,6 @@ def build_track(
     # EnCas12a-DeepCpf1 when the AsCas12a score isn't present). Also shown on hover.
     color_pct = ascas12a_pct if has_ascas12a else enseq_pct
     item_rgb = _item_rgb(dropped, mm0, mm1, mm2, color_spec_raw, color_pct)
-
-    # unique flags: non-dropped guides cleared the --threshold 0 screen (no 0-mm
-    # off-target) -> unique; dropped (non-unique) -> False. (TTTV vs TTTN nuance
-    # for dropped guides is not distinguished — they are skipped at off-target.)
-    unique = np.where(dropped, "False", "True")
 
     out = {
         "#chr": g["chrom"].to_numpy(),
@@ -562,35 +744,10 @@ def build_track(
     out["_mouseOver"] = mouse
     out["_offset"] = [offsets.get(gid, 0) for gid in g["id"].to_numpy()]
 
-    bed = pd.DataFrame(out)
-
-    # --- write BED (sorted), autoSql ---
-    bed_path = os.path.join(outdir, "guides.bed")
-    bed_sorted = bed.sort_values(["#chr", "start"])
-    bed_sorted.to_csv(bed_path, sep="\t", index=False, header=False)
+    # --- write BED (sorted), autoSql, tools (shared tail) ---
     spec_matrices = [("enCas12a", "EnCas12a")] + [(field, display) for field, display, _tv, _tn in extra_spec_data]
-    as_path = os.path.join(outdir, AS_NAME)
-    with open(as_path, "w") as fh:
-        fh.write(build_autosql(score_cols, spec_matrices))
-
-    artifacts = {"bed": bed_path, "details_tab": details_path, "autosql": as_path}
-
-    # --- run UCSC tools if available ---
-    if run_tools:
-        bgzip = _have_tool("bgzip")
-        if bgzip:
-            subprocess.run([bgzip, "-f", "-i", details_path], check=True)
-            artifacts["details_gz"] = details_path + ".gz"
-            artifacts["details_gzi"] = details_path + ".gz.gzi"
-        bedtobigbed = _have_tool("bedToBigBed")
-        if bedtobigbed and chrom_sizes:
-            bb_path = os.path.join(outdir, BB_NAME)
-            subprocess.run(
-                [bedtobigbed, "-tab", "-type=bed9+", f"-as={as_path}", bed_path, chrom_sizes, bb_path],
-                check=True,
-            )
-            artifacts["bigbed"] = bb_path
-    return artifacts
+    as_content = build_autosql(score_cols, spec_matrices)
+    return _write_track(out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes, run_tools)
 
 
 def merge_ucscgb_tracks(
@@ -602,6 +759,9 @@ def merge_ucscgb_tracks(
     sort_mem: str = "8G",
     sort_threads: str = "8",
     keep_bed: bool = False,
+    details_name: str = DETAILS_NAME,
+    bb_name: str = BB_NAME,
+    as_name: str = AS_NAME,
 ) -> Dict[str, str]:
     """Merge per-chunk Cas12a UCSC tracks (each produced by a single-pass
     :func:`build_track`) into one track.
@@ -630,7 +790,7 @@ def merge_ucscgb_tracks(
                 raise RuntimeError(f"bgzip -dc failed for {path}")
 
     os.makedirs(out, exist_ok=True)
-    merged_tab = os.path.join(out, DETAILS_NAME)
+    merged_tab = os.path.join(out, details_name)
     merged_bed = os.path.join(out, "guides.merged.bed")
 
     n_guides = n_unique = 0
@@ -639,7 +799,7 @@ def merge_ucscgb_tracks(
         outf.write(header)
         running = len(header)
         for tdir in track_dirs:
-            det = os.path.join(tdir, DETAILS_NAME + ".gz")
+            det = os.path.join(tdir, details_name + ".gz")
             bed = os.path.join(tdir, "guides.bed")
             if not (os.path.exists(det) and os.path.exists(bed)):
                 raise FileNotFoundError(f"missing track files in {tdir}")
@@ -685,12 +845,12 @@ def merge_ucscgb_tracks(
         shell=True,
         check=True,
     )
-    bb = os.path.join(out, BB_NAME)
+    bb = os.path.join(out, bb_name)
     subprocess.run([bedtobigbed, "-tab", "-type=bed9+", f"-as={as_file}", sorted_bed, chrom_sizes, bb], check=True)
     # 4. bgzip + index the merged details (offsets are uncompressed; .gzi handles the seek)
     subprocess.run(["bgzip", "-f", "-@", "8", merged_tab], check=True)
     subprocess.run(["bgzip", "-r", merged_tab + ".gz"], check=True)
-    shutil.copy(as_file, os.path.join(out, AS_NAME))
+    shutil.copy(as_file, os.path.join(out, as_name))
     os.remove(merged_bed)
     if not keep_bed:
         os.remove(sorted_bed)
@@ -702,7 +862,7 @@ def merge_ucscgb_tracks(
         "bigbed": bb,
         "details_gz": merged_tab + ".gz",
         "details_gzi": merged_tab + ".gz.gzi",
-        "autosql": os.path.join(out, AS_NAME),
+        "autosql": os.path.join(out, as_name),
     }
 
 
