@@ -630,9 +630,9 @@ def build_track(
         # percentile per on-target model (score_cols is already the AsCas12a-only set)
         ot_pct = {c: _pct(g[c]).to_numpy() for c in score_cols}
         OT_LABELS = {"deepcpf1_score": "DeepCpf1", "ascas12a_deepcpf1_score": "AsCas12a-DeepCpf1"}
-        # The color ramp is driven by ONE on-target model: prefer the AsCas12a-variant
-        # model, else DeepCpf1. Both are still emitted as display columns + hover.
-        ramp_col = next((c for c in ("ascas12a_deepcpf1_score", "deepcpf1_score") if c in ot_pct), None)
+        # The color ramp is driven by ONE on-target model: DeepCpf1 (Kim 2018), else the
+        # AsCas12a-variant model. Both are still emitted as display columns + hover.
+        ramp_col = next((c for c in ("deepcpf1_score", "ascas12a_deepcpf1_score") if c in ot_pct), None)
         ramp_pct = ot_pct[ramp_col] if ramp_col else np.full(len(g), np.nan)
         # Mode-1 mismatch_counts are already TTTV (TTTV-only index), so the close-off-target
         # grey uses them directly -- no genome re-derivation.
