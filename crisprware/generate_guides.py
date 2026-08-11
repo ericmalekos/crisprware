@@ -42,9 +42,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "-p",
         "--pam",
         type=str,
-        help="Protospacer adjacent motif to match.\
-             All IUPAC ambiguity codes are accepted as well as standard ATCG. [default: NGG]",
-        default="NGG",
+        help="Protospacer adjacent motif to match. All IUPAC ambiguity codes are accepted \
+             as well as standard ATCG. Mutually exclusive with --pam_list_file. [default: NGG]",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--pam_list_file",
+        type=str,
+        default=None,
+        help="File of explicit PAMs (whitespace/comma/newline separated, '#' comments allowed), \
+            unioned into the enumeration set. Use for enzymes whose accepted PAMs are not a single \
+            IUPAC pattern, e.g. the enAsCas12a frac_active>0.6 on-target set (15 four-mers). All PAMs \
+            must be the same length. Mutually exclusive with --pam.",
     )
 
     parser.add_argument("-l", "--sgRNA_length", help="Length of sgRNA to generate. [default: 20]", type=int, default=20)
@@ -485,9 +495,32 @@ def check_files(locations_to_keep: Optional[List[str]], locations_to_discard: Op
     return found_gtf
 
 
+def _read_pam_list(path: str) -> List[str]:
+    """Read explicit PAMs from a file: whitespace/comma/newline separated, '#' comments
+    allowed. Uppercased, deduped, order-stable."""
+    pams: List[str] = []
+    seen = set()
+    with open(path) as fh:
+        for line in fh:
+            for tok in line.split("#", 1)[0].replace(",", " ").split():
+                p = tok.strip().upper()
+                if p and p not in seen:
+                    seen.add(p)
+                    pams.append(p)
+    if not pams:
+        raise ValueError(f"\n\t--pam_list_file {path} contained no PAMs\n")
+    return pams
+
+
 def main(args: Optional[argparse.Namespace] = None) -> None:
     if args is None:
         args = parse_arguments()
+
+    # Exactly one PAM source (backward-compatible NGG default when neither is given).
+    if getattr(args, "pam_list_file", None) and args.pam is not None:
+        raise SystemExit("\n\tgenerate_guides: provide exactly one of --pam or --pam_list_file\n")
+    if not getattr(args, "pam_list_file", None) and args.pam is None:
+        args.pam = "NGG"
 
     args.fasta, was_gzipped = decompress_gzip_if_needed(args.fasta)
 
@@ -527,7 +560,19 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         keep_chroms = get_chromosome_boundaries(targets_to_keep)
         print("\n\tChromosomes for which to find targets:\t" + " ".join(keep_chroms.keys()))
 
-    pam_set = map_ambiguous_sequence(args.pam)
+    if getattr(args, "pam_list_file", None):
+        explicit = _read_pam_list(args.pam_list_file)
+        lengths = {len(p) for p in explicit}
+        if len(lengths) != 1:
+            raise ValueError(f"\n\t--pam_list_file PAMs must all be one length; got {sorted(lengths)}\n")
+        pam_len = lengths.pop()
+        pam_set = sorted({m for p in explicit for m in map_ambiguous_sequence(p)})
+        # Length-correct placeholder so the cut-site math (len(args.pam)) works; the pam column
+        # becomes a generic multi-PAM label (each guide's exact PAM is present in its context).
+        args.pam = "N" * pam_len
+        print(f"\n\t--pam_list_file: {len(explicit)} PAMs -> {len(pam_set)} concrete {pam_len}-mers scanned\n")
+    else:
+        pam_set = map_ambiguous_sequence(args.pam)
     rev_pam_set = list(map(revcom, pam_set))
 
     pad = args.sgRNA_length + args.context_window[0] + args.context_window[1] + max(len(p) for p in pam_set) + 10
