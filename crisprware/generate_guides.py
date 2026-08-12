@@ -386,11 +386,14 @@ def process_window(chrom, core_start, core_end, args, pam_set, rev_pam_set, pad,
     scan_start = core_start - slice_start
     scan_end = core_end - slice_start - 1  # find_sgRNA breaks at index > end
     out = []
-    for pam in pam_set + rev_pam_set:
+    # Track forward/reverse EXPLICITLY per list. A palindromic PAM (e.g. TATA, whose
+    # reverse-complement is itself) lands in BOTH pam_set and rev_pam_set, and the old
+    # `forward = pam in pam_set` test classified the rev_pam_set copy as forward too --
+    # double-emitting the + strand and never scanning the - strand for that PAM.
+    for pam, forward in [(p, True) for p in pam_set] + [(p, False) for p in rev_pam_set]:
         context_length = args.sgRNA_length + args.context_window[0] + args.context_window[1]
         if args.pam_5_prime:
             context_length += len(pam)
-        forward = pam in pam_set
         for sgRNA, pos, context in find_sgRNA(
             args=args, pam=pam, chrm=seq, start=scan_start, end=scan_end, forward=forward
         ):
