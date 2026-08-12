@@ -345,6 +345,195 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
     assert "Not unique" in dup[-2]
 
 
+def _rc(s):
+    return s.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+
+
+def _write_encas12a_enum(prefix, cfd06=0.10, cfd03=0.05):
+    """enCas12a single-matrix scan against the broad fa>0.3 index: one cfd column, no cfd2.
+    g_uniq: unique, two DISTANT (3-mm) off-targets -- chr1:500(+) at a high-activity (fa>0.6)
+    PAM, chr3:800(-) at a moderate (fa>0.3-only) PAM. g_dup: dropped (non-unique)."""
+    with open(prefix, "w") as f:
+        f.write("id,specificity_tttn,specificity_tttv,max_cfd,off_target_count,mismatch_counts,saturated,dropped\n")
+        f.write(f"g_uniq,0.9,0.9,{max(cfd06, cfd03)},2,0;0;0;2;0,0,0\n")  # two 3-mm -> no close grey
+        f.write("g_dup,,,,,,0,1\n")
+    with open(prefix + ".guides.tsv", "w") as f:
+        f.write("guide_id\tid\tchrom\tposition\tstrand\tsequence\ton_count\n")
+        f.write("0\tg_uniq\tchr22\t1000\t+\tACGTACGTACGTACGTACGTACG\t1\n")
+    with open(prefix + ".ot.tsv", "w") as f:
+        f.write("guide_id\tchrom\tstart\tstrand\tmm\tcfd\n")
+        f.write(f"0\tchr1\t500\t+\t3\t{cfd06:.2f}\n")
+        f.write(f"0\tchr3\t800\t-\t3\t{cfd03:.2f}\n")
+
+
+def test_build_track_encas12a_four_specificities(tmp_path):
+    """enCas12a single-enzyme track: four guidescan specificities (raw + PAM-weighted, at the
+    fa>0.6 and fa>0.3 cutoffs) folded in from the Mode-2 stream; col5 = spec_fa0.3_w x100;
+    color driven by EnPAM-GB; schema carries no AsCas12a / TTTV / TTTN references."""
+    weights = ucsc_track.load_encas12a_weights()
+    pam06 = next(p for p, (w, i6, i3) in weights.items() if i6 and i3)  # high-activity, fa>0.6
+    pam03 = next(p for p, (w, i6, i3) in weights.items() if i3 and not i6)  # moderate, fa>0.3 only
+    w06, w03 = weights[pam06][0], weights[pam03][0]
+    cfd06, cfd03 = 0.10, 0.05
+
+    prefix = str(tmp_path / "off.csv")
+    _write_encas12a_enum(prefix, cfd06, cfd03)
+    # genome: chr1[500:504] = pam06 (+ off-target PAM); chr3[823:827] = revcomp(pam03)
+    # (- off-target PAM = revcomp of [pos+23, pos+27)).
+    chr1 = "A" * 500 + pam06 + "A" * 40
+    chr3 = "A" * 823 + _rc(pam03) + "A" * 13
+    fa = str(tmp_path / "g.fa")
+    _write_fasta(fa, [("chr1", chr1), ("chr3", chr3)])
+
+    gdf = pd.DataFrame(
+        {
+            "id": ["g_uniq", "g_dup"],
+            "chrom": ["chr22", "chr22"],
+            "start": [104, 204],
+            "stop": [127, 227],
+            "strand": ["+", "-"],
+            "guideSeq": ["ACGTACGTACGTACGTACGTACG", "TTTTGGGGCCCCAAAATTTTGGG"],
+            "pam": ["TTTA", "TTTC"],
+            "enpam_gb_score": [0.90, 0.10],  # g_uniq higher -> pct 100 -> green ramp
+            "encas12a_hf1_score": [0.10, 0.80],  # low for g_uniq: proves color != HF1
+        }
+    )
+    art = ucsc_track.build_track(
+        gdf, prefix, str(tmp_path), run_tools=False, enzyme="encas12a", genome_fa=fa, encas12a_list_floor=0.0
+    )
+
+    # per-enzyme filenames + schema
+    assert art["autosql"].endswith("encas12aTargets.as")
+    assert art["details_tab"].endswith("encas12a_crisprDetails.tab")
+    aso = open(art["autosql"]).read()
+    for col in ("enCas12a_spec_fa06", "enCas12a_spec_fa06_wt", "enCas12a_spec_fa03", "enCas12a_spec_fa03_wt"):
+        assert col in aso
+    assert "EnPAM-GB" in aso and "HF1" in aso
+    # no references to the OTHER enzyme's specificity ("enAsCas12a", the enzyme's own name, is fine)
+    assert "AsCas12a" not in aso.replace("enAsCas12a", "")
+    for banned in ("TTTV", "TTTN", "specificity_tttv"):
+        assert banned not in aso
+
+    bed = [line.rstrip("\n").split("\t") for line in open(art["bed"])]
+    assert all(len(r) == 20 for r in bed)  # bed9 + guideSeq,pam,unique,4 spec,2 ot,_mouseOver,_offset
+    assert all(r[3] == "" for r in bed)  # empty name (not a click-fragile " ")
+    uniq = next(r for r in bed if r[5] == "+")
+    dup = next(r for r in bed if r[5] == "-")
+
+    # four specificities (1 / (on_count + weighted CFD sums)); fa>0.6 counts only the fa>0.6
+    # off-target, fa>0.3 counts both.
+    oc = 1
+    exp = {
+        12: 1 / (oc + cfd06),                       # spec_fa0.6 (raw)
+        13: 1 / (oc + cfd06 * w06),                 # spec_fa0.6_w
+        14: 1 / (oc + cfd06 + cfd03),               # spec_fa0.3 (raw)
+        15: 1 / (oc + cfd06 * w06 + cfd03 * w03),   # spec_fa0.3_w
+    }
+    for col, e in exp.items():
+        assert float(uniq[col]) == pytest.approx(e, abs=1e-3), f"col {col}: {uniq[col]} != {e:.4f}"
+    assert int(uniq[4]) == round(exp[15] * 100)  # col5 = spec_fa0.3_w x100
+
+    # color: no close off-target (3-mm) + spec well above the grey threshold -> EnPAM-GB
+    # efficiency ramp; g_uniq has the top EnPAM-GB percentile -> green.
+    assert uniq[8] == "0,200,0"
+    assert int(uniq[-1]) > 0  # _offset set (has off-targets)
+    assert "enCas12a Spec (fa>0.3 wt)" in uniq[-2] and "EnPAM-GB" in uniq[-2]
+
+    # dropped guide: greyed, blank specificity columns, no details line
+    assert dup[8] == "150,150,150" and dup[-1] == "0"
+    assert all(dup[c] == "" for c in (12, 13, 14, 15))
+    assert "Not unique" in dup[-2]
+
+
+def test_build_track_encas12a_blanks_perfect_repeat(tmp_path):
+    """A guide with a perfect (0-mm) off-target elsewhere (mm0>0) but NOT pre-dropped must be
+    treated as non-unique: blank all four specificity columns, unique=False, greyed. Otherwise
+    a repeat whose off-target sits at a non-fa0.6 PAM would read a misleading spec_fa0.6=1.0."""
+    weights = ucsc_track.load_encas12a_weights()
+    pam06 = next(p for p, (w, i6, i3) in weights.items() if i6 and i3)
+    prefix = str(tmp_path / "off.csv")
+    with open(prefix, "w") as f:
+        f.write("id,specificity_tttn,specificity_tttv,max_cfd,off_target_count,mismatch_counts,saturated,dropped\n")
+        f.write("g_rep,0.5,0.5,1.0,1,1;0;0;0;0,0,0\n")  # one 0-mm off-target, dropped=0
+    with open(prefix + ".guides.tsv", "w") as f:
+        f.write("guide_id\tid\tchrom\tposition\tstrand\tsequence\ton_count\n")
+        f.write("0\tg_rep\tchr22\t1000\t+\tACGTACGTACGTACGTACGTACG\t1\n")
+    with open(prefix + ".ot.tsv", "w") as f:
+        f.write("guide_id\tchrom\tstart\tstrand\tmm\tcfd\n")
+        f.write("0\tchr1\t500\t+\t0\t1.00\n")  # perfect match elsewhere
+    chr1 = "A" * 500 + pam06 + "A" * 40
+    fa = str(tmp_path / "g.fa")
+    _write_fasta(fa, [("chr1", chr1)])
+    gdf = pd.DataFrame(
+        {"id": ["g_rep"], "chrom": ["chr22"], "start": [104], "stop": [127], "strand": ["+"],
+         "guideSeq": ["ACGTACGTACGTACGTACGTACG"], "pam": ["TTTA"],
+         "enpam_gb_score": [0.7], "encas12a_hf1_score": [0.3]}
+    )
+    art = ucsc_track.build_track(
+        gdf, prefix, str(tmp_path), run_tools=False, enzyme="encas12a", genome_fa=fa, encas12a_list_floor=0.0
+    )
+    r = open(art["bed"]).readline().rstrip("\n").split("\t")
+    assert r[11] == "False"  # unique flag
+    assert all(r[c] == "" for c in (12, 13, 14, 15))  # all four specs blank
+    assert r[4] == "0"  # col5 score 0
+    assert r[8] == "150,150,150"  # non-unique grey
+    assert "Not unique" in r[-2]
+
+
+def test_encas12a_spec_exact_vs_pilot_formula(tmp_path):
+    """The folded-in specificity must equal the standalone pilot formula
+    1/(on_count + sum CFD[*weight]) to the emitted precision, for a unique guide with a
+    unique on-target and several off-targets at mixed PAMs (regression guard for the
+    single-command track vs the validated pilot aggregate_specificity)."""
+    weights = ucsc_track.load_encas12a_weights()
+    p06 = next(p for p, (w, i6, i3) in weights.items() if i6 and i3)
+    p03 = next(p for p, (w, i6, i3) in weights.items() if i3 and not i6)
+    ots = [("chr1", 500, "+", 0.40, p06), ("chr1", 600, "+", 0.12, p03), ("chr3", 800, "-", 0.22, p06)]
+
+    prefix = str(tmp_path / "off.csv")
+    with open(prefix, "w") as f:
+        f.write("id,specificity_tttn,specificity_tttv,max_cfd,off_target_count,mismatch_counts,saturated,dropped\n")
+        f.write("g,0.9,0.9,0.4,3,0;0;3;0;0,0,0\n")
+    with open(prefix + ".guides.tsv", "w") as f:
+        f.write("guide_id\tid\tchrom\tposition\tstrand\tsequence\ton_count\n")
+        f.write("0\tg\tchr22\t1000\t+\tACGTACGTACGTACGTACGTACG\t1\n")
+    with open(prefix + ".ot.tsv", "w") as f:
+        f.write("guide_id\tchrom\tstart\tstrand\tmm\tcfd\n")
+        for chrom, pos, strand, cfd, _pam in ots:
+            f.write(f"0\t{chrom}\t{pos}\t{strand}\t2\t{cfd:.2f}\n")
+    # genome placing each off-target PAM
+    seqs = {"chr1": ["A"] * 700, "chr3": ["A"] * 900}
+    for chrom, pos, strand, _cfd, pam in ots:
+        s = seqs[chrom]
+        if strand == "+":
+            s[pos : pos + 4] = list(pam)
+        else:
+            s[pos + 23 : pos + 27] = list(_rc(pam))
+    fa = str(tmp_path / "g.fa")
+    _write_fasta(fa, [(c, "".join(s)) for c, s in seqs.items()])
+
+    gdf = pd.DataFrame(
+        {"id": ["g"], "chrom": ["chr22"], "start": [104], "stop": [127], "strand": ["+"],
+         "guideSeq": ["ACGTACGTACGTACGTACGTACG"], "pam": ["TTTA"],
+         "enpam_gb_score": [0.5], "encas12a_hf1_score": [0.5]}
+    )
+    art = ucsc_track.build_track(
+        gdf, prefix, str(tmp_path), run_tools=False, enzyme="encas12a", genome_fa=fa, encas12a_list_floor=0.0
+    )
+    row = open(art["bed"]).readline().rstrip("\n").split("\t")
+
+    # pilot formula, recomputed here from the same inputs
+    oc = 1
+    c06 = sum(cfd for _c, _p, _s, cfd, pam in ots if weights[pam][1])
+    w06 = sum(cfd * weights[pam][0] for _c, _p, _s, cfd, pam in ots if weights[pam][1])
+    c03 = sum(cfd for _c, _p, _s, cfd, pam in ots if weights[pam][2])
+    w03 = sum(cfd * weights[pam][0] for _c, _p, _s, cfd, pam in ots if weights[pam][2])
+    assert float(row[12]) == pytest.approx(1 / (oc + c06), abs=1e-4)
+    assert float(row[13]) == pytest.approx(1 / (oc + w06), abs=1e-4)
+    assert float(row[14]) == pytest.approx(1 / (oc + c03), abs=1e-4)
+    assert float(row[15]) == pytest.approx(1 / (oc + w03), abs=1e-4)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
 

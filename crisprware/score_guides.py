@@ -312,13 +312,24 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     ucsc.add_argument(
         "--ucscgb_enzyme",
-        choices=["ascas12a", "dual"],
+        choices=["ascas12a", "encas12a", "dual"],
         default="ascas12a",
         help="Which Cas12a track to build. 'ascas12a' (default): a single AsCas12a "
         "(WT/2xNLS) track scored against a TTTV-only off-target index (pass a TTTV -i "
-        "index), one specificity, no enCas12a/TTTN columns. 'dual' (legacy): one track "
-        "carrying enCas12a (primary, TTTN) + AsCas12a (secondary) specificities. "
-        "[default: ascas12a]",
+        "index), one specificity, no enCas12a/TTTN columns. 'encas12a': a single enCas12a "
+        "(enAsCas12a) track scored against the broad fa>0.3 (30-PAM) off-target index, with "
+        "four guidescan specificities (raw + PAM-activity-weighted, at the fa>0.6 and fa>0.3 "
+        "cutoffs); requires --ucscgb_genome and --cas12a_scorer enpam_gb seq_deepcpf1variants "
+        "--cas12a_variant enAsCas12a-HF1. 'dual' (legacy): one track carrying enCas12a "
+        "(primary, TTTN) + AsCas12a (secondary) specificities. [default: ascas12a]",
+    )
+    ucsc.add_argument(
+        "--ucscgb_encas12a_weights",
+        type=str,
+        default=None,
+        help="enCas12a off-target PAM-activity weights TSV (pam, weight_fracactive, in_fa0.6, "
+        "in_fa0.3). Only used with --ucscgb_enzyme encas12a. [default: the shipped "
+        "crisprware/data/encas12a_offtarget_weights.tsv].",
     )
     ucsc.add_argument(
         "--ucscgb_chunk_max",
@@ -575,10 +586,20 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
     enzyme = getattr(args, "ucscgb_enzyme", "ascas12a")
     if enzyme == "ascas12a":
         scores = ["cfd-cas12a:2xnls"]
+    elif enzyme == "encas12a":
+        # single enCas12a matrix; the four specificities come from the folded-in
+        # PAM-activity weighting of the Mode-2 stream, not a second matrix.
+        scores = ["cfd-cas12a:encas12a"]
     else:
         scores = ["cfd-cas12a:encas12a"]
         if getattr(args, "ucscgb_2xnls", True):
             scores.append("cfd-cas12a:2xnls")
+
+    # enCas12a needs an UNFLOORED Mode-2 (every off-target contributes to the four
+    # PAM-weighted specificities); the arg value then floors only the displayed popup
+    # (encas12a_list_floor in build_track). Other enzymes read the built-in Mode-1
+    # specificity, so the CFD floor just trims their popup list.
+    scan_cfd_threshold = 0.0 if enzyme == "encas12a" else args.ucscgb_cfd_threshold
 
     enum_out = os.path.join(outdir, "offtargets.csv")
     cmd = [args.crispr_ots_bin, "enumerate", "--scanner", args.ucscgb_scanner, "--threads", str(args.threads)]
@@ -595,7 +616,14 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         "0",
         "--keep-dropped",
         "--cfd-threshold",
-        str(args.ucscgb_cfd_threshold),
+        str(scan_cfd_threshold),
+    ]
+    if enzyme == "encas12a":
+        # The four guidescan specificities are summed over EVERY off-target, so the
+        # per-guide off-target set must be complete (not saturated at a per-bin cap) --
+        # the spec has to penalize many-off-target guides, not cap them off.
+        cmd += ["--max-off-targets-per-bin", "-1"]
+    cmd += [
         "--kmers-file",
         kmers_path,
         "--output",
@@ -631,18 +659,32 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
     for c in ("deepcpf1_score", "enpam_gb_score", "enseq_deepcpf1_score"):
         if c in gRNADF.columns:
             guide_df[c] = gRNADF[c].to_numpy()
-    # variant-specific DeepCpf1 (seq_deepcpf1variants, e.g. --cas12a_variant AsCas12a)
-    # -> the track's ascas12a_deepcpf1_score column.
+    # variant-specific DeepCpf1 (seq_deepcpf1variants). For the enCas12a track the variant is
+    # the enAsCas12a-HF1 proxy -> encas12a_hf1_score; otherwise it is the AsCas12a variant ->
+    # ascas12a_deepcpf1_score.
     var_cols = [c for c in gRNADF.columns if c.startswith("seq_deepcpf1variants_") and c.endswith("_score")]
     if var_cols:
-        guide_df["ascas12a_deepcpf1_score"] = gRNADF[var_cols[0]].to_numpy()
+        var_target = "encas12a_hf1_score" if enzyme == "encas12a" else "ascas12a_deepcpf1_score"
+        guide_df[var_target] = gRNADF[var_cols[0]].to_numpy()
 
-    # The ascas12a track uses a TTTV-only off-target index, so no TTTT off-targets exist
-    # and no genome PAM lookup is needed. The legacy dual track scores AsCas12a PAM-blind
-    # against a TTTN index, so it reads the reference PAM to exclude TTTT off-targets
-    # (Layer 2 + Layer 3); needs an indexed FASTA (.fai).
+    # The ascas12a track uses a TTTV-only off-target index, so no TTTT off-targets exist and no
+    # genome PAM lookup is needed. enCas12a REQUIRES the reference FASTA: each off-target's PAM
+    # is reconstructed to weight the four guidescan specificities. The legacy dual track scores
+    # AsCas12a PAM-blind against a TTTN index and reads the PAM to exclude TTTT (Layer 2/3).
     if enzyme == "ascas12a":
         genome_fa = None
+    elif enzyme == "encas12a":
+        genome_fa = getattr(args, "ucscgb_genome", None)
+        if not genome_fa:
+            raise ValueError(
+                "\n\t--ucscgb_enzyme encas12a requires --ucscgb_genome (the reference FASTA) to "
+                "reconstruct each off-target's PAM for the activity-weighted specificities.\n"
+            )
+        if not os.path.exists(genome_fa):
+            raise FileNotFoundError(f"\n\t--ucscgb_genome not found: {genome_fa}\n")
+        if not os.path.exists(genome_fa + ".fai"):
+            print(f"\n\tUCSC track: indexing {genome_fa} (samtools faidx) for the enCas12a PAM lookup\n", flush=True)
+            subprocess.run(["samtools", "faidx", genome_fa], check=True)
     else:
         genome_fa = getattr(args, "ucscgb_genome", None)
         if genome_fa and getattr(args, "ucscgb_2xnls", True):
@@ -661,6 +703,7 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
             )
 
     _t_asm = time.time()
+    build_enzyme = enzyme if enzyme in ("ascas12a", "encas12a") else None
     art = ucsc_track.build_track(
         guide_df,
         enum_out,
@@ -670,7 +713,9 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         blank_threshold=args.ucscgb_blank_threshold,
         run_tools=True,
         genome_fa=genome_fa,
-        enzyme=("ascas12a" if enzyme == "ascas12a" else None),
+        enzyme=build_enzyme,
+        encas12a_weights=getattr(args, "ucscgb_encas12a_weights", None),
+        encas12a_list_floor=args.ucscgb_cfd_threshold,
     )
     print(f"\n\t[TIMING] track assembly (sort+stream+bigBed+bgzip): {time.time() - _t_asm:.1f}s", flush=True)
     print("\n\tUCSC Cas12a track written:")
@@ -813,8 +858,11 @@ def run_ucscgb_chunked(args: argparse.Namespace) -> None:
     # 4. merge per-chunk tracks (order arbitrary; the merge re-sorts the bigBed)
     track_dirs = sorted(t for t in track_dirs if t)
     # per-enzyme track filenames (must match what build_track wrote in each chunk)
-    if getattr(args, "ucscgb_enzyme", "ascas12a") == "ascas12a":
+    _chunk_enzyme = getattr(args, "ucscgb_enzyme", "ascas12a")
+    if _chunk_enzyme == "ascas12a":
         as_name, bb_name, details_name = "ascas12aTargets.as", "ascas12a.bb", "ascas12a_crisprDetails.tab"
+    elif _chunk_enzyme == "encas12a":
+        as_name, bb_name, details_name = "encas12aTargets.as", "encas12a.bb", "encas12a_crisprDetails.tab"
     else:
         as_name, bb_name, details_name = ucsc_track.AS_NAME, ucsc_track.BB_NAME, ucsc_track.DETAILS_NAME
     as_file = os.path.join(track_dirs[0], as_name)
@@ -932,6 +980,20 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
     gRNADF = pd.read_csv(args.grna_bed, delimiter="\t", header=0)
     final_columns = gRNADF.columns.tolist() + ["sequence"]
     final_columns.remove("id,sequence,pam,chromosome,position,sense")
+
+    # --ucscgb track mode: a genomic site is one feature. Some multi-PAM guide sets (e.g.
+    # enCas12a) emit exact-duplicate rows for a site; drop them so the site is scanned,
+    # scored, and drawn once (and the off-target Mode-1 / track id index stays unique).
+    if args.ucscgb:
+        _composite = "id,sequence,pam,chromosome,position,sense"
+        _before = len(gRNADF)
+        gRNADF = gRNADF.drop_duplicates(subset=[_composite]).reset_index(drop=True)
+        if len(gRNADF) < _before:
+            print(
+                f"\n\t--ucscgb: dropped {_before - len(gRNADF):,} exact-duplicate guide rows "
+                f"({_before:,} -> {len(gRNADF):,}); a genomic site is one track feature.\n",
+                flush=True,
+            )
 
     if args.drop_duplicates:
         print(f"\n\tBefore dropping duplicates:\t{len(gRNADF)}")

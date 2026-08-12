@@ -48,6 +48,7 @@ include = ["crisprware*", "parasol_scripts*"]
 
 [tool.setuptools.package-data]
 "crisprware.scorers" = ["weights/*.h5", "weights/*.joblib"]
+"crisprware" = ["data/*.tsv"]
 
 [tool.setuptools]
 script-files = [
