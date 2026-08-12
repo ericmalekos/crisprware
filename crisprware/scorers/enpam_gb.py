@@ -447,9 +447,18 @@ def load_model(weights_path: Optional[str] = None):
             pass
         model = joblib.load(path)
     _upgrade_estimator_attrs(model)
-    # sklearn >= 1.6 reads `_loss` (was `loss_` through 1.5); alias if absent.
-    if not hasattr(model, "_loss") and hasattr(model, "loss_"):
-        model._loss = model.loss_
+    # sklearn's GBR loss handling churns across versions; ensure a usable `_loss`.
+    # 1.6+ reads `_loss`; <=1.5 had `loss_`. A model pickled by an older sklearn
+    # (e.g. 1.0.2) loaded under a newer one (e.g. 1.1.3) can have neither usable, so
+    # fall back to the portable least-squares stub (enPAM+GB is a least-squares GBR;
+    # get_init_raw_predictions returns init_.predict(X), bit-exact).
+    if not hasattr(model, "_loss"):
+        try:
+            model._loss = model.loss_
+        except Exception:
+            pass
+    if not hasattr(model, "_loss") or not hasattr(model._loss, "get_init_raw_predictions"):
+        model._loss = PortableSquaredLoss()
     return model
 
 
