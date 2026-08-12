@@ -68,7 +68,7 @@ crispr-ots --version   # scanner on PATH
 
 ```bash
 docker pull ericmalekos/crisprware:latest
-docker run crisprware -h
+docker run ericmalekos/crisprware:latest crisprware -h
 ```
 
 ## Memory

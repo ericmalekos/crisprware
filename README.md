@@ -7,7 +7,7 @@ CRISPRware is a toolkit to preprocess NGS data and identify, score, and rank gui
 CRISPR experiments. It supports RNA-seq, Ribo-seq, ATAC-seq, DNase-seq, ChIP-seq, and other genomic
 preprocessing.
 
-**v0.2**: 12 in-tree on-target scorers spanning SpCas9 and Cas12a (all bit-equivalence-tested against
+**v0.3**: 12 in-tree on-target scorers spanning SpCas9 and Cas12a (all bit-equivalence-tested against
 their upstream references), plus an in-tree Rust off-target backend (`crispr-ots`, ~6x faster than the
 previous `guidescan` shell-out) with bundled Cas12a CFD matrices. `--cas9_scorer` and `--cas12a_scorer`
 accept multiple values, so one call can emit any combination of scores.

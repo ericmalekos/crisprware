@@ -19,6 +19,9 @@ chrIII 1482   1502   chrIII:1483:+,GGAATGTACTTCTTCCCAAA,NGG,chrIII,1483,+   TGTT
 ## Options you reach for
 
 - `-p/--pam NGG` (any IUPAC code, auto-expanded), `-l/--sgRNA_length 20`.
+- `--pam_list_file <file>` -- read the PAM set from a file (whitespace/comma/newline separated, `#`
+  comments) instead of a single `-p/--pam` IUPAC pattern; for PAM sets that are not one IUPAC motif
+  (e.g. the enCas12a 15-PAM on-target set). Mutually exclusive with `-p/--pam`.
 - `-w/--context_window <up> <down>` -- flanking context for scoring (`4 6` for RuleSet3; Cas12a uses
   `-w 4 3` with `--pam_5_prime`).
 - **Where**: `-k/--locations_to_keep <bed/gtf>` + `--feature CDS` (keep guides cutting here),

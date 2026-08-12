@@ -2,7 +2,7 @@
 project = "CRISPRware"
 author = "Eric Malekos"
 copyright = "2026, Eric Malekos"
-release = "0.2"
+release = "0.3.0"
 
 extensions = [
     "myst_parser",  # author pages in Markdown

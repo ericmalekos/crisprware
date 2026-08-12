@@ -1,16 +1,47 @@
 # Score and assemble the track
 
-One command does everything: on-target scoring, off-target enumeration under both CFD matrices, and
+One command does everything: on-target scoring, off-target enumeration under the enzyme's CFD matrix, and
 assembly of the three browser files. With `--ucscgb_chunk_max` it also **chunks the genome, fans the
-off-target passes across every allocated GPU, and merges the pieces** into a single track.
+off-target passes across every allocated GPU, and merges the pieces** into a single track. Pick the
+nuclease with `--ucscgb_enzyme`.
 
+::::{tab-set}
+
+:::{tab-item} AsCas12a (default)
 ```bash
 crisprware score_guides \
   -b $PROJ/hg38_primary_chr_gRNA/hg38_primary_chr_gRNA.bed \
   -i $PROJ/hg38_primary_chr_crisprots/hg38_primary_chr_crisprots \
-  --cas12a_scorer deepcpf1 enpam_gb enseq_deepcpf1 seq_deepcpf1variants \
+  --ucscgb_enzyme ascas12a \
+  --cas12a_scorer deepcpf1 seq_deepcpf1variants \
   --cas12a_variant AsCas12a \
-  --ucscgb $PROJ/track_hg38_cas12a \
+  --ucscgb $PROJ/track_hg38_ascas12a \
+  --chrom_sizes $PROJ/hg38.chrom.sizes \
+  --crispr_ots_bin $BIN \
+  --ucscgb_scanner gpu \
+  --ucscgb_cfd_threshold 0.023 \
+  --ucscgb_list_cap 1000 \
+  --ucscgb_blank_threshold 0 \
+  --mismatches 4 \
+  --threads 8 \
+  --ucscgb_chunk_max 3000000 \
+  -o $PROJ
+```
+`ascas12a` is the default, so `--ucscgb_enzyme ascas12a` may be omitted. `-i` is the **`TTTV`** index.
+**No `--ucscgb_genome`** is needed (it is ignored for AsCas12a): a TTTV index has no TTTT off-targets to
+exclude. The two on-target columns are **DeepCpf1** and the **AsCas12a seq-DeepCpf1 variant**
+(`--cas12a_scorer deepcpf1 seq_deepcpf1variants --cas12a_variant AsCas12a`).
+:::
+
+:::{tab-item} enCas12a
+```bash
+crisprware score_guides \
+  -b $PROJ/hg38_primary_chr_gRNA/hg38_primary_chr_gRNA.bed \
+  -i $PROJ/encas12a/hg38_primary_chr_crisprots/hg38_primary_chr_crisprots \
+  --ucscgb_enzyme encas12a \
+  --cas12a_scorer enpam_gb seq_deepcpf1variants \
+  --cas12a_variant enAsCas12a-HF1 \
+  --ucscgb $PROJ/track_hg38_encas12a \
   --chrom_sizes $PROJ/hg38.chrom.sizes \
   --ucscgb_genome $PROJ/hg38_primary_chr.fna \
   --crispr_ots_bin $BIN \
@@ -23,27 +54,43 @@ crisprware score_guides \
   --ucscgb_chunk_max 3000000 \
   -o $PROJ
 ```
+`-i` is the **`fa>0.3`** index. enCas12a **requires** `--ucscgb_genome` (the FASTA the index was built
+from): each off-target's PAM is reconstructed from it to weight the four guidescan specificities. The two
+on-target columns are **EnPAM-GB** and the **seq-DeepCpf1 enAsCas12a-HF1** variant
+(`--cas12a_scorer enpam_gb seq_deepcpf1variants --cas12a_variant enAsCas12a-HF1`).
+:::
+
+::::
 
 ## Flags, grouped
 
 **Inputs**
-: `-b` guide BED (from step 2). `-i` the off-target index (from step 1). `--chrom_sizes` for `bedToBigBed`.
-  `--crispr_ots_bin` the GPU engine.
+: `-b` guide BED (from step 2). `-i` the off-target index (from step 1), given as the prefix without the
+  `.crot` extension. `--chrom_sizes` for `bedToBigBed`. `--crispr_ots_bin` the GPU engine.
 
-**On-target scores** (four columns in the bigBed)
-: `--cas12a_scorer deepcpf1 enpam_gb enseq_deepcpf1 seq_deepcpf1variants` with
-  `--cas12a_variant AsCas12a` produces **DeepCpf1**, **EnPAM-GB**, **EnCas12a-DeepCpf1**, and
-  **AsCas12a-DeepCpf1**.
+**Enzyme**
+: `--ucscgb_enzyme {ascas12a, encas12a, dual}` picks the track. `ascas12a` (default) scores AsCas12a
+  (2xNLS) against a `TTTV` index (one specificity, no TTTN/enCas12a columns). `encas12a` scores enCas12a
+  against the broad `fa>0.3` index (four guidescan specificities) and requires `--ucscgb_genome`. `dual`
+  is the legacy both-nucleases track.
+
+**On-target scores** (two columns in the bigBed)
+: **AsCas12a** -- `--cas12a_scorer deepcpf1 seq_deepcpf1variants --cas12a_variant AsCas12a` produces
+  **DeepCpf1** (Kim 2018) and the **AsCas12a-DeepCpf1** seq-variant (Chen 2025). **enCas12a** --
+  `--cas12a_scorer enpam_gb seq_deepcpf1variants --cas12a_variant enAsCas12a-HF1` produces **EnPAM-GB**
+  and the **enAsCas12a-HF1** seq-variant.
 
 **Off-target scoring**
 : `--ucscgb` is the switch that emits the UCSC track (its value is the output track dir). The pass runs
-  the engine with **two CFD matrices** (enCas12a + AsCas12a/2xNLS, the second is on by default), giving
-  both nucleases' specificity. `--mismatches 4` is the search radius. `--ucscgb_genome` (the FASTA the
-  index was built from) enables the **AsCas12a TTTV correction**: AsCas12a cannot cleave a TTTT PAM, but
-  the scanner scores its CFD PAM-blind, so the reference PAM of each off-target is read from the FASTA to
-  zero the AsCas12a CFD of TTTT off-targets in the details popup and to drive the AsCas12a close-off-target
-  grey from **TTTV-only** mismatch counts. Omit it and AsCas12a off-target scores fall back to the enCas12a
-  (TTTN) basis (a warning prints); a `.fai` is built automatically if missing.
+  the engine with **one CFD matrix** for the chosen enzyme (`cfd-cas12a:2xnls` for AsCas12a,
+  `cfd-cas12a:encas12a` for enCas12a). `--mismatches 4` is the search radius. `--ucscgb_genome` (the
+  FASTA the index was built from) is **required for enCas12a**: each off-target's reference PAM is read
+  to weight the four guidescan specificities `1 / (on_count + sum of off-target CFD [x PAM-activity
+  weight])`, at the `fa>0.6` and `fa>0.3` activity cutoffs, raw and PAM-weighted (the `fa>0.3`
+  PAM-weighted column drives the score and color). For enCas12a the scan is run **unfloored**
+  internally, so those specificity sums are exact; `--ucscgb_cfd_threshold` then floors only the
+  displayed popup list. `--ucscgb_genome` is **ignored for AsCas12a** (a TTTV index needs no PAM lookup);
+  a `.fai` is built automatically if missing.
 
 **Off-target list shaping**
 : `--ucscgb_cfd_threshold 0.023` floors which off-targets are *listed* (counts are unfloored).

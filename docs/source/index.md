@@ -41,6 +41,13 @@ reading_the_track/index
 ```
 
 ```{toctree}
+:caption: Cross-strain tracks
+:maxdepth: 1
+
+cross_strain_tracks
+```
+
+```{toctree}
 :caption: Reference
 :maxdepth: 1
 

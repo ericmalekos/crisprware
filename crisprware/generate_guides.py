@@ -84,7 +84,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "-3",
         "--active_site_offset_3",
         type=int,
-        help="Where cut occurs relative to PAM 5' end. [default: -2] \
+        help="Where cut occurs relative to PAM 5' end. \
             To avoid error, use '=' sign when passing a negative number, \
             e.g. --active_site_offset_3=-3 [default: -4]",
         default="-4",
@@ -210,7 +210,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Whether to output bed coordinates at the active site \
         rather than the coordinates of the entire protospacer. For purposes \
         of keeping or discarding sgRNAs, overlap with the active site \
-        coordinates will be used regardless [default: True]",
+        coordinates will be used regardless [default: False]",
         default=False,
         action="store_true",
     )

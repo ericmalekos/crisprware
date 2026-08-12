@@ -23,8 +23,9 @@ chrIII 574162  574182  +      TAAGCTTAGTACTTATGAGG 0.9041              1.0      
   5UTR, ...). `-n/--number_of_guides` per target, `--min_spacing` between picks.
 - **Filter** (`-c` columns paired with `-m` minimums): e.g. `-c RS3_score_Chen2013 specificity_idx
   -m 0 0.2`. `-p/--percentile_range lo hi` restricts position within the feature.
-- **Rank** (`-r` columns, optional `-w/--column_weights`): combined into a weighted score;
-  `--normalize_columns` scales each to 0-1 first.
+- **Rank** (`-r` columns, optional `-w/--column_weights`): combined into a weighted score. Each
+  ranked column is min-max scaled to 0-1 first **by default**; pass `--normalize_columns` to turn
+  that off (it is an inverted flag, setting it *disables* normalization).
 - `--output_all` / `--plot_histogram` -- write the intermediate TSV (and histograms) at each filter
   stage, useful for tuning thresholds.
 

@@ -1,7 +1,7 @@
 # Reading the track
 
-What the built files actually contain: the 23 bigBed columns, how the scores and colors are encoded, and
-the off-target records a click pulls up.
+What the built files actually contain: the columns of the selected enzyme's track, how the scores and
+colors are encoded, and the off-target records a click pulls up.
 
 ```{toctree}
 :maxdepth: 1

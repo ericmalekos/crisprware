@@ -18,4 +18,5 @@ and the scoring method(s) you used:
 | DeepSpCas9 | [Kim 2019](https://www.science.org/doi/10.1126/sciadv.aax9249) |
 | enPAM+GB | [DeWeirdt 2021](https://www.nature.com/articles/s41587-020-0600-6) |
 | DeepCpf1 | [Kim 2018](https://www.nature.com/articles/nbt.4061) |
+| enseq-DeepCpf1 / seq-DeepCpf1variants | Chen 2025 |
 | Guidescan2 | [Schmidt 2023](https://www.biorxiv.org/content/10.1101/2022.05.02.490368v1) |
