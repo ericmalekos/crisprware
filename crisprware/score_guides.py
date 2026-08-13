@@ -282,6 +282,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "are unaffected — they come from the unfloored Mode-1 totals). [default: 0.023]",
     )
     ucsc.add_argument(
+        "--ucscgb_max_ot_per_bin",
+        type=int,
+        default=-1,
+        help="For --ucscgb_enzyme encas12a: cap on off-targets per (guide, mismatch-count) bin in "
+        "the scan. -1 (default) is uncapped/exact and fine for small genomes; set a bound (e.g. 2000) "
+        "on repetitive genomes (hg38) where low-complexity guides otherwise enumerate 100k+ "
+        "off-targets and make the scan intractable. Unique/specific guides (few off-targets) stay "
+        "exact; only pathological non-specific guides are bounded. [default: -1]",
+    )
+    ucsc.add_argument(
         "--ucscgb_list_cap",
         type=int,
         default=100,
@@ -619,10 +629,13 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         str(scan_cfd_threshold),
     ]
     if enzyme == "encas12a":
-        # The four guidescan specificities are summed over EVERY off-target, so the
-        # per-guide off-target set must be complete (not saturated at a per-bin cap) --
-        # the spec has to penalize many-off-target guides, not cap them off.
-        cmd += ["--max-off-targets-per-bin", "-1"]
+        # The four guidescan specificities sum over the per-guide off-target set. Uncapped (-1)
+        # is exact and fine at small scale, but repetitive genomes (hg38) have low-complexity
+        # guides with 100k+ off-targets at mm=4 that make an uncapped scan intractable.
+        # --ucscgb_max_ot_per_bin caps the per-(guide, mismatch) off-target set: unique/specific
+        # guides (few off-targets) stay exact; only pathological non-specific guides are bounded
+        # (they are greyed either way). Set e.g. 2000 on large genomes; -1 for small/exact runs.
+        cmd += ["--max-off-targets-per-bin", str(getattr(args, "ucscgb_max_ot_per_bin", -1))]
     cmd += [
         "--kmers-file",
         kmers_path,
