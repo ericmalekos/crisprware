@@ -98,26 +98,64 @@ def test_offtarget_browser_pos_and_offset_seek(tmp_path):
     # header at byte 0; the recorded offset points at g_uniq's line
     line = raw[off:].split(b"\n", 1)[0].decode()
     counts, lst = line.split("\t")
-    assert counts == "0,1,0,2,0"  # mismatch_counts ; -> ,
+    # The histogram counts the off-targets that are actually listed, NOT Mode-1's
+    # totals. Mode-1 reports 0;1;0;2;0 (3 hits) but one of the two mm=3 hits is
+    # below the scan's CFD floor and never reaches Mode-2, so it is neither shown
+    # nor counted (Cas9/CRISPOR convention).
+    assert counts == "0,1,0,1,0"
     # off-targets sorted by score desc; pos = crispr-ots start for BOTH strands
     # (the full 27-nt site's leftmost base): + at 500, - at 800.
     entries = lst.split("|")
     assert entries[0] == "chr1;500+;800"  # cfd 0.80 -> 800; + strand pos=start
     assert entries[1] == "chr3;800-;300"  # cfd 0.30 -> 300; - strand pos=start (was start+3)
-    # sum of listed strong off-targets <= sum of mismatch counts (=3)
-    assert len(entries) <= sum(int(x) for x in counts.split(","))
+    # The invariant the browser relies on: every counted off-target is shown.
+    assert sum(int(x) for x in counts.split(",")) == len(entries)
 
 
 def test_blank_list_when_too_many(tmp_path):
     prefix = str(tmp_path / "off.csv")
     _write_enum(prefix)
-    # off_target_count 3 > blank_threshold 1 -> list blanked, counts kept
+    # off_target_count 3 > blank_threshold 1 -> list blanked. The histogram keeps
+    # the true above-floor totals (2), which is what makes the browser print its
+    # "too many off-targets" message instead of showing a truncated list.
     art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), blank_threshold=1, run_tools=False)
     raw = open(art["details_tab"], "rb").read().decode()
     body = raw.split("\n", 1)[1]
     counts, lst = body.split("\n")[0].split("\t")
-    assert counts == "0,1,0,2,0"
+    assert counts == "0,1,0,1,0"
     assert lst == ""  # blanked
+
+
+def test_over_cap_emits_empty_list_with_full_histogram(tmp_path):
+    """Over the per-guide cap, follow Cas9: empty list, true above-floor counts.
+
+    A truncated list would silently contradict the histogram; an empty one tells
+    the browser to show the "use the Crispor.org link" message.
+    """
+    prefix = str(tmp_path / "off.csv")
+    _write_enum(prefix)
+    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), list_cap=1, run_tools=False)
+    body = open(art["details_tab"]).read().split("\n", 1)[1]
+    counts, lst = body.split("\n")[0].split("\t")
+    assert lst == ""  # 2 off-targets > cap of 1 -> not truncated to 1, emptied
+    assert counts == "0,1,0,1,0"  # still the true above-floor histogram
+
+    # At a cap that fits, the list is shown and the invariant holds exactly.
+    art2 = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path / "b"), list_cap=2, run_tools=False)
+    counts2, lst2 = open(art2["details_tab"]).read().split("\n", 1)[1].split("\n")[0].split("\t")
+    assert sum(int(x) for x in counts2.split(",")) == len(lst2.split("|")) == 2
+
+
+def test_all_offtargets_below_floor_report_zero(tmp_path):
+    """A guide whose hits are all sub-floor counts zero, not Mode-1's total."""
+    prefix = str(tmp_path / "off.csv")
+    _write_enum(prefix)
+    open(prefix + ".ot.tsv", "w").write("guide_id\tchrom\tstart\tstrand\tmm\tcfd\n")  # no Mode-2 rows
+    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), run_tools=False)
+    body = open(art["details_tab"]).read().split("\n", 1)[1]
+    counts, lst = body.split("\n")[0].split("\t")
+    assert lst == ""
+    assert counts == "0,0,0,0,0"  # not Mode-1's "0,1,0,2,0"
 
 
 def _write_fasta(path, contigs):

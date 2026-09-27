@@ -20,9 +20,18 @@ Coordinate conventions (validated against hg38, both strands):
   for **both strands**. The viewer fetches ``[pos, pos+27)``, reverse-complements
   on the ``-`` strand, and reads a 4-nt PAM + the full 23-nt match.
 
-The ``_mismatchCounts`` come from Mode-1 (true per-bucket totals, no CFD floor);
-the ``_crisprOfftargets`` list comes from Mode-2 (floored at the run's
-``--cfd-threshold``), sorted by score and capped per guide for disk control.
+``_mismatchCounts`` and ``_crisprOfftargets`` describe the SAME population: both
+are built from the Mode-2 stream (floored at the run's ``--cfd-threshold``), so
+``sum(_mismatchCounts) == len(_crisprOfftargets)`` for every listed guide. This
+is the Cas9/CRISPOR convention: an off-target below the floor is neither listed
+nor counted. The exception, also per Cas9, is a guide with too many off-targets
+to show (over the per-guide cap, or over ``blank_threshold``): the list is
+emitted empty and the histogram still reports the true above-floor totals, which
+is what makes the browser print its "too many off-targets" message.
+
+Per-guide specificity is deliberately NOT reconstructible from these two fields:
+it sums every off-target including sub-floor ones (as MIT specificity does for
+Cas9).
 """
 
 from __future__ import annotations
@@ -333,6 +342,14 @@ def _build_details(
     score desc). ``list_cap <= 0`` keeps the full list; ``blank_threshold <= 0``
     never blanks. Guides with no line get _offset 0 ("No off-targets found").
 
+    ``mismatchCounts`` is binned from the SAME floored off-targets that the list
+    shows, not from Mode-1, so ``sum(counts) == len(list)`` per guide (Cas9
+    convention; Mode-1 totals include sub-floor hits the popup would never
+    display). A guide over ``list_cap`` or ``blank_threshold`` emits an empty
+    list while keeping its true above-floor histogram, so the browser shows its
+    "too many off-targets" message instead of a silently truncated list. Bin
+    width follows Mode-1's histogram width.
+
     ``offsets`` maps ``id -> uncompressed byte offset``. When ``genome`` is given the
     AsCas12a per-off-target CFD (``cfd2``) is zeroed for TTTT off-targets (Layer 2;
     AsCas12a does not cleave them) and ``tttv_mm`` maps ``id -> [mm0, mm1, mm2]`` over
@@ -356,11 +373,24 @@ def _build_details(
     seen: set = set()
     have_ot = os.path.exists(mode2_path) and os.path.getsize(mode2_path) > 0
 
+    # Histogram width = Mode-1's bin count (max_mismatches + 1); Mode-1 supplies
+    # the shape only, never the totals (those are re-binned from the floored
+    # Mode-2 off-targets below).
+    _widths = [s.count(";") + 1 for s in counts_by_id.values() if s]
+    nbins = max(_widths) if _widths else 5
+    zero_hist = ",".join(["0"] * nbins)
+
+    def _hist(mms) -> str:
+        b = [0] * nbins
+        for mm in mms:
+            if 0 <= mm < nbins:
+                b[mm] += 1
+        return ",".join(str(x) for x in b)
+
     with open(details_path, "wb") as out:
         out.write(b"_mismatchCounts\t_crisprOfftargets\n")
 
-        def _emit(gid_str: str, lst: str) -> None:
-            counts = counts_by_id.get(gid_str, "").replace(";", ",") or "0"
+        def _emit(gid_str: str, lst: str, counts: str) -> None:
             offsets[gid_str] = out.tell()
             out.write(f"{counts}\t{lst}\n".encode("ascii"))
 
@@ -402,14 +432,21 @@ def _build_details(
                         if not tttt and 0 <= mm < 3:
                             b[mm] += 1
                     tttv_mm[gid_str] = b
+                # Bin the floored off-targets this guide actually has, so the
+                # histogram and the list agree (Cas9 convention).
+                hist = _hist(e[2] for e in entries)
                 oc = oc_by_id.get(gid_str)
                 if blank is not None and oc is not None and oc > blank:
-                    _emit(gid_str, "")
+                    _emit(gid_str, "", hist)
+                    return
+                if cap is not None and len(entries) > cap:
+                    # Too many to show. Cas9 emits an empty list here rather than a
+                    # truncated one; the histogram keeps the true above-floor totals
+                    # and the browser prints its "use the Crispor.org link" message.
+                    _emit(gid_str, "", hist)
                     return
                 entries.sort(key=lambda e: e[1], reverse=True)
-                if cap is not None:
-                    entries = entries[:cap]
-                _emit(gid_str, "|".join(e[0] for e in entries))
+                _emit(gid_str, "|".join(e[0] for e in entries), hist)
 
             def _new_acc() -> dict:
                 return {"c06": 0.0, "w06": 0.0, "c03": 0.0, "w03": 0.0, "n06": 0, "n03": 0}
@@ -471,13 +508,13 @@ def _build_details(
                 _flush(cur, entries, acc)
             os.remove(sorted_path)
 
-        # Guides with off-targets but none in Mode-2 (all below the CFD floor):
-        # keep the counts, empty list. Dropped guides (off_target_count NaN) get
-        # no line -> _offset 0.
+        # Guides whose off-targets are ALL below the CFD floor: nothing to list and,
+        # under the Cas9 convention, nothing to count either -> zero histogram, empty
+        # list. Dropped guides (off_target_count NaN) get no line -> _offset 0.
         for gid_str, oc in oc_by_id.items():
             if gid_str in seen or oc is None or pd.isna(oc) or oc <= 0:
                 continue
-            _emit(gid_str, "")
+            _emit(gid_str, "", zero_hist)
     return offsets, tttv_mm
 
 
