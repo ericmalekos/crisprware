@@ -7,6 +7,7 @@ byte-offset round-trip. No TensorFlow / GPU / UCSC tools required (run_tools=Fal
 """
 
 import os
+import re
 import sys
 
 import pandas as pd
@@ -366,16 +367,21 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
         assert banned not in aso
 
     bed = [line.rstrip("\n").split("\t") for line in open(art["bed"])]
-    assert all(len(r) == 17 for r in bed)  # bed9 + guideSeq,pam,unique,spec,deepcpf1,ascas12a_deepcpf1,_mouseOver,_offset
+    # bed9 + _specColor,guideSeq,pam,unique,spec,deepcpf1,ascas12a_deepcpf1,_mouseOver,_offset
+    assert all(len(r) == 18 for r in bed)
     assert all(r[3] == "" for r in bed)  # name is empty (Cas9-matching), not a click-fragile " "
-    assert all("%" not in r[12] for r in bed)  # AsCas12a_specificity is raw CFD (0-1), not a degenerate percentile
+    assert all("%" not in r[13] for r in bed)  # AsCas12a_specificity is raw CFD (0-1), not a degenerate percentile
     by_score = {int(r[4]): r for r in bed}
     assert set(by_score) == {90, 60, 0}  # score = round(specificity_tttv * 100)
 
+    # itemRgb (r[8]) is the on-target ramp for EVERY guide; the off-target greys live
+    # in _specColor (r[9]) since the Cas9-style split.
     hi, close, dup = by_score[90], by_score[60], by_score[0]
-    assert hi[8] in {"255,100,100", "255,255,0", "0,200,0"}  # spec 0.9, no close OT -> efficiency color
-    assert close[8] == "120,120,120"  # 1-mm close off-target (Mode-1 TTTV counts) -> grey
-    assert dup[8] == "150,150,150" and dup[-1] == "0"  # dropped -> grey, no details line
+    EFF = {"255,100,100", "255,255,0", "0,200,0", "128,128,128"}
+    assert hi[8] in EFF and close[8] in EFF and dup[8] in EFF
+    assert hi[9] == "0,255,0"  # spec 0.9, no close OT -> specific
+    assert close[9] == "120,120,120"  # 1-mm close off-target (Mode-1 TTTV counts) -> grey
+    assert dup[9] == "150,150,150" and dup[-1] == "0"  # dropped -> grey, no details line
 
     hovers = [r[-2] for r in bed]  # _mouseOver
     assert any("AsCas12a Spec" in h for h in hovers)
@@ -575,3 +581,54 @@ def test_encas12a_spec_exact_vs_pilot_formula(tmp_path):
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
 
+
+
+def test_ascas12a_splits_ontarget_and_spec_colors(tmp_path):
+    """itemRgb is on-target only; _specColor carries every off-target signal.
+
+    The blended colour let the greys win, so a guide with a close off-target rendered
+    grey and its efficiency was unreadable. After the split the same guide shows its
+    efficiency in itemRgb and its off-target status in _specColor.
+    """
+    prefix = str(tmp_path / "off.csv")
+    _write_ascas12a_enum(prefix)
+    art = ucsc_track.build_track(
+        _ascas12a_guide_df(), prefix, str(tmp_path), run_tools=False, enzyme="ascas12a"
+    )
+    rows = [l.rstrip("\n").split("\t") for l in open(art["bed"])]
+    aslines = open(art["autosql"]).read()
+
+    # _specColor is declared immediately after itemRgb, before guideSeq (Cas9 order)
+    order = [f for f in ("itemRgb", "_specColor", "guideSeq") if f in aslines]
+    assert order == ["itemRgb", "_specColor", "guideSeq"]
+    assert aslines.index("itemRgb") < aslines.index("_specColor") < aslines.index("guideSeq")
+
+    # field 9 = itemRgb, field 10 = _specColor; both are R,G,B triples
+    for r in rows:
+        for idx in (8, 9):
+            assert re.fullmatch(r"\d{1,3},\d{1,3},\d{1,3}", r[idx]), r[idx]
+
+    # the dropped (non-unique) guide: that signal lives in _specColor now, and itemRgb
+    # is NOT forced to the non-unique grey.
+    dup = next(r for r in rows if int(r[4]) == 0)
+    assert dup[9] == "150,150,150"       # _specColor = non-unique grey
+    assert dup[8] != "150,150,150"       # itemRgb free to show on-target
+
+
+def test_ontarget_and_spec_color_helpers():
+    """The helpers are pure functions of their own axis."""
+    import numpy as np
+    nan = float("nan")
+    eff = np.array([10.0, 60.0, 90.0, nan])
+    assert list(ucsc_track._ontarget_color(eff)) == [
+        "255,100,100", "255,255,0", "0,200,0", "128,128,128"]
+
+    z = np.zeros(4, dtype=int)
+    spec = np.array([0.9, 0.3, 0.1, nan])
+    # no off-targets: colour is driven purely by the specificity tiers
+    assert list(ucsc_track._spec_color(np.array([False]*4), z, z, z, spec)) == [
+        "0,255,0", "90,90,90", "50,50,50", "0,255,0"]
+    # a close (1-mm) off-target overrides the tier; dropped overrides everything
+    one = np.ones(4, dtype=int)
+    assert list(ucsc_track._spec_color(np.array([False]*4), z, one, z, spec)) == ["120,120,120"]*4
+    assert list(ucsc_track._spec_color(np.array([True]*4), z, one, z, spec)) == ["150,150,150"]*4

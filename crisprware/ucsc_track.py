@@ -297,8 +297,41 @@ def _item_rgb(dropped, mm0, mm1, mm2, spec_raw, eff_pct) -> np.ndarray:
     """Color hierarchy (highest priority applied last): efficiency ramp / two-tier
     absolute low-specificity grey (see _spec_eff_color), then grey for close (1/2-mm)
     off-targets, then light grey for non-unique (0-mm / dropped). ``spec_raw`` is the
-    raw AsCas12a-TTTV specificity; ``mm*`` are the (TTTV-restricted for AsCas12a) counts."""
+    raw AsCas12a-TTTV specificity; ``mm*`` are the (TTTV-restricted for AsCas12a) counts.
+
+    Used by the legacy/dual and enCas12a paths. The AsCas12a track instead splits the
+    two axes across ``itemRgb`` and ``_specColor`` (see _ontarget_color/_spec_color)."""
     out = _spec_eff_color(spec_raw, eff_pct)
+    out = np.where((mm1 > 0) | (mm2 > 0), "120,120,120", out)
+    out = np.where(dropped | (mm0 > 0), "150,150,150", out)
+    return out
+
+
+def _ontarget_color(eff_pct) -> np.ndarray:
+    """PURE on-target efficiency ramp, the Cas9 ``reserved``/Doench-2016 role:
+    red/yellow/green on the AsCas12a-DeepCpf1 percentile.
+
+    Deliberately carries NO specificity or uniqueness signal. In the blended
+    ``_item_rgb`` the greys win, so a guide with a close off-target renders grey and
+    its on-target efficiency is invisible; splitting the axes makes efficiency
+    readable for every guide. All the off-target signal moves to _spec_color.
+    Missing efficiency -> neutral grey (distinct from the ramp's three colors)."""
+    ep = np.asarray(eff_pct, dtype=float)
+    out = np.where(ep <= 50, "255,100,100", np.where(ep <= 75, "255,255,0", "0,200,0"))
+    return np.where(np.isnan(ep), "128,128,128", out)
+
+
+def _spec_color(dropped, mm0, mm1, mm2, spec_raw) -> np.ndarray:
+    """Specificity color, the Cas9 ``_specColor``/MIT-specificity role: green above the
+    "good" line, then the two ABSOLUTE low-specificity grey tiers, then grey for close
+    (1/2-mm) off-targets, then light grey for non-unique (0-mm / dropped).
+
+    This is every off-target signal ``itemRgb`` used to carry, so the split relocates
+    information rather than dropping it. ``spec_raw`` is the raw AsCas12a-TTTV
+    specificity; missing -> treated as fully specific (not greyed), as elsewhere."""
+    sr = np.where(np.isnan(spec_raw), 1.0, spec_raw)
+    out = np.where(sr >= SPEC_GREY_MARGINAL, "0,255,0", "90,90,90")  # marginal 0.20-0.50
+    out = np.where(sr < SPEC_GREY_BAD, "50,50,50", out)  # bad < 0.20 (overrides marginal)
     out = np.where((mm1 > 0) | (mm2 > 0), "120,120,120", out)
     out = np.where(dropped | (mm0 > 0), "150,150,150", out)
     return out
@@ -551,12 +584,18 @@ def secondary_specificity_suffixes(columns: Sequence[str]) -> list[str]:
 
 
 def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
-    """autoSql for the single-enzyme **AsCas12a** track: bed9 + guideSeq/pam + a
-    single ``unique`` flag + one ``AsCas12a_specificity`` column + one column per
-    on-target model in ``ontarget_cols`` + the ``_mouseOver``/``_offset`` trailer.
-    AsCas12a is scored against a TTTV-only off-target index, so there is NO TTTN
-    column and NO enCas12a column. Column order MUST match the BED written by
-    :func:`build_track` with ``enzyme="ascas12a"``."""
+    """autoSql for the single-enzyme **AsCas12a** track: bed9 + ``_specColor`` +
+    guideSeq/pam + a single ``unique`` flag + one ``AsCas12a_specificity`` column +
+    one column per on-target model in ``ontarget_cols`` + the ``_mouseOver``/``_offset``
+    trailer. AsCas12a is scored against a TTTV-only off-target index, so there is NO
+    TTTN column and NO enCas12a column.
+
+    Following the Cas9 track, the two axes get their own colors: ``itemRgb`` is the
+    on-target efficiency ramp (Cas9's ``reserved``/Doench-2016 role) and ``_specColor``
+    carries the specificity and uniqueness greys (Cas9's MIT-specificity role). Color
+    fields sit directly after ``itemRgb``, before ``guideSeq``, as Cas9 orders them.
+    Column order MUST match the BED written by :func:`build_track` with
+    ``enzyme="ascas12a"``."""
     head = [
         "table AsCas12aTargets",
         '"CRISPR AsCas12a (WT/2xNLS) guides, genome wide (bed9 + extra; TTTV off-target search; off-targets in external bgzip tab file)"',
@@ -569,7 +608,8 @@ def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
         '    char[1] strand;       "+ or -"',
         '    uint    thickStart;   "Start of protospacer (thick);"',
         '    uint    thickEnd;     "End of protospacer (thick)"',
-        '    uint    itemRgb;      "Display color R,G,B"',
+        '    uint    itemRgb;      "DeepCpf1 on-target efficiency color R,G,B"',
+        '    string  _specColor;   "AsCas12a-TTTV specificity color R,G,B"',
         '    string  guideSeq;     "Guide sequence"',
         '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
     ]
@@ -849,7 +889,9 @@ def build_track(
         # grey uses them directly -- no genome re-derivation.
         buckets = _mismatch_buckets(g["mismatch_counts"])
         mm0, mm1, mm2 = buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy()
-        item_rgb = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), ramp_pct)
+        # Cas9-style split: itemRgb = on-target only, _specColor = every off-target signal.
+        item_rgb = _ontarget_color(ramp_pct)
+        spec_color = _spec_color(dropped, mm0, mm1, mm2, spec.to_numpy())
 
         def _hover_as(i):
             if dropped[i]:
@@ -873,6 +915,7 @@ def build_track(
             "thickStart": thick_start,
             "thickEnd": thick_end,
             "itemRgb": item_rgb,
+            "_specColor": spec_color,
             "guideSeq": g["guideSeq"].to_numpy(),
             "pam": g["pam"].to_numpy(),
             "unique": unique,
