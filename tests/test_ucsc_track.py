@@ -374,11 +374,12 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
     by_score = {int(r[4]): r for r in bed}
     assert set(by_score) == {90, 60, 0}  # score = round(specificity_tttv * 100)
 
-    # itemRgb (r[8]) is the on-target ramp for EVERY guide; the off-target greys live
-    # in _specColor (r[9]) since the Cas9-style split.
+    # itemRgb (r[8]) keeps the Cas9 default blended scheme; _specColor (r[9]) is the
+    # additional specificity-only coloring.
     hi, close, dup = by_score[90], by_score[60], by_score[0]
-    EFF = {"255,100,100", "255,255,0", "0,200,0", "128,128,128"}
-    assert hi[8] in EFF and close[8] in EFF and dup[8] in EFF
+    assert hi[8] in {"255,100,100", "255,255,0", "0,200,0"}  # spec 0.9, no close OT -> efficiency color
+    assert close[8] == "120,120,120"  # 1-mm close off-target (Mode-1 TTTV counts) -> grey
+    assert dup[8] == "150,150,150"  # dropped -> grey
     assert hi[9] == "0,255,0"  # spec 0.9, no close OT -> specific
     assert close[9] == "120,120,120"  # 1-mm close off-target (Mode-1 TTTV counts) -> grey
     assert dup[9] == "150,150,150" and dup[-1] == "0"  # dropped -> grey, no details line
@@ -583,12 +584,12 @@ if __name__ == "__main__":
 
 
 
-def test_ascas12a_splits_ontarget_and_spec_colors(tmp_path):
-    """itemRgb is on-target only; _specColor carries every off-target signal.
+def test_ascas12a_specolor_is_additive(tmp_path):
+    """_specColor is an ADDITIONAL specificity-only coloring; itemRgb is unchanged.
 
-    The blended colour let the greys win, so a guide with a close off-target rendered
-    grey and its efficiency was unreadable. After the split the same guide shows its
-    efficiency in itemRgb and its off-target status in _specColor.
+    Cas9 keeps a blended default in reserved/itemRgb (grey by MIT specificity, else a
+    Doench-2016 ramp) and offers _crisprScanColor / _specColor as alternative ways to
+    colour the same guide. So adding _specColor must not repaint the default view.
     """
     prefix = str(tmp_path / "off.csv")
     _write_ascas12a_enum(prefix)
@@ -599,8 +600,6 @@ def test_ascas12a_splits_ontarget_and_spec_colors(tmp_path):
     aslines = open(art["autosql"]).read()
 
     # _specColor is declared immediately after itemRgb, before guideSeq (Cas9 order)
-    order = [f for f in ("itemRgb", "_specColor", "guideSeq") if f in aslines]
-    assert order == ["itemRgb", "_specColor", "guideSeq"]
     assert aslines.index("itemRgb") < aslines.index("_specColor") < aslines.index("guideSeq")
 
     # field 9 = itemRgb, field 10 = _specColor; both are R,G,B triples
@@ -608,21 +607,23 @@ def test_ascas12a_splits_ontarget_and_spec_colors(tmp_path):
         for idx in (8, 9):
             assert re.fullmatch(r"\d{1,3},\d{1,3},\d{1,3}", r[idx]), r[idx]
 
-    # the dropped (non-unique) guide: that signal lives in _specColor now, and itemRgb
-    # is NOT forced to the non-unique grey.
-    dup = next(r for r in rows if int(r[4]) == 0)
-    assert dup[9] == "150,150,150"       # _specColor = non-unique grey
-    assert dup[8] != "150,150,150"       # itemRgb free to show on-target
+    # itemRgb still equals the blended colour it had before _specColor existed
+    import numpy as np
+    for r in rows:
+        spec = float(r[13]) if r[13] not in ("", "NA") else float("nan")
+        expected = ucsc_track._item_rgb(
+            np.array([r[9] == "150,150,150"]), np.array([0]), np.array([0]),
+            np.array([1 if r[9] == "120,120,120" else 0]),
+            np.array([spec]), np.array([float("nan")]),
+        )[0]
+        if r[9] in ("150,150,150", "120,120,120"):
+            assert r[8] == expected
 
 
-def test_ontarget_and_spec_color_helpers():
-    """The helpers are pure functions of their own axis."""
+def test_spec_color_helper():
+    """_spec_color is a pure function of the specificity/off-target axis."""
     import numpy as np
     nan = float("nan")
-    eff = np.array([10.0, 60.0, 90.0, nan])
-    assert list(ucsc_track._ontarget_color(eff)) == [
-        "255,100,100", "255,255,0", "0,200,0", "128,128,128"]
-
     z = np.zeros(4, dtype=int)
     spec = np.array([0.9, 0.3, 0.1, nan])
     # no off-targets: colour is driven purely by the specificity tiers

@@ -299,36 +299,28 @@ def _item_rgb(dropped, mm0, mm1, mm2, spec_raw, eff_pct) -> np.ndarray:
     off-targets, then light grey for non-unique (0-mm / dropped). ``spec_raw`` is the
     raw AsCas12a-TTTV specificity; ``mm*`` are the (TTTV-restricted for AsCas12a) counts.
 
-    Used by the legacy/dual and enCas12a paths. The AsCas12a track instead splits the
-    two axes across ``itemRgb`` and ``_specColor`` (see _ontarget_color/_spec_color)."""
+    Used by EVERY path including AsCas12a: this mirrors the Cas9 default scheme, where
+    grey by specificity wins and the efficiency ramp shows only for specific guides."""
     out = _spec_eff_color(spec_raw, eff_pct)
     out = np.where((mm1 > 0) | (mm2 > 0), "120,120,120", out)
     out = np.where(dropped | (mm0 > 0), "150,150,150", out)
     return out
 
 
-def _ontarget_color(eff_pct) -> np.ndarray:
-    """PURE on-target efficiency ramp, the Cas9 ``reserved``/Doench-2016 role:
-    red/yellow/green on the AsCas12a-DeepCpf1 percentile.
-
-    Deliberately carries NO specificity or uniqueness signal. In the blended
-    ``_item_rgb`` the greys win, so a guide with a close off-target renders grey and
-    its on-target efficiency is invisible; splitting the axes makes efficiency
-    readable for every guide. All the off-target signal moves to _spec_color.
-    Missing efficiency -> neutral grey (distinct from the ramp's three colors)."""
-    ep = np.asarray(eff_pct, dtype=float)
-    out = np.where(ep <= 50, "255,100,100", np.where(ep <= 75, "255,255,0", "0,200,0"))
-    return np.where(np.isnan(ep), "128,128,128", out)
-
-
 def _spec_color(dropped, mm0, mm1, mm2, spec_raw) -> np.ndarray:
-    """Specificity color, the Cas9 ``_specColor``/MIT-specificity role: green above the
-    "good" line, then the two ABSOLUTE low-specificity grey tiers, then grey for close
-    (1/2-mm) off-targets, then light grey for non-unique (0-mm / dropped).
+    """Specificity-ONLY color, the Cas9 ``_specColor`` ALTERNATIVE coloring.
 
-    This is every off-target signal ``itemRgb`` used to carry, so the split relocates
-    information rather than dropping it. ``spec_raw`` is the raw AsCas12a-TTTV
-    specificity; missing -> treated as fully specific (not greyed), as elsewhere."""
+    Cas9 ships three colors per guide: ``reserved``/itemRgb (the default: grey when
+    MIT specificity <= 50, otherwise a Doench-2016 efficiency-percentile ramp) plus
+    two alternatives, ``_crisprScanColor`` (Moreno-Mateos) and ``_specColor`` (MIT
+    specificity). The alternatives are other ways to color the SAME guide, not a
+    decomposition of the default, so this column is purely additive: ``itemRgb``
+    keeps the blended default and a viewer can instead color by specificity alone.
+
+    Green above the "good" line, then the two ABSOLUTE low-specificity grey tiers,
+    then grey for close (1/2-mm) off-targets, then light grey for non-unique (0-mm /
+    dropped). ``spec_raw`` is the raw AsCas12a-TTTV specificity; missing -> treated as
+    fully specific (not greyed), as elsewhere."""
     sr = np.where(np.isnan(spec_raw), 1.0, spec_raw)
     out = np.where(sr >= SPEC_GREY_MARGINAL, "0,255,0", "90,90,90")  # marginal 0.20-0.50
     out = np.where(sr < SPEC_GREY_BAD, "50,50,50", out)  # bad < 0.20 (overrides marginal)
@@ -608,8 +600,8 @@ def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
         '    char[1] strand;       "+ or -"',
         '    uint    thickStart;   "Start of protospacer (thick);"',
         '    uint    thickEnd;     "End of protospacer (thick)"',
-        '    uint    itemRgb;      "DeepCpf1 on-target efficiency color R,G,B"',
-        '    string  _specColor;   "AsCas12a-TTTV specificity color R,G,B"',
+        '    uint    itemRgb;      "Display color R,G,B (specificity grey, else DeepCpf1 efficiency ramp)"',
+        '    string  _specColor;   "Alternative color R,G,B by AsCas12a-TTTV specificity alone"',
         '    string  guideSeq;     "Guide sequence"',
         '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
     ]
@@ -889,8 +881,10 @@ def build_track(
         # grey uses them directly -- no genome re-derivation.
         buckets = _mismatch_buckets(g["mismatch_counts"])
         mm0, mm1, mm2 = buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy()
-        # Cas9-style split: itemRgb = on-target only, _specColor = every off-target signal.
-        item_rgb = _ontarget_color(ramp_pct)
+        # itemRgb keeps the Cas9 default scheme (grey by specificity, else efficiency
+        # ramp); _specColor is the ADDITIONAL specificity-only alternative coloring, so
+        # adding it changes no existing pixel.
+        item_rgb = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), ramp_pct)
         spec_color = _spec_color(dropped, mm0, mm1, mm2, spec.to_numpy())
 
         def _hover_as(i):
