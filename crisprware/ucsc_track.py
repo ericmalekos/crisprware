@@ -916,7 +916,6 @@ def build_track(
     # seq-DeepCpf1 variant (Chen 2025). No enCas12a, no TTTN references, no genome.
     if enzyme == "ascas12a":
         spec = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
-        spec_pct = _pct_of_displayed(spec).to_numpy()
         score = np.clip(np.rint(spec.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
         # percentile per on-target model (score_cols is already the AsCas12a-only set)
         ot_pct = {c: _pct_of_displayed(g[c]).to_numpy() for c in score_cols}
@@ -941,12 +940,22 @@ def build_track(
         deepcpf1_alt_color = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), alt_pct)
         spec_color = _spec_color(dropped, mm0, mm1, mm2, spec.to_numpy())
 
+        # Hover: specificity as the RAW value x100, efficiencies as percentiles. This
+        # follows the Cas9 track, whose hover reads "MIT Spec. Score: 80, Doench 2016:
+        # 91%" with the specificity equal to its `score` column and the efficiency equal
+        # to its `fusiPerc` column (checked: all 165,992 scored hg38 guides agree).
+        #
+        # Specificity must NOT be a percentile here. It is already an absolute 0-to-1
+        # quantity, and ranking it is actively misleading because the distribution is
+        # dominated by one tie: 524,814 of 557,588 ranked sacCer3 guides sit at exactly
+        # 1.0, so that tie's mid-rank is the 53rd percentile and a guide at 0.9997 falls
+        # to the 5th, reading as a terrible guide while `score` says 100. Raw x100 makes
+        # the hover agree with `score` and with `_specColor`, both of which are raw.
         def _hover_as(i):
             if dropped[i]:
                 parts = ["Not unique"]
             else:
-                p = spec_pct[i]
-                parts = [f"AsCas12a Spec: {int(round(p))}" if not np.isnan(p) else "AsCas12a Spec: 100"]
+                parts = [f"AsCas12a Spec: {score[i]}"]
             for c in score_cols:
                 pc = ot_pct[c][i]
                 if not np.isnan(pc):
@@ -1185,7 +1194,10 @@ _RAMP_GREYS = frozenset({b"150,150,150", b"120,120,120", b"90,90,90", b"50,50,50
 REGRADE_SPECS: Dict[str, dict] = {
     "ascas12a": {
         "unique": "unique",
-        "spec": "AsCas12a_specificity",
+        # The hover's specificity is the bed9 ``score`` column read straight back
+        # (raw specificity x100), NOT a rank, so it cannot drift from column 5. Only
+        # the efficiency models below are ranked and therefore need re-grading.
+        "spec_score": "score",
         "spec_label": "AsCas12a Spec",
         "hover": "_mouseOver",
         "models": [
@@ -1253,8 +1265,7 @@ def _regrade_bed_percentiles(
     ramp colour and is the only thing to re-derive."""
     idx = {f: i for i, f in enumerate(fields)}
     lut = {f: _rank_pct(c) for f, c in counts.items()}
-    spec_lut = lut.get(spec["spec"], {})
-    i_spec = idx[spec["spec"]]
+    i_spec = idx[spec["spec_score"]]
     i_uniq = idx[spec["unique"]]
     i_hover = idx[spec["hover"]]
     label_spec = spec["spec_label"].encode()
@@ -1270,13 +1281,13 @@ def _regrade_bed_percentiles(
             if not row:
                 continue
             f = row.split(b"\t")
-            # hover: "Not unique" for a non-unique guide, else the specificity
-            # percentile, then one entry per model that scored.
+            # hover: "Not unique" for a non-unique guide, else the raw specificity
+            # x100 read straight from the score column, then one entry per model that
+            # scored. Specificity is absolute, not ranked, so nothing to re-grade there.
             if f[i_uniq] == b"False":
                 parts = [b"Not unique"]
             else:
-                sp = spec_lut.get(f[i_spec])
-                parts = [label_spec + b": " + b"%d" % round(100.0 if sp is None else sp)]
+                parts = [label_spec + b": " + f[i_spec]]
             for i_raw, i_pct, i_col, label, model_lut in models:
                 pct = model_lut.get(f[i_raw]) if f[i_raw] else None
                 if i_pct is not None:
@@ -1333,7 +1344,7 @@ def merge_ucscgb_tracks(
     spec = REGRADE_SPECS.get(enzyme)
     as_fields = autosql_field_names(as_file)
     if spec is not None:
-        needed = [spec["spec"], spec["unique"], spec["hover"]]
+        needed = [spec["spec_score"], spec["unique"], spec["hover"]]
         needed += [raw for raw, _, _ in spec["models"]] + [col for _, _, col in spec["models"]]
         missing = [f for f in needed if f not in as_fields]
         if missing:
@@ -1344,7 +1355,8 @@ def merge_ucscgb_tracks(
             f"percentiles and efficiency-ramp colours stay ranked WITHIN each chunk, not genome-wide.\n",
             flush=True,
         )
-    count_fields = [spec["spec"]] + [raw for raw, _, _ in spec["models"]] if spec else []
+    # only the ranked columns need a histogram; specificity is absolute
+    count_fields = [raw for raw, _, _ in spec["models"]] if spec else []
     count_idx = {f: as_fields.index(f) for f in count_fields}
     counts: Dict[str, Dict[bytes, int]] = {f: {} for f in count_fields}
 

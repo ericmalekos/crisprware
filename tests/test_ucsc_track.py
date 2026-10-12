@@ -716,10 +716,10 @@ def test_regrade_bed_percentiles_is_genome_wide(tmp_path):
     bed_in.write_text("\n".join(rows) + "\n")
     bed_out = tmp_path / "out.bed"
 
-    counts = {f: {} for f in [spec["spec"]] + [r for r, _, _ in spec["models"]]}
+    counts = {f: {} for f in [r for r, _, _ in spec["models"]]}
     for r in rows:
         f = r.split("\t")
-        for name, i in (("AsCas12a_specificity", 14), ("deepcpf1", 15), ("ascas12aDeepcpf1", 17)):
+        for name, i in (("deepcpf1", 15), ("ascas12aDeepcpf1", 17)):
             v = f[i].encode()
             if v:
                 counts[name][v] = counts[name].get(v, 0) + 1
@@ -748,10 +748,10 @@ def test_regrade_bed_percentiles_is_genome_wide(tmp_path):
 
     # hover is regenerated, not left stale
     assert all("stale" not in r[19] for r in out)
-    # every unique guide here ties at specificity 1.0, and a 6-way tie ranks at
-    # the middle of the tie (58), not at the top: the hover specificity is a
-    # percentile, unlike `score`, which is the raw value x100.
-    assert out[5][19] == f"AsCas12a Spec: 58, DeepCpf1: {expect[5]}, AsCas12a-DeepCpf1: {expect[5]}"
+    # the hover specificity is the raw score column read straight back, so it agrees
+    # with column 5 (100 here) instead of reporting the mid-rank of the 1.0 tie
+    assert out[5][4] == "100"
+    assert out[5][19] == f"AsCas12a Spec: 100, DeepCpf1: {expect[5]}, AsCas12a-DeepCpf1: {expect[5]}"
     assert out[6][19] == "Not unique, DeepCpf1: 100, AsCas12a-DeepCpf1: 100"
 
 
@@ -780,3 +780,28 @@ def test_percentiles_rank_the_displayed_value_in_both_paths():
     # the two values that round together tie, where a full-float rank separates them
     assert from_build[0] == from_build[1]
     assert ucsc_track._pct(raw).tolist()[0] != ucsc_track._pct(raw).tolist()[1]
+
+
+def test_hover_specificity_is_raw_not_a_percentile(tmp_path):
+    """The hover specificity must equal column 5 (raw x100), as on the Cas9 track,
+    whose hover reads "MIT Spec. Score: 80" with score == 80.
+
+    A rank is wrong here: specificity is already absolute, and its distribution is
+    dominated by the perfectly-specific tie, so ranking it reports a low number for
+    a guide the score column calls 100."""
+    prefix = str(tmp_path / "off.csv")
+    _write_enum(prefix)
+    art = ucsc_track.build_track(
+        _guide_df(), prefix, str(tmp_path), run_tools=False, enzyme="ascas12a"
+    )
+    rows = [l.split("\t") for l in open(art["bed"]).read().splitlines()]
+    assert rows
+    for r in rows:
+        # _mouseOver is always the second-to-last field, _offset the last, so this
+        # does not depend on how many on-target models the fixture carries
+        score, hover = r[4], r[-2]
+        if hover.startswith("Not unique"):
+            continue
+        assert hover.startswith(f"AsCas12a Spec: {score},") or hover == f"AsCas12a Spec: {score}", (
+            f"hover {hover!r} disagrees with score {score!r}"
+        )
