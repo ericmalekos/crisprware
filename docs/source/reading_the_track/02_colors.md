@@ -30,7 +30,12 @@ ever visible on guides that are worth using.
 | 6 | `mm1 > 0` or `mm2 > 0` | `120,120,120` | mid grey | has a 1-mm or 2-mm off-target |
 | 7 | not unique (`mm0 > 0`) or dropped | `150,150,150` | light grey | a perfect match exists elsewhere |
 
-Two conventions inside that table are worth stating explicitly, because both differ from a naive
+The ramp percentiles are ranked within each scoring batch of roughly 3 million consecutive guides
+(`--ucscgb_chunk_max`), not genome-wide, so on a large genome two guides on different chromosomes can
+carry the same color from different raw scores. The specificity greys are unaffected: every guide is
+searched against the whole genome.
+
+Two further conventions in that table are worth stating explicitly, because both differ from a naive
 reading:
 
 - **The specificity cutoffs are absolute, not percentile.** They are applied to the raw 0 to 1
