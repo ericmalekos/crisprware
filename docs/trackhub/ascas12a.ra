@@ -1,0 +1,29 @@
+# trackDb stanza for the genome-wide AsCas12a (TTTV) CRISPR target track.
+# Mirrors the Cas9 crisprAll.ra stanza; the differences are flagged inline.
+# Paths assume the track files are installed at /gbdb/$db/ascas12a/.
+track ascas12aTargets
+visibility hide
+shortLabel AsCas12a Targets
+longLabel CRISPR/AsCas12a TTTV- Targets, whole genome
+group genes
+type bigBed 9 +
+html ascas12a
+itemRgb on
+mouseOverField _mouseOver
+# Column 5 is the AsCas12a specificity x100, so the filter runs 0 to 100 as on the
+# Cas9 track (where column 5 is the MIT specificity).
+scoreLabel AsCas12a Guide Specificity Score
+scoreFilterMax 100
+bigDataUrl /gbdb/$D/ascas12a/ascas12a.bb
+# details page is not using a mysql table but a tab-sep file
+detailsTabUrls _offset=/gbdb/$db/ascas12a/ascas12a_crisprDetails.tab
+# Three pre-computed colour schemes, selectable from the "Color by:" dropdown.
+# "default" is column 9 (itemRgb). Both alternatives are plain extra bigBed string
+# fields holding "R,G,B", so this needs no browser-side code: colorFields is a
+# generic trackDb setting. The Cas9 track's second scheme is _crisprScanColor
+# (Moreno-Mateos); the equivalent slot here holds a Cas12a model, so the field is
+# named for what it actually carries.
+colorFields default="Efficiency (DeepCpf1)" _crisprDeepCpf1Color="Efficiency (seq-DeepCpf1 AsCas12a)" _specColor="Off-target specificity (AsCas12a)"
+tableBrowser tbNoGenome
+noGenomeReason This track is too big for whole-genome Table Browser access, it would lead to a timeout in your internet browser. Small regional queries can work, but large regions, such as entire chromosomes, will fail. Please see the CRISPR Track documentation, the section "Data Access", for bulk-download options and remote access via the bedToBigBed tool. API access should always work. Contact us if you encounter difficulties with accessing the data.
+denseCoverage 0

@@ -8,4 +8,5 @@ colors are encoded, and the off-target records a click pulls up.
 
 00_columns
 01_offtargets
+02_colors
 ```

@@ -55,9 +55,14 @@ The cascade below describes the **AsCas12a** (default) track; the enCas12a diffe
    - `0.20 <= raw < 0.50` -> `90,90,90` (marginal specificity).
 4. **Otherwise** (unique and specific) the color ramps on the on-target **DeepCpf1 (Kim 2018)**
    percentile (falling back to the AsCas12a seq-DeepCpf1 variant when DeepCpf1 is not scored):
-   - `<= 50` -> red `255,100,100` (low predicted cleavage),
-   - `> 50` and `<= 75` -> yellow `255,255,0` (medium),
-   - `> 75` -> green `0,200,0` (high predicted cleavage).
+   - `<= 30` -> red `255,100,100` (low predicted cleavage),
+   - `> 30` and `<= 55` -> yellow `255,255,0` (medium),
+   - `> 55` -> green `0,200,0` (high predicted cleavage).
+
+   These are the UCSC Cas9 track's own cuts, so the two tracks read the same way. The AsCas12a track
+   also ships two alternative colorings of the same guide (`_crisprDeepCpf1Color`, `_specColor`) that
+   the browser exposes in a **Color by:** dropdown; see
+   [Color scheme mappings](../reading_the_track/02_colors.md).
 
 Because the specificity greys are an absolute cutoff (rule 3), not a within-population rank, a genome of
 uniformly specific guides is colored by efficiency (red/yellow/green) instead of greyed out. The browser

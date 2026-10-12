@@ -5,37 +5,52 @@ row per guide, defined by its own autoSql. The default is `ascas12a`:
 
 | `--ucscgb_enzyme` | files | layout | fields |
 |-------------------|-------|--------|--------|
-| `ascas12a` (default) | `ascas12a.bb` / `ascas12aTargets.as` / `ascas12a_crisprDetails.tab.gz` | `bed9+8` | **17** |
+| `ascas12a` (default) | `ascas12a.bb` / `ascas12aTargets.as` / `ascas12a_crisprDetails.tab.gz` | `bed9+12` | **21** |
 | `encas12a` | `encas12a.bb` / `encas12aTargets.as` / `encas12a_crisprDetails.tab.gz` | `bed9+11` | **20** |
 | `dual` (legacy) | `cas12a.bb` / `cas12aTargets.as` / `crisprDetails.tab.gz` | `bed9+14` | 23 |
 
-The first eleven columns (bed9 + `guideSeq` + `pam`) and the `_mouseOver`/`_offset` trailer are identical
-across all three. Only the middle block (uniqueness + specificity + on-target efficiency) differs.
+The leading bed9 columns and the `_mouseOver`/`_offset` trailer are identical across all three. The
+AsCas12a track additionally carries two extra color fields right after `itemRgb`, matching the Cas9
+track (see [Color scheme mappings](02_colors.md)). Only the middle block (uniqueness + specificity + on-target efficiency) differs.
 
 ## AsCas12a track (default)
 
-`bed9+8` = **17 fields**. Off-targets are searched against a **TTTV-only** index (AsCas12a does not
+`bed9+12` = **21 fields**. Off-targets are searched against a **TTTV-only** index (AsCas12a does not
 cleave a `TTTT` PAM), so there is a single specificity column and no enCas12a/TTTN column. A real row
-(hg38, `chr1:1000166`):
+(sacCer3, `chrII:593863`):
 
 ```text
-chrom                   chr1
-chromStart              1000166                  0-based start of the 27-nt PAM+spacer site
-chromEnd                1000193                  chromStart + 27
+chrom                   chrII
+chromStart              593863                   0-based start of the 27-nt PAM+spacer site
+chromEnd                593890                   chromStart + 27
 name                    (blank)
 score                   100                      round(AsCas12a-TTTV raw specificity x 100)
 strand                  +
-thickStart              1000170                  spacer start (chromStart + 4); the thin 4 nt is the PAM
-thickEnd                1000193
-itemRgb                 0,200,0                  display color (see below)
-guideSeq                CCACACTCGCCCCAGCCAATCGA   23-nt spacer
-pam                     TTTC                      4-nt PAM
+thickStart              593867                   spacer start (chromStart + 4); the thin 4 nt is the PAM
+thickEnd                593890
+itemRgb                 0,200,0                  default color: specificity greys, else DeepCpf1 ramp
+_crisprDeepCpf1Color    0,200,0                  same scheme on the seq-DeepCpf1 AsCas12a model
+_specColor              0,255,0                  specificity alone, no greys
+guideSeq                AATATGGCTTCCCTGAGAGCTTT  23-nt spacer
+pam                     TTTA                     4-nt PAM
 unique                  True                     no identical protospacer elsewhere at a TTTV PAM
-AsCas12a_specificity    0.9958                   RAW AsCas12a (WT/2xNLS) CFD specificity, 0-1
-deepcpf1_score          57% (53.5321)            DeepCpf1 (Kim 2018)
-ascas12a_deepcpf1_score 96% (0.8212)             AsCas12a seq-DeepCpf1 variant (Chen 2025)
-_mouseOver              AsCas12a Spec: 61, DeepCpf1: 57, AsCas12a-DeepCpf1: 96   (all percentiles)
-_offset                 27614949                 byte offset into ascas12a_crisprDetails.tab (0 = no list)
+AsCas12a_specificity    1.0                      RAW AsCas12a (WT/2xNLS) CFD specificity, 0-1
+deepcpf1                61.8948                  DeepCpf1 (Kim 2018), raw
+deepcpf1Perc            75                       DeepCpf1, within-genome percentile
+ascas12aDeepcpf1        0.7324                   AsCas12a seq-DeepCpf1 variant (Chen 2025), raw
+ascas12aDeepcpf1Perc    69                       seq-DeepCpf1 variant, within-genome percentile
+_mouseOver              AsCas12a Spec: 53, DeepCpf1: 75, AsCas12a-DeepCpf1: 69   (all percentiles)
+_offset                 0                        byte offset into ascas12a_crisprDetails.tab (0 = no list)
+```
+
+Each on-target model contributes **two** fields, a raw value and a `...Perc` percentile, following the
+Cas9 track's `fusi`/`fusiPerc` convention. Packing them into one `"75% (61.8948)"` string reads fine in
+the popup but leaves neither value filterable in the Table Browser or the API.
+
+```{note}
+The `_mouseOver` specificity is a **percentile**, while `score` is the raw value x100. The row above
+reads `score 100` but `Spec: 53`, because a raw specificity of 1.0 is a large tie whose mid-rank is the
+53rd percentile. See [Color scheme mappings](02_colors.md).
 ```
 
 ## enCas12a track (`--ucscgb_enzyme encas12a`)
@@ -94,11 +109,15 @@ for back-compat; new tracks should use `ascas12a` or `encas12a`.
 - **score** (field 5, 0-1000): `round(AsCas12a-TTTV raw specificity x 100)`, e.g. `0.9958 -> 100`. The
   browser's score filter is therefore a specificity filter, on the **TTTV** aggregate (AsCas12a does not
   cleave a `TTTT` PAM).
-- **itemRgb** (field 9): ramps on the **DeepCpf1 (Kim 2018) percentile** - green `>75`, yellow `>50`, red
-  `<=50` - overridden (in this order) by grey for low **AsCas12a-TTTV** specificity (an **absolute**
-  two-tier cutoff on the raw value: `< 0.20` darkest `50,50,50`, `0.20-0.50` lighter `90,90,90`), then
-  `120,120,120` for a TTTV 1/2-mismatch off-target, then `150,150,150` non-unique. The row above is green
-  because DeepCpf1-derived efficiency is high and the specificity (`0.9958`) is well above `0.50`.
+- **itemRgb** (field 9): ramps on the **DeepCpf1 (Kim 2018) percentile**, using the Cas9 track's cuts of
+  green `> 55`, yellow `> 30`, red `<= 30`, overridden (in this order) by grey for low **AsCas12a-TTTV**
+  specificity (an **absolute** two-tier cutoff on the raw value: `< 0.20` darkest `50,50,50`,
+  `0.20-0.50` lighter `90,90,90`), then `120,120,120` for a TTTV 1/2-mismatch off-target, then
+  `150,150,150` non-unique. The row above is green because DeepCpf1 efficiency is high and the
+  specificity (`1.0`) is well above `0.50`.
+- **`_crisprDeepCpf1Color`** (field 10) and **`_specColor`** (field 11): two further pre-computed
+  colorings of the same guide, selectable from the browser's **Color by:** dropdown. Full mapping in
+  [Color scheme mappings](02_colors.md).
 
 **enCas12a track**
 
