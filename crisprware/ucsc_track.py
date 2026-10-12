@@ -629,7 +629,7 @@ def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
         '    uint    thickStart;   "Start of protospacer (thick);"',
         '    uint    thickEnd;     "End of protospacer (thick)"',
         '    uint    itemRgb;      "Display color R,G,B (specificity grey, else DeepCpf1 efficiency ramp)"',
-        '    string  _crisprScanColor; "Alternative color R,G,B by the second on-target model"',
+        '    string  _crisprDeepCpf1Color; "Alternative color R,G,B by the second on-target model (seq-DeepCpf1)"',
         '    string  _specColor;   "Alternative color R,G,B by AsCas12a-TTTV specificity alone"',
         '    string  guideSeq;     "Guide sequence"',
         '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
@@ -914,13 +914,15 @@ def build_track(
         buckets = _mismatch_buckets(g["mismatch_counts"])
         mm0, mm1, mm2 = buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy()
         # Three colorings, as Cas9 ships: itemRgb is the blended default (grey by
-        # specificity, else the efficiency ramp on the PRIMARY model); _crisprScanColor
-        # is the same scheme on the SECOND on-target model, Cas9's Moreno-Mateos slot;
+        # specificity, else the efficiency ramp on the PRIMARY model);
+        # _crisprDeepCpf1Color is the same scheme on the SECOND on-target model (Cas9
+        # fills this slot with Moreno-Mateos and calls it _crisprScanColor, which would
+        # mislabel a Cas12a model, so the field is named for what it actually holds);
         # _specColor is specificity alone.
         item_rgb = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), ramp_pct)
         alt_col = next((c for c in score_cols if c != ramp_col), None)
         alt_pct = ot_pct[alt_col] if alt_col else np.full(len(g), np.nan)
-        crisprscan_color = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), alt_pct)
+        deepcpf1_alt_color = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), alt_pct)
         spec_color = _spec_color(dropped, mm0, mm1, mm2, spec.to_numpy())
 
         def _hover_as(i):
@@ -945,7 +947,7 @@ def build_track(
             "thickStart": thick_start,
             "thickEnd": thick_end,
             "itemRgb": item_rgb,
-            "_crisprScanColor": crisprscan_color,
+            "_crisprDeepCpf1Color": deepcpf1_alt_color,
             "_specColor": spec_color,
             "guideSeq": g["guideSeq"].to_numpy(),
             "pam": g["pam"].to_numpy(),

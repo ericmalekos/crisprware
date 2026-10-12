@@ -367,7 +367,7 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
         assert banned not in aso
 
     bed = [line.rstrip("\n").split("\t") for line in open(art["bed"])]
-    # bed9 + _crisprScanColor,_specColor,guideSeq,pam,unique,spec,
+    # bed9 + _crisprDeepCpf1Color,_specColor,guideSeq,pam,unique,spec,
     # deepcpf1,deepcpf1Perc,ascas12aDeepcpf1,ascas12aDeepcpf1Perc,_mouseOver,_offset
     assert all(len(r) == 21 for r in bed)
     assert all(r[3] == "" for r in bed)  # name is empty (Cas9-matching), not a click-fragile " "
@@ -385,7 +385,7 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
     assert hi[8] in {"255,100,100", "255,255,0", "0,200,0"}  # spec 0.9, no close OT -> efficiency color
     assert close[8] == "120,120,120"  # 1-mm close off-target (Mode-1 TTTV counts) -> grey
     assert dup[8] == "150,150,150"  # dropped -> grey
-    # _crisprScanColor (r[9]) uses the same scheme on the second on-target model
+    # _crisprDeepCpf1Color (r[9]) uses the same scheme on the second on-target model
     assert close[9] == "120,120,120" and dup[9] == "150,150,150"
     # _specColor (r[10]) is specificity ALONE: Cas9 keeps a colour even when greyed
     assert hi[10] == "0,255,0"  # spec 0.90 -> >70 -> green
@@ -596,7 +596,7 @@ def test_ascas12a_specolor_is_additive(tmp_path):
     """_specColor is an ADDITIONAL specificity-only coloring; itemRgb is unchanged.
 
     Cas9 keeps a blended default in reserved/itemRgb (grey by MIT specificity, else a
-    Doench-2016 ramp) and offers _crisprScanColor / _specColor as alternative ways to
+    Doench-2016 ramp) and offers two alternative colourings; this track's are
     colour the same guide. So adding _specColor must not repaint the default view.
     """
     prefix = str(tmp_path / "off.csv")
@@ -608,7 +608,7 @@ def test_ascas12a_specolor_is_additive(tmp_path):
     aslines = open(art["autosql"]).read()
 
     # _specColor is declared immediately after itemRgb, before guideSeq (Cas9 order)
-    assert (aslines.index("itemRgb") < aslines.index("_crisprScanColor")
+    assert (aslines.index("itemRgb") < aslines.index("_crisprDeepCpf1Color")
             < aslines.index("_specColor") < aslines.index("guideSeq"))
 
     # field 9 = itemRgb, field 10 = _specColor; both are R,G,B triples
