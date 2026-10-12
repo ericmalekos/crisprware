@@ -367,10 +367,15 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
         assert banned not in aso
 
     bed = [line.rstrip("\n").split("\t") for line in open(art["bed"])]
-    # bed9 + _specColor,guideSeq,pam,unique,spec,deepcpf1,ascas12a_deepcpf1,_mouseOver,_offset
-    assert all(len(r) == 18 for r in bed)
+    # bed9 + _crisprScanColor,_specColor,guideSeq,pam,unique,spec,
+    # deepcpf1,deepcpf1Perc,ascas12aDeepcpf1,ascas12aDeepcpf1Perc,_mouseOver,_offset
+    assert all(len(r) == 21 for r in bed)
     assert all(r[3] == "" for r in bed)  # name is empty (Cas9-matching), not a click-fragile " "
-    assert all("%" not in r[13] for r in bed)  # AsCas12a_specificity is raw CFD (0-1), not a degenerate percentile
+    assert all("%" not in r[14] for r in bed)  # AsCas12a_specificity is raw CFD (0-1), not a degenerate percentile
+    # raw and percentile are SEPARATE numeric fields (Cas9 fusi/fusiPerc), not one string
+    for r in bed:
+        for idx in (15, 16, 17, 18):
+            assert "%" not in r[idx] and "(" not in r[idx], r[idx]
     by_score = {int(r[4]): r for r in bed}
     assert set(by_score) == {90, 60, 0}  # score = round(specificity_tttv * 100)
 
@@ -380,9 +385,12 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
     assert hi[8] in {"255,100,100", "255,255,0", "0,200,0"}  # spec 0.9, no close OT -> efficiency color
     assert close[8] == "120,120,120"  # 1-mm close off-target (Mode-1 TTTV counts) -> grey
     assert dup[8] == "150,150,150"  # dropped -> grey
-    assert hi[9] == "0,255,0"  # spec 0.9, no close OT -> specific
-    assert close[9] == "120,120,120"  # 1-mm close off-target (Mode-1 TTTV counts) -> grey
-    assert dup[9] == "150,150,150" and dup[-1] == "0"  # dropped -> grey, no details line
+    # _crisprScanColor (r[9]) uses the same scheme on the second on-target model
+    assert close[9] == "120,120,120" and dup[9] == "150,150,150"
+    # _specColor (r[10]) is specificity ALONE: Cas9 keeps a colour even when greyed
+    assert hi[10] == "0,255,0"  # spec 0.90 -> >70 -> green
+    assert dup[10] == "255,0,0"  # non-unique -> worst tier, still coloured
+    assert dup[-1] == "0"  # dropped -> no details line
 
     hovers = [r[-2] for r in bed]  # _mouseOver
     assert any("AsCas12a Spec" in h for h in hovers)
@@ -600,24 +608,19 @@ def test_ascas12a_specolor_is_additive(tmp_path):
     aslines = open(art["autosql"]).read()
 
     # _specColor is declared immediately after itemRgb, before guideSeq (Cas9 order)
-    assert aslines.index("itemRgb") < aslines.index("_specColor") < aslines.index("guideSeq")
+    assert (aslines.index("itemRgb") < aslines.index("_crisprScanColor")
+            < aslines.index("_specColor") < aslines.index("guideSeq"))
 
     # field 9 = itemRgb, field 10 = _specColor; both are R,G,B triples
     for r in rows:
-        for idx in (8, 9):
+        for idx in (8, 9, 10):
             assert re.fullmatch(r"\d{1,3},\d{1,3},\d{1,3}", r[idx]), r[idx]
 
-    # itemRgb still equals the blended colour it had before _specColor existed
-    import numpy as np
+    # itemRgb is untouched by the two new colour columns: it still greys for close
+    # and non-unique off-targets exactly as before.
     for r in rows:
-        spec = float(r[13]) if r[13] not in ("", "NA") else float("nan")
-        expected = ucsc_track._item_rgb(
-            np.array([r[9] == "150,150,150"]), np.array([0]), np.array([0]),
-            np.array([1 if r[9] == "120,120,120" else 0]),
-            np.array([spec]), np.array([float("nan")]),
-        )[0]
         if r[9] in ("150,150,150", "120,120,120"):
-            assert r[8] == expected
+            assert r[8] == r[9]
 
 
 def test_spec_color_helper():
@@ -625,11 +628,38 @@ def test_spec_color_helper():
     import numpy as np
     nan = float("nan")
     z = np.zeros(4, dtype=int)
-    spec = np.array([0.9, 0.3, 0.1, nan])
-    # no off-targets: colour is driven purely by the specificity tiers
-    assert list(ucsc_track._spec_color(np.array([False]*4), z, z, z, spec)) == [
-        "0,255,0", "90,90,90", "50,50,50", "0,255,0"]
-    # a close (1-mm) off-target overrides the tier; dropped overrides everything
-    one = np.ones(4, dtype=int)
-    assert list(ucsc_track._spec_color(np.array([False]*4), z, one, z, spec)) == ["120,120,120"]*4
-    assert list(ucsc_track._spec_color(np.array([True]*4), z, one, z, spec)) == ["150,150,150"]*4
+    # Cas9 cuts on specificity x100: <=50 red, <=70 olive, >70 green
+    spec = np.array([0.90, 0.71, 0.70, 0.51, 0.50, 0.20, nan])
+    z7 = np.zeros(7, dtype=int)
+    assert list(ucsc_track._spec_color(np.array([False]*7), z7, z7, z7, spec)) == [
+        "0,255,0", "0,255,0", "128,128,0", "128,128,0", "255,0,0", "255,0,0", "0,255,0"]
+    # non-unique takes the worst tier but is still COLOURED, as Cas9 does
+    assert list(ucsc_track._spec_color(np.array([True]*7), z7, z7, z7, spec)) == ["255,0,0"]*7
+    # a close (1-mm) off-target does NOT grey this column (specificity alone)
+    one7 = np.ones(7, dtype=int)
+    assert ucsc_track._spec_color(np.array([False]*7), z7, one7, z7, spec)[0] == "0,255,0"
+
+
+def test_cas9_style_field_names():
+    assert ucsc_track._cas9_style_name("deepcpf1_score") == "deepcpf1"
+    assert ucsc_track._cas9_style_name("ascas12a_deepcpf1_score") == "ascas12aDeepcpf1"
+    assert ucsc_track._cas9_style_name("enpam_gb") == "enpamGb"
+
+
+def test_efficiency_ramp_matches_cas9_cutoffs():
+    """The red/yellow/green cuts follow the Cas9 crisprAllTargets description:
+    red <= 30, yellow > 30 and <= 55, green > 55 (percentile). These were 50/75,
+    which painted a percentile-60 guide yellow where Cas9 paints it green."""
+    import numpy as np
+    spec = np.full(7, 1.0)  # fully specific, so the ramp is what shows
+    eff = np.array([0.0, 30.0, 30.1, 55.0, 55.1, 90.0, float("nan")])
+    assert list(ucsc_track._spec_eff_color(spec, eff)) == [
+        "255,100,100",  # 0   -> red
+        "255,100,100",  # 30  -> red (boundary inclusive)
+        "255,255,0",    # 30.1-> yellow
+        "255,255,0",    # 55  -> yellow (boundary inclusive)
+        "0,200,0",      # 55.1-> green
+        "0,200,0",      # 90  -> green
+        "0,200,0",      # NaN -> treated as fully efficient, as before
+    ]
+    assert (ucsc_track.EFF_RAMP_LOW, ucsc_track.EFF_RAMP_HIGH) == (30, 55)

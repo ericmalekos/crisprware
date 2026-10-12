@@ -279,6 +279,30 @@ def _mismatch_buckets(mm_counts: pd.Series) -> pd.DataFrame:
 SPEC_GREY_BAD = 0.20  # raw AsCas12a-TTTV < 0.20      -> darkest grey (bad)
 SPEC_GREY_MARGINAL = 0.50  # 0.20 <= raw < 0.50       -> lighter grey (marginal)
 
+# Efficiency-percentile cuts for the red/yellow/green ramp, taken from the Cas9
+# crisprAllTargets track description so the two tracks read the same way:
+# "low predicted cleavage: ... percentile <= 30", "medium ...: > 30 and < 55",
+# "high ...: > 55". (These were 50/75 before, markedly stricter than Cas9, so a
+# guide at percentile 60 showed yellow here and green on the Cas9 track.)
+EFF_RAMP_LOW = 30  # percentile <= 30            -> red
+EFF_RAMP_HIGH = 55  # 30 < percentile <= 55      -> yellow; > 55 -> green
+
+# Cuts for the specificity-only _specColor, read off the Cas9 crisprAllTargets sample
+# rows (specificity 27/37/43 -> red, 51/52/65/69 -> olive, 72/76 -> green). On a
+# 0-100 scale, so the raw 0-1 AsCas12a specificity is multiplied by 100 first.
+SPEC_COLOR_BAD = 50  # <= 50      -> red
+SPEC_COLOR_MID = 70  # 50 to 70   -> olive; > 70 -> green
+
+
+def _cas9_style_name(col: str) -> str:
+    """``deepcpf1_score`` -> ``deepcpf1``; ``ascas12a_deepcpf1_score`` ->
+    ``ascas12aDeepcpf1``. Cas9 names each efficiency model with a bare camelCase
+    field plus a ``...Perc`` sibling (``fusi``/``fusiPerc``,
+    ``crisprScan``/``crisprScanPerc``); this derives that base name."""
+    s = col[:-6] if col.endswith("_score") else col
+    head, *rest = s.split("_")
+    return head + "".join(p.capitalize() for p in rest)
+
 
 def _spec_eff_color(spec_raw, eff_pct) -> np.ndarray:
     """Color for a unique guide with no close (1/2-mm) off-targets: two-tier
@@ -286,7 +310,9 @@ def _spec_eff_color(spec_raw, eff_pct) -> np.ndarray:
     red/yellow/green efficiency ramp on the AsCas12a-DeepCpf1 percentile. Missing
     specificity is treated as fully specific (not greyed)."""
     enp = np.where(np.isnan(eff_pct), 100.0, eff_pct)
-    out = np.where(enp <= 50, "255,100,100", np.where(enp <= 75, "255,255,0", "0,200,0"))
+    out = np.where(
+        enp <= EFF_RAMP_LOW, "255,100,100", np.where(enp <= EFF_RAMP_HIGH, "255,255,0", "0,200,0")
+    )
     sr = np.where(np.isnan(spec_raw), 1.0, spec_raw)
     out = np.where(sr < SPEC_GREY_MARGINAL, "90,90,90", out)  # marginal 0.20-0.50
     out = np.where(sr < SPEC_GREY_BAD, "50,50,50", out)  # bad < 0.20 (overrides marginal)
@@ -317,16 +343,18 @@ def _spec_color(dropped, mm0, mm1, mm2, spec_raw) -> np.ndarray:
     decomposition of the default, so this column is purely additive: ``itemRgb``
     keeps the blended default and a viewer can instead color by specificity alone.
 
-    Green above the "good" line, then the two ABSOLUTE low-specificity grey tiers,
-    then grey for close (1/2-mm) off-targets, then light grey for non-unique (0-mm /
-    dropped). ``spec_raw`` is the raw AsCas12a-TTTV specificity; missing -> treated as
-    fully specific (not greyed), as elsewhere."""
-    sr = np.where(np.isnan(spec_raw), 1.0, spec_raw)
-    out = np.where(sr >= SPEC_GREY_MARGINAL, "0,255,0", "90,90,90")  # marginal 0.20-0.50
-    out = np.where(sr < SPEC_GREY_BAD, "50,50,50", out)  # bad < 0.20 (overrides marginal)
-    out = np.where((mm1 > 0) | (mm2 > 0), "120,120,120", out)
-    out = np.where(dropped | (mm0 > 0), "150,150,150", out)
-    return out
+    Cas9 makes this a PURE function of specificity with no uniqueness greys: its
+    sample rows pair specificity 27/37/43 with red, 51/52/65/69 with olive and 72/76
+    with green, and keep red even where ``reserved`` has already greyed out. So the
+    cuts are ``<= 50`` red, ``<= 70`` olive, ``> 70`` green, and a greyed guide still
+    gets a colour here. ``spec_raw`` is the raw AsCas12a-TTTV specificity (0-1).
+    A non-unique guide has no meaningful specificity, so it takes the worst tier;
+    a missing specificity keeps the usual "treat as fully specific" convention."""
+    pct = np.where(np.isnan(spec_raw), 100.0, np.asarray(spec_raw, dtype=float) * 100.0)
+    pct = np.where(dropped | (mm0 > 0), 0.0, pct)  # non-unique -> worst tier
+    return np.where(
+        pct <= SPEC_COLOR_BAD, "255,0,0", np.where(pct <= SPEC_COLOR_MID, "128,128,0", "0,255,0")
+    )
 
 
 def _have_tool(name: str) -> Optional[str]:
@@ -601,6 +629,7 @@ def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
         '    uint    thickStart;   "Start of protospacer (thick);"',
         '    uint    thickEnd;     "End of protospacer (thick)"',
         '    uint    itemRgb;      "Display color R,G,B (specificity grey, else DeepCpf1 efficiency ramp)"',
+        '    string  _crisprScanColor; "Alternative color R,G,B by the second on-target model"',
         '    string  _specColor;   "Alternative color R,G,B by AsCas12a-TTTV specificity alone"',
         '    string  guideSeq;     "Guide sequence"',
         '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
@@ -614,7 +643,10 @@ def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
         "ascas12a_deepcpf1_score": "AsCas12a seq-DeepCpf1 variant (Chen 2025) on-target efficiency",
     }
     for c in ontarget_cols:
-        extra.append((c, ot_descs.get(c, "AsCas12a on-target efficiency")))
+        d = ot_descs.get(c, "AsCas12a on-target efficiency")
+        base = _cas9_style_name(c)
+        extra.append((base, f"Efficiency: {d} (raw)"))
+        extra.append((base + "Perc", f"Efficiency: {d} (percentile)"))
     width = max(len(f) for f, _ in extra) + 2
     body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
     tail = [
@@ -881,10 +913,14 @@ def build_track(
         # grey uses them directly -- no genome re-derivation.
         buckets = _mismatch_buckets(g["mismatch_counts"])
         mm0, mm1, mm2 = buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy()
-        # itemRgb keeps the Cas9 default scheme (grey by specificity, else efficiency
-        # ramp); _specColor is the ADDITIONAL specificity-only alternative coloring, so
-        # adding it changes no existing pixel.
+        # Three colorings, as Cas9 ships: itemRgb is the blended default (grey by
+        # specificity, else the efficiency ramp on the PRIMARY model); _crisprScanColor
+        # is the same scheme on the SECOND on-target model, Cas9's Moreno-Mateos slot;
+        # _specColor is specificity alone.
         item_rgb = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), ramp_pct)
+        alt_col = next((c for c in score_cols if c != ramp_col), None)
+        alt_pct = ot_pct[alt_col] if alt_col else np.full(len(g), np.nan)
+        crisprscan_color = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), alt_pct)
         spec_color = _spec_color(dropped, mm0, mm1, mm2, spec.to_numpy())
 
         def _hover_as(i):
@@ -909,14 +945,22 @@ def build_track(
             "thickStart": thick_start,
             "thickEnd": thick_end,
             "itemRgb": item_rgb,
+            "_crisprScanColor": crisprscan_color,
             "_specColor": spec_color,
             "guideSeq": g["guideSeq"].to_numpy(),
             "pam": g["pam"].to_numpy(),
             "unique": unique,
             "AsCas12a_specificity": _fmt_raw(spec).to_numpy(),
         }
+        # Raw and percentile as SEPARATE numeric fields, as Cas9 does (fusi/fusiPerc).
+        # Packing them into one "88% (70.25)" string reads fine on the details page but
+        # leaves neither value filterable in the Table Browser or the API.
         for c in score_cols:
-            out[c] = _fmt_pct_raw(g[c], ot_pct[c]).to_numpy()
+            base = _cas9_style_name(c)
+            out[base] = _fmt_raw(pd.to_numeric(g[c], errors="coerce")).to_numpy()
+            out[base + "Perc"] = [
+                "" if np.isnan(v) else str(int(round(v))) for v in ot_pct[c]
+            ]
         out["_mouseOver"] = [_hover_as(i) for i in range(len(g))]
         out["_offset"] = [offsets.get(gid, 0) for gid in g["id"].to_numpy()]
         as_content = build_autosql_ascas12a(score_cols)
