@@ -91,30 +91,44 @@ guide with a perfect match elsewhere has no meaningful specificity to report.
 
 | aspect | Cas9 | AsCas12a | aligned? |
 |---|---|---|---|
-| efficiency ramp cuts | 30 / 55 percentile | 30 / 55 percentile | yes |
+| efficiency ramp cuts | 30 / 55 percentile | 30 / 55 percentile | yes, but see the basis below |
+| efficiency percentile basis | rank against a **fixed** mammalian reference distribution | rank **within this genome** | no, unavoidable |
 | ramp colors | `255,100,100` / `255,255,0` / `0,200,0` | same | yes |
 | non-unique grey | `150,150,150` (`#969696`) | `150,150,150` | yes |
-| close-off-target grey | `120,120,120` (`#787878`) | `120,120,120` | yes |
+| close-off-target grey | `120,120,120`, when alignment stopped (too many off-targets) | `120,120,120`, when a 1-mm or 2-mm off-target exists | same color, different trigger |
 | low-specificity grey | one tier, `80,80,80` (`#505050`) | **two tiers**, `90,90,90` and `50,50,50` | no, deliberate |
-| low-spec grey basis | MIT specificity `<= 50` | raw specificity `< 0.50` | equivalent in intent |
+| low-spec grey basis | MIT specificity `< 50` (grey to 49, never at 50) | raw specificity `< 0.50` | yes, verified exact |
 | `_specColor` cuts | `<= 50` / `<= 70` / `> 70` | same | yes |
 | column 5 / score filter | MIT specificity, 0 to 100 | AsCas12a specificity x100 | yes |
 | missing-efficiency color | `0,0,100` (`#000064`) | none | no, see below |
 
-Three divergences are real and intentional:
+Four divergences are real:
 
-1. **Two low-specificity grey tiers instead of one.** Cas9 greys everything at or below MIT 50 the
+1. **The percentile basis differs, and it is the one that changes how the colors read.** Cas9's
+   efficiency percentile ranks a guide against a fixed reference distribution of mammalian guides, so
+   its percentile is an absolute claim about predicted activity and the same raw score maps to the
+   same percentile in every genome. Verified directly: across the hg38 and mm39 Cas9 tracks, all 87
+   overlapping raw Doench values map to an identical percentile (raw 50 to the 50th, raw 60 to the
+   81st, raw 70 to the 98th). This track ranks within the genome being displayed, because no
+   comparable published reference distribution exists for Cas12a. So the shared 30 and 55 cut points
+   do **not** mark the same predicted activity here as they do on the Cas9 track: they mark positions
+   in this genome's own distribution. Closing this would mean choosing and shipping a Cas12a
+   reference distribution, which is a scientific decision rather than a code change.
+2. **Two low-specificity grey tiers instead of one.** Cas9 greys everything at or below MIT 50 the
    same shade. This track splits that band at 0.20 so a hopeless guide is visually distinct from a
    marginal one.
-2. **No "efficiency could not be calculated" color.** Cas9 reserves `0,0,100` for guides its
+3. **No "efficiency could not be calculated" color.** Cas9 reserves `0,0,100` for guides its
    efficiency model could not score. Both Cas12a models score every guide in these runs (0 blanks
    across sacCer3), so the case does not arise and no color is assigned to it.
-3. **The second color field is renamed.** `_crisprScanColor` to `_crisprDeepCpf1Color`, as above.
+4. **The second color field is renamed.** `_crisprScanColor` to `_crisprDeepCpf1Color`, as above.
 
-The `<= 50` / `<= 70` cuts for `_specColor` are **inferred**, not documented: the Cas9 track
+The `<= 50` / `<= 70` cuts for `_specColor` are **undocumented but verified**: the Cas9 track
 description page documents only the `reserved` greys and ramp, and says nothing about `_specColor` or
-`_crisprScanColor`. The cuts were read off real Cas9 rows, where MIT specificity 27, 37, 43, 44 and
-47 are red, 51, 52, 57, 61, 63, 65, 66 and 69 are olive, and 72, 76, 77 and 88 are green. Note also
+`_crisprScanColor`. The cuts were derived from real Cas9 rows and then checked against 165,992 scored
+hg38 guides, where they hold with **zero** exceptions (no green at specificity <= 70, no olive outside
+50 to 70, no red above 50). The same sample pins Cas9's other boundaries exactly: `itemRgb` is grey up
+to specificity 49 and never at 50 or above, red runs to percentile 30, yellow from 32 to 53 and green
+from 56 up. Note also
 that the Cas9 page's own wording leaves percentile exactly 55 in neither the yellow nor the green
 band (`> 30 and < 55`, then `> 55`); this track puts 55 in yellow.
 

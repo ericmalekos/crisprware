@@ -135,11 +135,25 @@ but a low-scoring guide can still cut well.
 </p>
 
 <p>
-Efficiency percentiles are ranked over <b>every guide in this genome</b>, not against a
-fixed cross-species reference panel. So a percentile answers "how does this guide
-compare to the alternatives in this genome", and percentiles are directly comparable
-between any two guides in the track, on any chromosome. The raw scores are also
-reported, and are what to use when comparing guides across genomes.
+Efficiency percentiles are ranked over <b>every guide in this genome</b>, so a
+percentile answers "how does this guide compare to the alternatives available in
+this genome", and percentiles are directly comparable between any two guides in
+this track, on any chromosome.
+</p>
+
+<p>
+<b>This differs from the Cas9 track, and the difference matters when reading the
+colors.</b> The Cas9 track's efficiency percentile is a rank against a fixed
+reference distribution of mammalian guides, so its percentile is an absolute
+statement about predicted activity: the same raw Doench score maps to the same
+percentile in every genome. The percentile here is a rank within the genome being
+displayed, because no comparable published reference distribution exists for
+Cas12a. The practical consequence is that a percentile on this track moves with
+the genome loaded, and the red / yellow / green cut points, which are taken from
+the Cas9 track so that the two read the same way, therefore do not mark the same
+predicted activity that they do there. Use the <b>raw</b> scores to compare guides
+across genomes, or to ask whether a guide is predicted to cut well in absolute
+terms.
 </p>
 
 <p>
