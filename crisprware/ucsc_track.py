@@ -1143,6 +1143,138 @@ def build_track(
     return _write_track(out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes, run_tools)
 
 
+# ----------------------------------------------------------------------------
+# genome-wide percentile re-grading (chunked builds only)
+# ----------------------------------------------------------------------------
+# A chunked build scores each ~chunk_max slice of the guide BED as an isolated
+# run, so every percentile it computes is a rank WITHIN that slice. The guide BED
+# is position-ordered, so a slice is a contiguous stretch of one or two
+# chromosomes: a percentile would describe a guide against its regional
+# neighbours rather than against the genome, and the efficiency ramp colours
+# derived from one would mean different things in different places. That is wrong
+# for a genome-wide track, so the merge re-ranks every percentile across all
+# chunks before building the bigBed.
+#
+# This is possible because the raw score columns are exact per guide: the ranks
+# are recoverable from them with no rescan and no re-scoring. Only ranked values
+# need it. ``score`` (specificity x100) and ``_specColor`` (absolute cutoffs on
+# the raw specificity) are already genome-wide and are left alone.
+# bytes, not str: the re-grade works on raw BED lines, and a str set here would
+# never match, silently replacing every grey with a ramp colour.
+_RAMP_GREYS = frozenset({b"150,150,150", b"120,120,120", b"90,90,90", b"50,50,50"})
+
+# Per-enzyme map of what to re-grade. ``models`` is one (raw field, hover label,
+# colour field) triple per on-target model, in the order build_track writes the
+# hover; the first model's colour is the default ``itemRgb``.
+REGRADE_SPECS: Dict[str, dict] = {
+    "ascas12a": {
+        "unique": "unique",
+        "spec": "AsCas12a_specificity",
+        "spec_label": "AsCas12a Spec",
+        "hover": "_mouseOver",
+        "models": [
+            ("deepcpf1", "DeepCpf1", "itemRgb"),
+            ("ascas12aDeepcpf1", "AsCas12a-DeepCpf1", "_crisprDeepCpf1Color"),
+        ],
+    },
+}
+
+
+def autosql_field_names(as_path: str) -> list[str]:
+    """Ordered field names declared by an autoSql file, i.e. the BED column order."""
+    import re
+
+    names = []
+    with open(as_path) as fh:
+        for line in fh:
+            m = re.match(r"\s+(?:string|uint|char|bigint)\S*\s+(\w+);", line)
+            if m:
+                names.append(m.group(1))
+    return names
+
+
+def _rank_pct(counts: Dict[bytes, int]) -> Dict[bytes, float]:
+    """``{raw value -> percentile}`` from a value histogram, reproducing
+    ``_pct`` (pandas ``rank(pct=True, method="average") * 100``, 2 dp) over the
+    non-blank values. Ranking the histogram instead of the values keeps this
+    O(distinct) in memory: the raw columns are written to 4 decimals, so a
+    genome of 10^8 guides still has at most ~10^6 distinct keys."""
+    n = sum(counts.values())
+    out: Dict[bytes, float] = {}
+    if not n:
+        return out
+    below = 0
+    for v in sorted(counts, key=float):
+        c = counts[v]
+        out[v] = round(100.0 * (below + (c + 1) / 2.0) / n, 2)
+        below += c
+    return out
+
+
+def _ramp_colour(pct: Optional[float]) -> bytes:
+    """The efficiency ramp. A missing percentile is treated as fully efficient,
+    matching :func:`_spec_eff_color`."""
+    enp = 100.0 if pct is None else pct
+    if enp <= EFF_RAMP_LOW:
+        return b"255,100,100"
+    return b"255,255,0" if enp <= EFF_RAMP_HIGH else b"0,200,0"
+
+
+def _regrade_bed_percentiles(
+    bed_in: str,
+    bed_out: str,
+    fields: Sequence[str],
+    spec: dict,
+    counts: Dict[str, Dict[bytes, int]],
+) -> int:
+    """Rewrite ``bed_in`` to ``bed_out`` with every percentile re-ranked over the
+    whole genome: the ``...Perc`` columns, the hover percentiles, and the
+    efficiency-ramp colours.
+
+    A colour cell that is already a grey is left untouched. The greys encode
+    specificity and uniqueness, which :func:`_item_rgb` applies after the ramp
+    and which are genome-wide to begin with, so a non-grey cell is always a pure
+    ramp colour and is the only thing to re-derive."""
+    idx = {f: i for i, f in enumerate(fields)}
+    lut = {f: _rank_pct(c) for f, c in counts.items()}
+    spec_lut = lut.get(spec["spec"], {})
+    i_spec = idx[spec["spec"]]
+    i_uniq = idx[spec["unique"]]
+    i_hover = idx[spec["hover"]]
+    label_spec = spec["spec_label"].encode()
+    models = [
+        (idx[raw], idx.get(raw + "Perc"), idx[col], label.encode(), lut.get(raw, {}))
+        for raw, label, col in spec["models"]
+    ]
+
+    n = 0
+    with open(bed_in, "rb") as fin, open(bed_out, "wb") as fout:
+        for row in fin:
+            row = row.rstrip(b"\n")
+            if not row:
+                continue
+            f = row.split(b"\t")
+            # hover: "Not unique" for a non-unique guide, else the specificity
+            # percentile, then one entry per model that scored.
+            if f[i_uniq] == b"False":
+                parts = [b"Not unique"]
+            else:
+                sp = spec_lut.get(f[i_spec])
+                parts = [label_spec + b": " + b"%d" % round(100.0 if sp is None else sp)]
+            for i_raw, i_pct, i_col, label, model_lut in models:
+                pct = model_lut.get(f[i_raw]) if f[i_raw] else None
+                if i_pct is not None:
+                    f[i_pct] = b"" if pct is None else b"%d" % round(pct)
+                if f[i_col] not in _RAMP_GREYS:
+                    f[i_col] = _ramp_colour(pct)
+                if f[i_raw]:
+                    parts.append(label + b": " + b"%d" % round(pct))
+            f[i_hover] = b", ".join(parts)
+            fout.write(b"\t".join(f) + b"\n")
+            n += 1
+    return n
+
+
 def merge_ucscgb_tracks(
     track_dirs: Sequence[str],
     out: str,
@@ -1155,6 +1287,7 @@ def merge_ucscgb_tracks(
     details_name: str = DETAILS_NAME,
     bb_name: str = BB_NAME,
     as_name: str = AS_NAME,
+    enzyme: str = "ascas12a",
 ) -> Dict[str, str]:
     """Merge per-chunk Cas12a UCSC tracks (each produced by a single-pass
     :func:`build_track`) into one track.
@@ -1168,9 +1301,36 @@ def merge_ucscgb_tracks(
     piece's BED ``_offset``, then sort + ``bedToBigBed`` and ``bgzip`` + index.
     One shared header sits at byte 0 (the ``0`` sentinel). Merge order is
     arbitrary -- offsets are reassigned here and the bigBed is sorted at the end.
+
+    Every percentile is then re-ranked across all chunks (see
+    :func:`_regrade_bed_percentiles`), since each chunk could only rank within
+    itself. ``enzyme`` selects which columns that applies to; an enzyme with no
+    entry in :data:`REGRADE_SPECS` is merged without re-grading and warns, because
+    its percentiles would stay chunk-local.
+
     Returns the artifact paths.
     """
     header = b"_mismatchCounts\t_crisprOfftargets\n"
+
+    # Columns whose percentiles the merge must re-rank genome-wide, and the raw
+    # columns to histogram while streaming the per-chunk BEDs.
+    spec = REGRADE_SPECS.get(enzyme)
+    as_fields = autosql_field_names(as_file)
+    if spec is not None:
+        needed = [spec["spec"], spec["unique"], spec["hover"]]
+        needed += [raw for raw, _, _ in spec["models"]] + [col for _, _, col in spec["models"]]
+        missing = [f for f in needed if f not in as_fields]
+        if missing:
+            raise ValueError(f"{as_file} is missing fields needed to re-grade percentiles: {missing}")
+    else:
+        print(
+            f"\n\tWARNING: no percentile re-grading rule for enzyme={enzyme!r}; the merged track's "
+            f"percentiles and efficiency-ramp colours stay ranked WITHIN each chunk, not genome-wide.\n",
+            flush=True,
+        )
+    count_fields = [spec["spec"]] + [raw for raw, _, _ in spec["models"]] if spec else []
+    count_idx = {f: as_fields.index(f) for f in count_fields}
+    counts: Dict[str, Dict[bytes, int]] = {f: {} for f in count_fields}
 
     def _zcat_lines(path):
         p = subprocess.Popen(["bgzip", "-dc", "-@", "4", path], stdout=subprocess.PIPE, bufsize=1024 * 1024)
@@ -1226,12 +1386,31 @@ def merge_ucscgb_tracks(
                             raise KeyError(f"BED _offset {old} not found in {det} (offset map mismatch)")
                         n_unique += 1
                     fields[-1] = str(new).encode()
+                    # histogram the raw columns while the row is already split, so
+                    # the genome-wide ranks cost no extra pass over the chunk BEDs
+                    for f_name, f_i in count_idx.items():
+                        v = fields[f_i]
+                        if v:
+                            counts[f_name][v] = counts[f_name].get(v, 0) + 1
                     bedout.write(b"\t".join(fields) + b"\n")
                     n_guides += 1
             offmap.clear()
             print(f"  merged {os.path.basename(tdir)}: cum_guides={n_guides} merged_bytes={running}", flush=True)
 
-    # 3. sort the merged BED and build the bigBed
+    # 3. re-rank every percentile across all chunks (each chunk could only rank
+    # within itself), then sort the merged BED and build the bigBed
+    if spec is not None:
+        regraded_bed = merged_bed + ".regraded"
+        n_re = _regrade_bed_percentiles(merged_bed, regraded_bed, as_fields, spec, counts)
+        if n_re != n_guides:
+            raise RuntimeError(f"percentile re-grade wrote {n_re} rows, expected {n_guides}")
+        os.replace(regraded_bed, merged_bed)
+        print(
+            "  re-graded percentiles genome-wide over "
+            + ", ".join(f"{f} ({len(counts[f])} distinct)" for f in count_fields),
+            flush=True,
+        )
+
     sorted_bed = os.path.join(out, "guides.sorted.bed")
     subprocess.run(
         f"LC_ALL=C sort -S{sort_mem} --parallel={sort_threads} -T {out} -k1,1 -k2,2n {merged_bed} > {sorted_bed}",

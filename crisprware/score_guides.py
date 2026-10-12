@@ -893,6 +893,7 @@ def run_ucscgb_chunked(args: argparse.Namespace) -> None:
         details_name=details_name,
         bb_name=bb_name,
         as_name=as_name,
+        enzyme=_chunk_enzyme,
     )
     print(f"\n\t[TIMING] merge {len(track_dirs)} chunks: {time.time() - _t:.1f}s", flush=True)
 

@@ -663,3 +663,93 @@ def test_efficiency_ramp_matches_cas9_cutoffs():
         "0,200,0",      # NaN -> treated as fully efficient, as before
     ]
     assert (ucsc_track.EFF_RAMP_LOW, ucsc_track.EFF_RAMP_HIGH) == (30, 55)
+
+
+# ---------------------------------------------------------------------------
+# genome-wide percentile re-grading (chunked merges)
+# ---------------------------------------------------------------------------
+def test_rank_pct_matches_pct():
+    """_rank_pct over a value histogram == _pct over the values themselves."""
+    vals = [0.1, 0.25, 0.5, 0.5, 0.75, 1.0, 1.0, 1.0]
+    keys = [f"{round(v, 4)}".encode() for v in vals]
+    counts = {}
+    for k in keys:
+        counts[k] = counts.get(k, 0) + 1
+    lut = ucsc_track._rank_pct(counts)
+    ref = ucsc_track._pct(pd.Series(vals)).tolist()
+    assert [lut[k] for k in keys] == pytest.approx(ref)
+
+
+def test_regrade_bed_percentiles_is_genome_wide(tmp_path):
+    """Two chunks whose score ranges barely overlap: per-chunk ranking makes the
+    top of chunk A and the top of chunk B both look like the 75th percentile.
+    After re-grading, every percentile is a rank over both chunks together, the
+    ramp colours follow, greys survive and the hover is rewritten."""
+    spec = ucsc_track.REGRADE_SPECS["ascas12a"]
+    fields = [
+        "chrom", "chromStart", "chromEnd", "name", "score", "strand", "thickStart", "thickEnd",
+        "itemRgb", "_crisprDeepCpf1Color", "_specColor", "guideSeq", "pam", "unique",
+        "AsCas12a_specificity", "deepcpf1", "deepcpf1Perc", "ascas12aDeepcpf1",
+        "ascas12aDeepcpf1Perc", "_mouseOver", "_offset",
+    ]
+
+    def row(chrom, pos, spec_raw, dp, dp_pct, asc, asc_pct, rgb, alt, uniq="True"):
+        return "\t".join([
+            chrom, str(pos), str(pos + 27), "", "100", "+", str(pos + 4), str(pos + 27),
+            rgb, alt, "0,255,0", "A" * 23, "TTTA", uniq, spec_raw,
+            dp, dp_pct, asc, asc_pct, "stale hover", "0",
+        ])
+
+    # chunk A holds the low scores, chunk B the high ones; each ranked 25/50/75
+    # within itself, so "75" means two different things.
+    rows = [
+        row("chr1", 100, "1.0", "10.0", "25", "0.10", "25", "255,100,100", "255,100,100"),
+        row("chr1", 200, "1.0", "20.0", "50", "0.20", "50", "255,100,100", "255,100,100"),
+        row("chr1", 300, "1.0", "30.0", "75", "0.30", "75", "255,100,100", "255,100,100"),
+        row("chr2", 100, "1.0", "70.0", "25", "0.70", "25", "255,100,100", "255,100,100"),
+        row("chr2", 200, "1.0", "80.0", "50", "0.80", "50", "255,100,100", "255,100,100"),
+        row("chr2", 300, "1.0", "90.0", "75", "0.90", "75", "255,100,100", "255,100,100"),
+        # a greyed, non-unique guide: the grey must survive and the hover must say so
+        row("chr3", 100, "", "95.0", "75", "0.95", "75", "150,150,150", "150,150,150", uniq="False"),
+    ]
+    bed_in = tmp_path / "in.bed"
+    bed_in.write_text("\n".join(rows) + "\n")
+    bed_out = tmp_path / "out.bed"
+
+    counts = {f: {} for f in [spec["spec"]] + [r for r, _, _ in spec["models"]]}
+    for r in rows:
+        f = r.split("\t")
+        for name, i in (("AsCas12a_specificity", 14), ("deepcpf1", 15), ("ascas12aDeepcpf1", 17)):
+            v = f[i].encode()
+            if v:
+                counts[name][v] = counts[name].get(v, 0) + 1
+
+    n = ucsc_track._regrade_bed_percentiles(str(bed_in), str(bed_out), fields, spec, counts)
+    assert n == len(rows)
+    out = [l.split("\t") for l in bed_out.read_text().splitlines()]
+
+    # 7 distinct scores, so the k-th smallest (1-indexed) ranks at 100*k/7
+    expect = [round(100.0 * k / 7) for k in range(1, 8)]
+    assert [int(r[16]) for r in out] == expect
+    assert [int(r[18]) for r in out] == expect
+    # the two "75"s have separated: chunk A's top is now mid-pack, chunk B's is top
+    assert int(out[2][16]) < 50 < int(out[5][16])
+
+    # ramp colours follow the new percentiles (<=30 red, <=55 yellow, >55 green)
+    def ramp(pct):
+        return "255,100,100" if pct <= 30 else ("255,255,0" if pct <= 55 else "0,200,0")
+
+    assert [r[8] for r in out[:6]] == [ramp(p) for p in expect[:6]]
+    assert [r[9] for r in out[:6]] == [ramp(p) for p in expect[:6]]
+    # the grey guide keeps BOTH greys even though its raw score is the highest
+    assert out[6][8] == "150,150,150" and out[6][9] == "150,150,150"
+    # _specColor is an absolute cutoff, not a rank, so it is never touched
+    assert {r[10] for r in out} == {"0,255,0"}
+
+    # hover is regenerated, not left stale
+    assert all("stale" not in r[19] for r in out)
+    # every unique guide here ties at specificity 1.0, and a 6-way tie ranks at
+    # the middle of the tie (58), not at the top: the hover specificity is a
+    # percentile, unlike `score`, which is the raw value x100.
+    assert out[5][19] == f"AsCas12a Spec: 58, DeepCpf1: {expect[5]}, AsCas12a-DeepCpf1: {expect[5]}"
+    assert out[6][19] == "Not unique, DeepCpf1: 100, AsCas12a-DeepCpf1: 100"

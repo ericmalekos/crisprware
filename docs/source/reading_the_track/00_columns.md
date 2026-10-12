@@ -36,9 +36,9 @@ pam                     TTTA                     4-nt PAM
 unique                  True                     no identical protospacer elsewhere at a TTTV PAM
 AsCas12a_specificity    1.0                      RAW AsCas12a (WT/2xNLS) CFD specificity, 0-1
 deepcpf1                61.8948                  DeepCpf1 (Kim 2018), raw
-deepcpf1Perc            75                       DeepCpf1, within-batch percentile
+deepcpf1Perc            75                       DeepCpf1, genome-wide percentile
 ascas12aDeepcpf1        0.7324                   AsCas12a seq-DeepCpf1 variant (Chen 2025), raw
-ascas12aDeepcpf1Perc    69                       seq-DeepCpf1 variant, within-batch percentile
+ascas12aDeepcpf1Perc    69                       seq-DeepCpf1 variant, genome-wide percentile
 _mouseOver              AsCas12a Spec: 53, DeepCpf1: 75, AsCas12a-DeepCpf1: 69   (all percentiles)
 _offset                 0                        byte offset into ascas12a_crisprDetails.tab (0 = no list)
 ```

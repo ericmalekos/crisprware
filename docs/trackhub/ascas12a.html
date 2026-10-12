@@ -84,9 +84,8 @@ sharing the genome with many close matches approaches 0. Guides above 0.50 are
 colored by efficiency rather than grayed.</li>
 <li>The DeepCpf1 efficiency score (<a href="#References">Kim et al. 2018</a>) predicts
 whether a guide leads to rather strong or weak cleavage. Scores are given as
-percentiles, e.g. "70%" means that 70% of the guides it was ranked against have a
-score equal or lower than this guide (see the note on percentiles under Methods). The
-raw score is also shown on the details page.</li>
+percentiles, e.g. "70%" means that 70% of the guides in this genome have a score
+equal or lower than this guide. The raw score is also shown on the details page.</li>
 <li>The seq-DeepCpf1 AsCas12a variant score (<a href="#References">Chen et al.
 2025</a>) is a second, more recent on-target model trained per Cas12a variant. It is
 reported for the same guide so the two predictions can be compared; neither is
@@ -136,14 +135,11 @@ but a low-scoring guide can still cut well.
 </p>
 
 <p>
-Efficiency percentiles are <b>relative, not absolute</b>. Guides are scored in batches
-of about 3 million consecutive guides, and each percentile is ranked within its batch.
-For small genomes that batch is the whole genome. For large genomes such as human and
-mouse, a batch covers a contiguous stretch of roughly 50 to 70 Mbp, so a percentile
-describes a guide relative to its regional neighbours. To compare guides that lie far
-apart in a large genome, compare the raw efficiency scores, which are exact and
-genome-wide. Specificity is not affected: every guide is searched against the whole
-genome.
+Efficiency percentiles are ranked over <b>every guide in this genome</b>, not against a
+fixed cross-species reference panel. So a percentile answers "how does this guide
+compare to the alternatives in this genome", and percentiles are directly comparable
+between any two guides in the track, on any chromosome. The raw scores are also
+reported, and are what to use when comparing guides across genomes.
 </p>
 
 <p>
@@ -173,7 +169,7 @@ columns are left blank, and they carry no off-target list.</p>
 On-target efficiency was scored with two convolutional models: DeepCpf1
 (<a href="#References">Kim et al. 2018</a>), the original Cas12a activity CNN, and the
 AsCas12a-specific seq-DeepCpf1 variant model of
-<a href="#References">Chen et al. 2025</a>. Raw scores and their within-batch
+<a href="#References">Chen et al. 2025</a>. Raw scores and their genome-wide
 percentiles are both reported. The two models are on different scales, so only their
 percentiles are directly comparable.</p>
 <p>

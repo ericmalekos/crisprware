@@ -30,13 +30,11 @@ ever visible on guides that are worth using.
 | 6 | `mm1 > 0` or `mm2 > 0` | `120,120,120` | mid grey | has a 1-mm or 2-mm off-target |
 | 7 | not unique (`mm0 > 0`) or dropped | `150,150,150` | light grey | a perfect match exists elsewhere |
 
-The ramp percentiles are ranked within each scoring batch of roughly 3 million consecutive guides
-(`--ucscgb_chunk_max`), not genome-wide, so on a large genome two guides on different chromosomes can
-carry the same color from different raw scores. The specificity greys are unaffected: every guide is
-searched against the whole genome.
+The ramp percentiles are ranked over **every guide in the genome**. A chunked build ranks within each
+chunk first, then the merge re-ranks across all chunks before writing the bigBed, so the colors are
+comparable between any two guides in the track. See [genome-wide percentiles](#genome-wide-percentiles).
 
-Two further conventions in that table are worth stating explicitly, because both differ from a naive
-reading:
+Two conventions in that table are worth stating explicitly, because both differ from a naive reading:
 
 - **The specificity cutoffs are absolute, not percentile.** They are applied to the raw 0 to 1
   AsCas12a specificity. A percentile would be useless here: in a genome of mostly unique guides, such
@@ -119,6 +117,37 @@ description page documents only the `reserved` greys and ramp, and says nothing 
 47 are red, 51, 52, 57, 61, 63, 65, 66 and 69 are olive, and 72, 76, 77 and 88 are green. Note also
 that the Cas9 page's own wording leaves percentile exactly 55 in neither the yellow nor the green
 band (`> 30 and < 55`, then `> 55`); this track puts 55 in yellow.
+
+## Genome-wide percentiles
+
+Every percentile in the track, the `...Perc` columns, the hover numbers and the efficiency ramp that
+`itemRgb` and `_crisprDeepCpf1Color` are built from, is ranked over **all guides in the genome**.
+
+That takes an extra step on a large genome, because the build is chunked. `--ucscgb_chunk_max` splits
+the guide BED into slices of roughly 3 million guides and scores each as an isolated run, so each
+slice can only rank percentiles within itself. The guide BED is position-ordered, so a slice is a
+contiguous stretch of one or two chromosomes: left alone, a percentile would describe a guide against
+its regional neighbours, and the same raw score would land on different percentiles, and sometimes
+different ramp colors, in different parts of the genome. On rn7 that drift reached 5 percentile
+points for one model.
+
+So `merge_ucscgb_tracks` re-ranks everything across all chunks before building the bigBed. The raw
+score columns are exact per guide, which is what makes this recoverable with no rescan and no
+re-scoring: the merge histograms the raw columns while it is already streaming each chunk's BED, then
+rewrites the percentiles, the hover and the ramp colors in one further pass.
+
+Two things are deliberately left alone, because neither is a rank:
+
+- **`score`** (column 5) is the raw specificity times 100.
+- **`_specColor`** uses absolute cutoffs on the raw specificity.
+
+Grey cells are also preserved. The greys encode specificity and uniqueness, which `_item_rgb` applies
+*after* the ramp and which are genome-wide to begin with, so a non-grey cell is always a pure ramp
+color and is the only thing re-derived.
+
+An unchunked build (`--ucscgb_chunk_max 0`, the default, and what the small genomes use) ranks over
+every guide in one pass and skips the re-grade entirely. The two paths agree: `regrade_test` builds
+sacCer3 both ways and asserts the bigBeds match on every percentile, color and hover.
 
 ## Known inconsistency: the hover specificity is a percentile
 
