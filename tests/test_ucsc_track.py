@@ -753,3 +753,30 @@ def test_regrade_bed_percentiles_is_genome_wide(tmp_path):
     # percentile, unlike `score`, which is the raw value x100.
     assert out[5][19] == f"AsCas12a Spec: 58, DeepCpf1: {expect[5]}, AsCas12a-DeepCpf1: {expect[5]}"
     assert out[6][19] == "Not unique, DeepCpf1: 100, AsCas12a-DeepCpf1: 100"
+
+
+def test_percentiles_rank_the_displayed_value_in_both_paths():
+    """build_track and the merge re-grade must agree exactly.
+
+    build_track ranks in pandas over a float column; the merge re-grade can only
+    see the 4-decimal strings written to the BED. Ranking the full-precision float
+    in one and the written value in the other makes a chunked build disagree with
+    an unchunked one wherever rounding merges distinct floats, so both rank the
+    DISPLAYED value. 0.99996 and 1.0 both display as 1.0 and must therefore tie."""
+    raw = pd.Series([1.0, 0.99996, 0.99994, 0.5, 0.5, 0.123456, float("nan")])
+    disp = ucsc_track._fmt_raw(raw)
+    assert list(disp) == ["1.0", "1.0", "0.9999", "0.5", "0.5", "0.1235", ""]
+
+    from_build = ucsc_track._pct_of_displayed(raw).tolist()
+    counts = {}
+    for v in disp:
+        if v:
+            counts[v.encode()] = counts.get(v.encode(), 0) + 1
+    lut = ucsc_track._rank_pct(counts)
+    from_merge = [None if not v else lut[v.encode()] for v in disp]
+
+    assert from_build[:-1] == pytest.approx(from_merge[:-1])
+    assert pd.isna(from_build[-1]) and from_merge[-1] is None
+    # the two values that round together tie, where a full-float rank separates them
+    assert from_build[0] == from_build[1]
+    assert ucsc_track._pct(raw).tolist()[0] != ucsc_track._pct(raw).tolist()[1]

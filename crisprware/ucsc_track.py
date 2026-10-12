@@ -241,6 +241,22 @@ def _fmt_pct_raw(raw: pd.Series, pct: pd.Series) -> pd.Series:
     return pd.Series(out, index=raw.index, dtype="object")
 
 
+def _pct_of_displayed(raw: pd.Series) -> pd.Series:
+    """Percentile rank of a score AS THE TRACK DISPLAYS IT, i.e. of the 4-decimal
+    value :func:`_fmt_raw` writes, not of the full-precision float behind it.
+
+    This is what makes a percentile reproducible from the published file, and it
+    is what lets a chunked build re-rank percentiles genome-wide at merge time
+    (:func:`_regrade_bed_percentiles`), which only has the written columns to work
+    from. Ranking the hidden precision instead silently makes the two build paths
+    disagree: on sacCer3, 711 guides whose specificity rounds to a displayed 1.0
+    rank near the 5th percentile on full floats but join the 53rd-percentile tie
+    once rounded, so 4114 of 590,425 hover labels differed between an unchunked
+    build and a chunked one. Ranking the displayed value removes that whole class
+    of disagreement rather than narrowing it."""
+    return _pct(pd.to_numeric(_fmt_raw(raw), errors="coerce"))
+
+
 def _fmt_raw(raw: pd.Series) -> pd.Series:
     """Raw value to <=4 decimals as a string; blank for NaN. Used for the specificity
     column: a percentile rank is degenerate there because the vast majority of guides
@@ -900,10 +916,10 @@ def build_track(
     # seq-DeepCpf1 variant (Chen 2025). No enCas12a, no TTTN references, no genome.
     if enzyme == "ascas12a":
         spec = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
-        spec_pct = _pct(spec).to_numpy()
+        spec_pct = _pct_of_displayed(spec).to_numpy()
         score = np.clip(np.rint(spec.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
         # percentile per on-target model (score_cols is already the AsCas12a-only set)
-        ot_pct = {c: _pct(g[c]).to_numpy() for c in score_cols}
+        ot_pct = {c: _pct_of_displayed(g[c]).to_numpy() for c in score_cols}
         OT_LABELS = {"deepcpf1_score": "DeepCpf1", "ascas12a_deepcpf1_score": "AsCas12a-DeepCpf1"}
         # The color ramp is driven by ONE on-target model: DeepCpf1 (Kim 2018), else the
         # AsCas12a-variant model. Both are still emitted as display columns + hover.
