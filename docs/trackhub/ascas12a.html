@@ -45,11 +45,10 @@ sequence is, the more likely it is to cleave other locations of the genome
 <table class="stdTbl" style="width:100%">
 <tr><td style="width:50px; background-color:#969696"></td><td>impossible to target: target site has at least one identical copy in the genome and was not scored (<tt>unique = False</tt>)</td></tr>
 <tr><td style="width:50px; background-color:#787878"></td><td>hard to target: the site has at least one off-target at 1 or 2 mismatches</td></tr>
-<tr><td style="width:50px; background-color:#5a5a5a"></td><td>hard to target: aligned, but a marginal AsCas12a specificity of 0.20 to 0.50 (see below)</td></tr>
 <tr><td style="width:50px; background-color:#323232"></td><td>hard to target: aligned, but a low AsCas12a specificity below 0.20</td></tr>
 </table>
 
-<p>Colors highlight targets that are specific in the genome (AsCas12a specificity &gt; 0.50, no close off-targets) but have different predicted efficiencies:</p>
+<p>Colors highlight targets that are specific in the genome (AsCas12a specificity at or above 0.20, no close off-targets) but have different predicted efficiencies:</p>
 <table class="stdTbl" style="width:100%">
 <tr><td style="width:50px; background-color:#FF6464"></td><td>low predicted cleavage: DeepCpf1 efficiency percentile &lt;= 30</td></tr>
 <tr><td style="width:50px; background-color:#FFFF00"></td><td>medium predicted cleavage: DeepCpf1 efficiency percentile &gt; 30 and &lt;= 55</td></tr>

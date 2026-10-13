@@ -51,8 +51,8 @@ The cascade below describes the **AsCas12a** (default) track; the enCas12a diffe
    only 1 or 2 mismatches across the 23-mer. For AsCas12a these are **TTTV** off-targets: TTTT sites are
    excluded, because AsCas12a cannot cleave them.
 3. **Low AsCas12a-TTTV specificity**, an absolute cutoff on the raw 0-to-1 CFD specificity:
-   - raw `< 0.20` -> `50,50,50` (very dark: low specificity),
-   - `0.20 <= raw < 0.50` -> `90,90,90` (marginal specificity).
+   raw `< 0.20` -> `50,50,50`. A guide between 0.20 and 0.50 is **not** greyed; it keeps its
+   efficiency ramp colour, and its specificity is read from `score`, `_specColor` or the hover.
 4. **Otherwise** (unique and specific) the color ramps on the on-target **DeepCpf1 (Kim 2018)**
    percentile (falling back to the AsCas12a seq-DeepCpf1 variant when DeepCpf1 is not scored):
    - `<= 30` -> red `255,100,100` (low predicted cleavage),

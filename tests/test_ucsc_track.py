@@ -748,3 +748,76 @@ def test_regrade_spec_follows_the_models_actually_scored():
 
     # an enzyme with no entry has no rule; build_track rejects it outright
     assert ucsc_track.track_regrade_spec("nosuchenzyme", f) is None
+
+
+def test_marginal_specificity_is_not_greyed():
+    """A 0.20-to-0.50 specificity guide shows its efficiency ramp, not a grey.
+
+    The old scheme had a second grey tier there, which hid the efficiency of a guide
+    whose specificity is poor but usable. Only below SPEC_GREY_BAD is a unique,
+    no-close-off-target guide greyed now.
+    """
+    import numpy as np
+
+    spec = np.array([0.10, 0.19, 0.20, 0.35, 0.49, 0.50, 0.95])
+    top = np.full(spec.shape, 90.0)      # high efficiency -> green if not greyed
+    bottom = np.full(spec.shape, 5.0)    # low efficiency  -> red if not greyed
+
+    assert list(ucsc_track._spec_eff_color(spec, top)) == [
+        "50,50,50", "50,50,50", "0,200,0", "0,200,0", "0,200,0", "0,200,0", "0,200,0",
+    ]
+    # the ramp, not a grey, is what varies across the 0.20-0.50 band
+    assert list(ucsc_track._spec_eff_color(spec, bottom)) == [
+        "50,50,50", "50,50,50", "255,100,100", "255,100,100", "255,100,100",
+        "255,100,100", "255,100,100",
+    ]
+    assert "90,90,90" not in set(ucsc_track._spec_eff_color(spec, top))
+    assert not hasattr(ucsc_track, "SPEC_GREY_MARGINAL")
+
+
+def test_regrade_converts_the_retired_marginal_grey(tmp_path):
+    """Re-grading an older track repaints its 90,90,90 cells with the ramp, while the
+    uniqueness and bad-specificity greys survive untouched.
+
+    This is what lets a finished track adopt the new scheme with no rescan: the colour
+    is a function of the percentile, which the track already carries.
+    """
+    fields = [
+        "chrom", "chromStart", "chromEnd", "name", "score", "strand", "thickStart",
+        "thickEnd", "itemRgb", "_crisprDeepCpf1Color", "_specColor", "guideSeq", "pam",
+        "unique", "AsCas12a_specificity", "deepcpf1", "deepcpf1Perc", "ascas12aDeepcpf1",
+        "ascas12aDeepcpf1Perc", "_mouseOver", "_offset",
+    ]
+    spec = ucsc_track.track_regrade_spec("ascas12a", fields)
+
+    def row(dp, rgb, alt, uniq="True"):
+        return "\t".join([
+            "chrI", "100", "127", "", "30", "+", "104", "127", rgb, alt, "255,0,0",
+            "A" * 23, "TTTA", uniq, "0.3000", dp, "0", dp, "0", "stale", "0",
+        ])
+
+    src = tmp_path / "in.bed"
+    src.write_text("\n".join([
+        row("90.0", "90,90,90", "90,90,90"),        # retired marginal grey, high eff
+        row("10.0", "90,90,90", "90,90,90"),        # retired marginal grey, low eff
+        row("90.0", "50,50,50", "50,50,50"),        # bad specificity: stays grey
+        row("90.0", "120,120,120", "120,120,120"),  # close off-target: stays grey
+        row("90.0", "150,150,150", "150,150,150", "False"),  # non-unique: stays grey
+    ]) + "\n")
+
+    counts = {"deepcpf1": {b"90.0": 4, b"10.0": 1},
+              "ascas12aDeepcpf1": {b"90.0": 4, b"10.0": 1}}
+    out = tmp_path / "out.bed"
+    n = ucsc_track._regrade_bed_percentiles(str(src), str(out), fields, spec, counts)
+    assert n == 5
+
+    got = [l.split("\t") for l in out.read_text().splitlines()]
+    # the two marginal-grey rows now carry a ramp colour driven by their percentile
+    assert got[0][8] == "0,200,0" and got[0][9] == "0,200,0"
+    assert got[1][8] == "255,100,100" and got[1][9] == "255,100,100"
+    # the three real greys are preserved
+    assert got[2][8] == "50,50,50"
+    assert got[3][8] == "120,120,120"
+    assert got[4][8] == "150,150,150"
+    # nothing repainted a cell to the retired grey
+    assert all(r[8] != "90,90,90" and r[9] != "90,90,90" for r in got)

@@ -25,10 +25,15 @@ ever visible on guides that are worth using.
 | 1 | DeepCpf1 percentile `<= 30` | `255,100,100` | <span style="color:#FF6464">red</span> | low predicted cleavage |
 | 2 | DeepCpf1 percentile `30` to `55` | `255,255,0` | yellow | medium predicted cleavage |
 | 3 | DeepCpf1 percentile `> 55` | `0,200,0` | green | high predicted cleavage |
-| 4 | specificity `0.20` to `0.50` | `90,90,90` | dark grey | marginal specificity |
-| 5 | specificity `< 0.20` | `50,50,50` | darkest grey | low specificity |
-| 6 | `mm1 > 0` or `mm2 > 0` | `120,120,120` | mid grey | has a 1-mm or 2-mm off-target |
-| 7 | not unique (`mm0 > 0`) or dropped | `150,150,150` | light grey | a perfect match exists elsewhere |
+| 4 | specificity `< 0.20` | `50,50,50` | dark grey | low specificity |
+| 5 | `mm1 > 0` or `mm2 > 0` | `120,120,120` | mid grey | has a 1-mm or 2-mm off-target |
+| 6 | not unique (`mm0 > 0`) or dropped | `150,150,150` | light grey | a perfect match exists elsewhere |
+
+There is **no grey for a middle specificity band.** A guide between `0.20` and `0.50` keeps its
+efficiency ramp colour: its specificity is poor but usable, and greying it hid the efficiency of a
+guide somebody might still want. Read that guide's specificity from `score`, from `_specColor`, or
+from the hover. An earlier version of these tracks greyed that band `90,90,90`; the colour is a
+function of the stored percentile, so existing tracks were repainted in place without rescoring.
 
 The ramp percentiles are ranked over **every guide in the genome**. A chunked build ranks within each
 chunk first, then the merge re-ranks across all chunks before writing the bigBed, so the colors are
@@ -96,8 +101,8 @@ guide with a perfect match elsewhere has no meaningful specificity to report.
 | ramp colors | `255,100,100` / `255,255,0` / `0,200,0` | same | yes |
 | non-unique grey | `150,150,150` (`#969696`) | `150,150,150` | yes |
 | close-off-target grey | `120,120,120`, when alignment stopped (too many off-targets) | `120,120,120`, when a 1-mm or 2-mm off-target exists | same color, different trigger |
-| low-specificity grey | one tier, `80,80,80` (`#505050`) | **two tiers**, `90,90,90` and `50,50,50` | no, deliberate |
-| low-spec grey basis | MIT specificity `< 50` (grey to 49, never at 50) | raw specificity `< 0.50` | yes, verified exact |
+| low-specificity grey | one tier, `80,80,80` (`#505050`) | one tier, `50,50,50` | same idea, different shade |
+| low-spec grey basis | MIT specificity `< 50` (grey to 49, never at 50) | raw specificity `< 0.20` | no, this track greys a narrower band |
 | `_specColor` cuts | `<= 50` / `<= 70` / `> 70` | same | yes |
 | column 5 / score filter | MIT specificity, 0 to 100 | AsCas12a specificity x100 | yes |
 | missing-efficiency color | `0,0,100` (`#000064`) | none | no, see below |
@@ -114,9 +119,10 @@ Four divergences are real:
    do **not** mark the same predicted activity here as they do on the Cas9 track: they mark positions
    in this genome's own distribution. Closing this would mean choosing and shipping a Cas12a
    reference distribution, which is a scientific decision rather than a code change.
-2. **Two low-specificity grey tiers instead of one.** Cas9 greys everything at or below MIT 50 the
-   same shade. This track splits that band at 0.20 so a hopeless guide is visually distinct from a
-   marginal one.
+2. **A narrower low-specificity grey band.** Cas9 greys everything at or below MIT 50. This track
+   greys only below 0.20, so a guide between 0.20 and 0.50 still shows its efficiency ramp here
+   where Cas9 would hide it. That band is poor but usable, and `score` and `_specColor` already
+   report the specificity.
 3. **No "efficiency could not be calculated" color.** Cas9 reserves `0,0,100` for guides its
    efficiency model could not score. Both Cas12a models score every guide in these runs (0 blanks
    across sacCer3), so the case does not arise and no color is assigned to it.

@@ -204,8 +204,11 @@ def _mismatch_buckets(mm_counts: pd.Series) -> pd.DataFrame:
 # yeast, where ~93% would otherwise be greyed despite median specificity 1.0) is
 # colored by efficiency. Mirrors CRISPOR's "specificity > 50 is good"; the browser
 # score filter is the same raw x100.
-SPEC_GREY_BAD = 0.20  # raw AsCas12a-TTTV < 0.20      -> darkest grey (bad)
-SPEC_GREY_MARGINAL = 0.50  # 0.20 <= raw < 0.50       -> lighter grey (marginal)
+SPEC_GREY_BAD = 0.20  # raw specificity < 0.20       -> grey (bad)
+# There is deliberately no middle tier. A 0.20-to-0.50 guide used to be greyed
+# "90,90,90", which hid its efficiency ramp for a specificity that is poor but still
+# usable; it now shows the ramp like any other specific guide and its specificity is
+# read from `score`, `_specColor` and the hover instead.
 
 # Efficiency-percentile cuts for the red/yellow/green ramp, taken from the Cas9
 # crisprAllTargets track description so the two tracks read the same way:
@@ -265,17 +268,16 @@ def _cas9_style_name(col: str) -> str:
 
 
 def _spec_eff_color(spec_raw, eff_pct) -> np.ndarray:
-    """Color for a unique guide with no close (1/2-mm) off-targets: two-tier
-    ABSOLUTE low-specificity grey on the raw AsCas12a-TTTV specificity, else the
-    red/yellow/green efficiency ramp on the AsCas12a-DeepCpf1 percentile. Missing
+    """Color for a unique guide with no close (1/2-mm) off-targets: a single
+    ABSOLUTE low-specificity grey below :data:`SPEC_GREY_BAD` on the raw specificity,
+    else the red/yellow/green efficiency ramp on the on-target percentile. Missing
     specificity is treated as fully specific (not greyed)."""
     enp = np.where(np.isnan(eff_pct), 100.0, eff_pct)
     out = np.where(
         enp <= EFF_RAMP_LOW, "255,100,100", np.where(enp <= EFF_RAMP_HIGH, "255,255,0", "0,200,0")
     )
     sr = np.where(np.isnan(spec_raw), 1.0, spec_raw)
-    out = np.where(sr < SPEC_GREY_MARGINAL, "90,90,90", out)  # marginal 0.20-0.50
-    out = np.where(sr < SPEC_GREY_BAD, "50,50,50", out)  # bad < 0.20 (overrides marginal)
+    out = np.where(sr < SPEC_GREY_BAD, "50,50,50", out)  # bad < 0.20
     return out
 
 
@@ -993,7 +995,16 @@ def build_track(
 # the raw specificity) are already genome-wide and are left alone.
 # bytes, not str: the re-grade works on raw BED lines, and a str set here would
 # never match, silently replacing every grey with a ramp colour.
-_RAMP_GREYS = frozenset({b"150,150,150", b"120,120,120", b"90,90,90", b"50,50,50"})
+# Greys a re-grade must PRESERVE. They encode specificity and uniqueness, which
+# _item_rgb applies after the ramp and which are genome-wide to begin with, so a cell
+# holding one of these is not a ramp colour and must not be recomputed.
+#
+# `90,90,90` is deliberately NOT here. It was the old marginal (0.20-0.50 specificity)
+# tier, which no longer exists, so re-grading an older track converts those cells to
+# the ramp colour the guide should now show. That is sound because the later overrides
+# win: a cell still reading `90,90,90` means the guide is unique and has no close
+# off-target, so the pure ramp is exactly what belongs there.
+_RAMP_GREYS = frozenset({b"150,150,150", b"120,120,120", b"50,50,50"})
 
 
 def track_regrade_spec(enzyme: str, as_fields: Sequence[str]) -> Optional[dict]:

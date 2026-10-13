@@ -110,8 +110,9 @@ ways (raw, and each off-target's CFD scaled by its PAM's frac-active weight) at 
   cleave a `TTTT` PAM).
 - **itemRgb** (field 9): ramps on the **DeepCpf1 (Kim 2018) percentile**, using the Cas9 track's cuts of
   green `> 55`, yellow `> 30`, red `<= 30`, overridden (in this order) by grey for low **AsCas12a-TTTV**
-  specificity (an **absolute** two-tier cutoff on the raw value: `< 0.20` darkest `50,50,50`,
-  `0.20-0.50` lighter `90,90,90`), then `120,120,120` for a TTTV 1/2-mismatch off-target, then
+  specificity (an **absolute** cutoff on the raw value: `< 0.20` -> `50,50,50`; a guide between
+  0.20 and 0.50 is NOT greyed and keeps its ramp colour), then `120,120,120` for a TTTV
+  1/2-mismatch off-target, then
   `150,150,150` non-unique. The row above is green because DeepCpf1 efficiency is high and the
   specificity (`1.0`) is well above `0.50`.
 - **`_crisprDeepCpf1Color`** (field 10) and **`_specColor`** (field 11): two further pre-computed
@@ -123,7 +124,7 @@ ways (raw, and each off-target's CFD scaled by its PAM's frac-active weight) at 
 - **score** (field 5, 0-1000): `round(enCas12a fa>0.3 PAM-weighted specificity x 100)` (the
   `enCas12a_spec_fa03_wt` column), e.g. `0.9810 -> 98`.
 - **itemRgb** (field 9): ramps on the **EnPAM-GB percentile** with the same green/yellow/red thresholds,
-  overridden by the same absolute two-tier low-specificity greys (on `enCas12a_spec_fa03_wt`), then
+  overridden by the same absolute `< 0.20` low-specificity grey (on `enCas12a_spec_fa03_wt`), then
   close-off-target grey, then non-unique. enCas12a **does** cleave `TTTT`, so the close-off-target counts
   are unrestricted. A guide with a perfect (0-mismatch) off-target elsewhere is **non-unique**: its four
   specificity columns are blanked, `unique = False`, and it is greyed `150,150,150`.
