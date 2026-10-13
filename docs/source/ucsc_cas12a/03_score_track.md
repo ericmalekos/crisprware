@@ -145,6 +145,36 @@ specificity, and the off-target **counts** are exact and population-independent.
 
 ```
 
+## Built-in validation
+
+Every build, chunked or single-pass, streams the final sorted BED through
+`validate_track_bed` before `bedToBigBed` runs, and **fails the run** if the track does
+not hold its invariants. Nothing needs checking or patching afterwards.
+
+What it asserts:
+
+| invariant | what a violation would mean |
+|---|---|
+| every row has the field count the autoSql declares | the BED and the schema disagree |
+| the three colour columns hold only colours the scheme produces | the colour logic drifted from what ships |
+| a ramp colour appears only on a unique guide with no close off-target | a grey override was skipped |
+| each raw cleavage score maps to exactly **one** percentile | percentiles are chunk-local, not genome-wide |
+| a percentile is blank exactly when its raw value is blank | a model scored one half of a pair and not the other |
+| `score` agrees with the specificity column to within 1 | column 5 and the specificity drifted apart |
+| the hover repeats `score` | the hover is showing a rank instead of the raw specificity |
+
+The `score` tolerance of 1 is not slack. `score` is rounded from the full-precision float
+while the specificity column is written to 4 decimals, so a value landing exactly on a
+half legitimately rounds opposite ways in the two: 113 of sacCer3's 590,425 guides sit on
+such a half. Anything beyond 1 is real drift.
+
+The two checks that would have caught real regressions in this track's history are the
+single-percentile-per-raw-value one (percentiles were ranked per chunk) and the
+colour-set one (a retired grey tier kept shipping). Both now fail the build.
+
+Pass `validate=False` to `build_track` to skip it; there is no CLI flag, because the
+check costs one streaming read of a file the build already wrote.
+
 ## Worked example (hg38, 7x A5500)
 
 135.9 M guides, 46 chunks of 3 M, GPUs auto-detected from the allocation:

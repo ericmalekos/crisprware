@@ -821,3 +821,112 @@ def test_regrade_converts_the_retired_marginal_grey(tmp_path):
     assert got[4][8] == "150,150,150"
     # nothing repainted a cell to the retired grey
     assert all(r[8] != "90,90,90" and r[9] != "90,90,90" for r in got)
+
+
+ASCAS12A_FIELDS = [
+    "chrom", "chromStart", "chromEnd", "name", "score", "strand", "thickStart",
+    "thickEnd", "itemRgb", "_crisprDeepCpf1Color", "_specColor", "guideSeq", "pam",
+    "unique", "AsCas12a_specificity", "deepcpf1", "deepcpf1Perc", "ascas12aDeepcpf1",
+    "ascas12aDeepcpf1Perc", "_mouseOver", "_offset",
+]
+
+
+def _valid_row(**over):
+    """One row that satisfies every invariant; keyword args break exactly one."""
+    f = {
+        "chrom": "chrI", "chromStart": "100", "chromEnd": "127", "name": "",
+        "score": "90", "strand": "+", "thickStart": "104", "thickEnd": "127",
+        "itemRgb": "0,200,0", "_crisprDeepCpf1Color": "0,200,0", "_specColor": "0,255,0",
+        "guideSeq": "A" * 23, "pam": "TTTA", "unique": "True",
+        "AsCas12a_specificity": "0.9000", "deepcpf1": "70.0", "deepcpf1Perc": "80",
+        "ascas12aDeepcpf1": "0.7", "ascas12aDeepcpf1Perc": "80",
+        "_mouseOver": "AsCas12a Spec: 90, DeepCpf1: 80, AsCas12a-DeepCpf1: 80",
+        "_offset": "0",
+    }
+    f.update(over)
+    return "\t".join(f[k] for k in ASCAS12A_FIELDS)
+
+
+def _write_bed(tmp_path, rows, name="t.bed"):
+    p = tmp_path / name
+    p.write_text("\n".join(rows) + "\n")
+    return str(p)
+
+
+def test_validator_accepts_a_well_formed_track(tmp_path):
+    bed = _write_bed(tmp_path, [_valid_row(), _valid_row(chromStart="200", chromEnd="227")])
+    stats = ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
+    assert stats["guides"] == 2
+
+
+def test_validator_catches_chunk_local_percentiles(tmp_path):
+    """The regression that shipped: one raw score mapping to two percentiles, which is
+    exactly the signature of ranking within a chunk instead of genome-wide."""
+    bed = _write_bed(tmp_path, [
+        _valid_row(deepcpf1="70.0", deepcpf1Perc="80"),
+        _valid_row(chromStart="200", chromEnd="227", deepcpf1="70.0", deepcpf1Perc="42"),
+    ])
+    with pytest.raises(ValueError, match="not genome-wide"):
+        ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
+
+
+def test_validator_catches_a_retired_or_stray_colour(tmp_path):
+    """The other regression that shipped: a colour the scheme no longer produces."""
+    bed = _write_bed(tmp_path, [_valid_row(itemRgb="90,90,90")])
+    with pytest.raises(ValueError, match="cannot produce"):
+        ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
+
+
+def test_validator_catches_score_disagreeing_with_specificity(tmp_path):
+    bed = _write_bed(tmp_path, [_valid_row(score="42")])
+    with pytest.raises(ValueError, match="differ by more than 1"):
+        ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
+
+
+def test_validator_tolerates_the_four_decimal_rounding_of_specificity(tmp_path):
+    """score is rounded from the full-precision float, the column is written to 4
+    decimals, so a value sitting exactly on a half legitimately differs by 1. Real on
+    sacCer3: 113 of 590,425 guides, e.g. a displayed 0.905 whose score is 91."""
+    ok = _write_bed(tmp_path, [
+        _valid_row(AsCas12a_specificity="0.9050", score="91",
+                   _mouseOver="AsCas12a Spec: 91, DeepCpf1: 80, AsCas12a-DeepCpf1: 80"),
+        _valid_row(chromStart="200", chromEnd="227",
+                   AsCas12a_specificity="0.9150", score="91",
+                   _mouseOver="AsCas12a Spec: 91, DeepCpf1: 80, AsCas12a-DeepCpf1: 80"),
+    ], name="ok.bed")
+    assert ucsc_track.validate_track_bed(ok, ASCAS12A_FIELDS, "ascas12a")["guides"] == 2
+
+    # two off is drift, not rounding
+    bad = _write_bed(tmp_path, [
+        _valid_row(AsCas12a_specificity="0.9000", score="92",
+                   _mouseOver="AsCas12a Spec: 92, DeepCpf1: 80, AsCas12a-DeepCpf1: 80")
+    ], name="bad.bed")
+    with pytest.raises(ValueError, match="differ by more than 1"):
+        ucsc_track.validate_track_bed(bad, ASCAS12A_FIELDS, "ascas12a")
+
+
+def test_validator_catches_a_percentile_in_the_hover(tmp_path):
+    """The hover must repeat `score`, never a rank of the specificity."""
+    bed = _write_bed(tmp_path, [
+        _valid_row(_mouseOver="AsCas12a Spec: 53, DeepCpf1: 80, AsCas12a-DeepCpf1: 80")
+    ])
+    with pytest.raises(ValueError, match="hover specificity"):
+        ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
+
+
+def test_validator_catches_a_ramp_colour_on_a_non_unique_guide(tmp_path):
+    bed = _write_bed(tmp_path, [_valid_row(unique="False", itemRgb="0,200,0")])
+    with pytest.raises(ValueError, match="ramp colour instead of a grey"):
+        ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
+
+
+def test_validator_catches_a_percentile_without_a_raw_value(tmp_path):
+    bed = _write_bed(tmp_path, [_valid_row(deepcpf1="", deepcpf1Perc="80")])
+    with pytest.raises(ValueError, match="without a percentile, or the reverse"):
+        ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
+
+
+def test_validator_catches_a_wrong_field_count(tmp_path):
+    bed = _write_bed(tmp_path, [_valid_row() + "\textra"])
+    with pytest.raises(ValueError, match="autoSql declares"):
+        ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")

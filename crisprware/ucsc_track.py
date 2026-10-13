@@ -242,6 +242,7 @@ EFF_COLOR_FIELDS = ("itemRgb", "_crisprDeepCpf1Color")
 ENZYME_TRACK_SPECS: Dict[str, dict] = {
     "ascas12a": {
         "spec_label": "AsCas12a Spec",
+        "score_spec": "AsCas12a_specificity",
         "ontarget": [
             ("deepcpf1_score", "DeepCpf1"),
             ("ascas12a_deepcpf1_score", "AsCas12a-DeepCpf1"),
@@ -249,6 +250,7 @@ ENZYME_TRACK_SPECS: Dict[str, dict] = {
     },
     "encas12a": {
         "spec_label": "enCas12a Spec (fa>0.3 wt)",
+        "score_spec": "enCas12a_spec_fa03_wt",
         "ontarget": [
             ("enpam_gb_score", "EnPAM-GB"),
             ("encas12a_hf1_score", "enAsCas12a-HF1"),
@@ -725,6 +727,8 @@ def _write_track(
     as_name: str,
     chrom_sizes: Optional[str],
     run_tools: bool,
+    enzyme: str = "ascas12a",
+    validate: bool = True,
 ) -> Dict[str, str]:
     """Shared tail for :func:`build_track`: write the sorted BED + autoSql, then (if
     the UCSC tools are on PATH) bgzip+index the details and build the bigBed. ``out``
@@ -736,6 +740,15 @@ def _write_track(
     with open(as_path, "w") as fh:
         fh.write(as_content)
     artifacts = {"bed": bed_path, "details_tab": details_path, "autosql": as_path}
+    # Same invariant check the chunked merge runs, so a single-pass build cannot ship
+    # something a chunked build would have caught (or vice versa).
+    if validate:
+        stats = validate_track_bed(bed_path, autosql_field_names(as_path), enzyme)
+        print(
+            f"\n\tinvariants OK: {stats['guides']} guides, "
+            f"{stats['distinct_percentiles']} distinct raw->percentile pairs\n",
+            flush=True,
+        )
     if run_tools:
         bgzip = _have_tool("bgzip")
         if bgzip:
@@ -766,6 +779,7 @@ def build_track(
     run_tools: bool = True,
     genome_fa: Optional[str] = None,
     enzyme: str = "ascas12a",
+    validate: bool = True,
     bb_name: Optional[str] = None,
     details_name: Optional[str] = None,
     as_name: Optional[str] = None,
@@ -907,7 +921,10 @@ def build_track(
         out["_mouseOver"] = hover
         out["_offset"] = [offsets.get(gid, 0) for gid in g["id"].to_numpy()]
         as_content = build_autosql_ascas12a(ot_cols)
-        return _write_track(out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes, run_tools)
+        return _write_track(
+            out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes,
+            run_tools, enzyme=enzyme, validate=validate,
+        )
 
     # --- enCas12a single-enzyme track (broad fa>0.3 off-target search) ---
     # Four guidescan specificities (raw + PAM-activity-weighted, at the fa>0.6 and fa>0.3
@@ -973,7 +990,10 @@ def build_track(
         out["_mouseOver"] = hover
         out["_offset"] = [offsets.get(gid, 0) for gid in g["id"].to_numpy()]
         as_content = build_autosql_encas12a(ot_cols)
-        return _write_track(out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes, run_tools)
+        return _write_track(
+            out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes,
+            run_tools, enzyme=enzyme, validate=validate,
+        )
 
 
 
@@ -1043,6 +1063,7 @@ def track_regrade_spec(enzyme: str, as_fields: Sequence[str]) -> Optional[dict]:
         # the efficiency models below are ranked and therefore need re-grading.
         "spec_score": "score",
         "spec_label": espec["spec_label"],
+        "score_spec_col": espec["score_spec"],
         "hover": "_mouseOver",
         "models": models,
     }
@@ -1086,6 +1107,133 @@ def _ramp_colour(pct: Optional[float]) -> bytes:
     if enp <= EFF_RAMP_LOW:
         return b"255,100,100"
     return b"255,255,0" if enp <= EFF_RAMP_HIGH else b"0,200,0"
+
+
+# Every colour a track is allowed to emit. Anything else in a colour column means
+# the colour logic and this list have drifted apart, which is what shipped the
+# retired "90,90,90" marginal-specificity grey into five genomes before anyone looked.
+RAMP_COLOURS = frozenset({b"255,100,100", b"255,255,0", b"0,200,0"})
+VALID_COLOURS = RAMP_COLOURS | _RAMP_GREYS
+VALID_SPEC_COLOURS = frozenset({b"255,0,0", b"128,128,0", b"0,255,0"})
+
+
+def validate_track_bed(bed_path: str, as_fields: Sequence[str], enzyme: str) -> Dict[str, int]:
+    """Check a finished track BED against the invariants the track is meant to hold,
+    and raise :class:`ValueError` listing every violation found.
+
+    This runs inside the build, on the final sorted BED, so a track that violates an
+    invariant fails the run instead of being discovered later and patched by hand. It
+    is a single streaming pass and keeps only per-value tallies, so it costs one read
+    of the BED regardless of genome size.
+
+    What it asserts:
+
+    * every row has exactly the field count the autoSql declares;
+    * the three colour columns hold only colours the scheme can produce, so a retired
+      or stray colour cannot ship;
+    * a colour column is a ramp colour only where the guide is unique and free of
+      close off-targets, since the greys override the ramp;
+    * each raw cleavage score maps to exactly ONE percentile, which is what makes the
+      percentile genome-wide rather than chunk-local;
+    * a percentile is blank exactly when its raw value is blank;
+    * ``score`` agrees with the specificity column to within 1, so column 5 and the
+      specificity cannot drift apart. The tolerance is not slack: ``score`` is rounded
+      from the full-precision float while the column is written to 4 decimals, so when
+      ``displayed x 100`` lands exactly on a half the two legitimately round opposite
+      ways and differ by 1. Measured on sacCer3, 113 of 590,425 guides sit on such a
+      half (e.g. a displayed 0.905 whose score is 91). Anything beyond 1 is real drift;
+    * the hover reports that same ``score``, not a percentile.
+    """
+    spec = track_regrade_spec(enzyme, as_fields)
+    if spec is None:
+        raise ValueError(f"cannot validate enzyme {enzyme!r}: no track spec")
+    idx = {f: i for i, f in enumerate(as_fields)}
+    n_f = len(as_fields)
+    i_spec_col = idx["_specColor"]
+    i_uniq, i_hover, i_score = idx[spec["unique"]], idx[spec["hover"]], idx["score"]
+    spec_raw_col = spec["score_spec_col"]
+    if spec_raw_col not in idx:
+        raise ValueError(
+            f"{enzyme} track is missing its score-driving specificity column {spec_raw_col!r}"
+        )
+    i_spec_raw = idx[spec_raw_col]
+    label = spec["spec_label"].encode() + b": "
+    models = [(idx[raw], idx.get(raw + "Perc"), idx[col], raw) for raw, _lab, col in spec["models"]]
+
+    bad_colour: Dict[bytes, int] = {}
+    pct_of: Dict[str, Dict[bytes, bytes]] = {raw: {} for _ir, _ip, _ic, raw in models}
+    multi: Dict[str, set] = {raw: set() for _ir, _ip, _ic, raw in models}
+    n = n_blank_mismatch = n_score_mismatch = n_hover_mismatch = n_ramp_on_grey = 0
+
+    with open(bed_path, "rb") as fh:
+        for row in fh:
+            row = row.rstrip(b"\n")
+            if not row:
+                continue
+            f = row.split(b"\t")
+            if len(f) != n_f:
+                raise ValueError(
+                    f"{bed_path}: row {n} has {len(f)} fields, autoSql declares {n_f}"
+                )
+            n += 1
+            greyed = f[idx[spec["unique"]]] == b"False"
+            for c in (f[i] for _ir, _ip, i, _raw in models):
+                if c not in VALID_COLOURS:
+                    bad_colour[c] = bad_colour.get(c, 0) + 1
+                elif greyed and c in RAMP_COLOURS:
+                    n_ramp_on_grey += 1
+            if f[i_spec_col] not in VALID_SPEC_COLOURS:
+                bad_colour[f[i_spec_col]] = bad_colour.get(f[i_spec_col], 0) + 1
+            for i_raw, i_pct, _i_col, raw in models:
+                if i_pct is None:
+                    continue
+                rv, pv = f[i_raw], f[i_pct]
+                if (rv == b"") != (pv == b""):
+                    n_blank_mismatch += 1
+                    continue
+                if rv == b"":
+                    continue
+                seen = pct_of[raw].setdefault(rv, pv)
+                if seen != pv:
+                    multi[raw].add(rv)
+            # score vs the specificity column, to within the 4-decimal rounding (see
+            # the docstring), and the hover repeats score verbatim
+            if not greyed and f[i_spec_raw]:
+                if abs(int(f[i_score]) - float(f[i_spec_raw]) * 100.0) > 1.0:
+                    n_score_mismatch += 1
+            if not greyed and not f[i_hover].startswith(label + f[i_score]):
+                n_hover_mismatch += 1
+
+    problems = []
+    if bad_colour:
+        shown = ", ".join(f"{c.decode()} x{k}" for c, k in sorted(bad_colour.items())[:6])
+        problems.append(f"{sum(bad_colour.values())} cells hold a colour the scheme cannot produce ({shown})")
+    if n_ramp_on_grey:
+        problems.append(f"{n_ramp_on_grey} non-unique guides carry a ramp colour instead of a grey")
+    for raw, vals in multi.items():
+        if vals:
+            ex = ", ".join(v.decode() for v in sorted(vals)[:3])
+            problems.append(
+                f"{raw}: {len(vals)} raw values map to more than one percentile "
+                f"(e.g. {ex}); percentiles are not genome-wide"
+            )
+    if n_blank_mismatch:
+        problems.append(f"{n_blank_mismatch} rows have a raw value without a percentile, or the reverse")
+    if n_score_mismatch:
+        problems.append(
+            f"{n_score_mismatch} rows where score and the specificity column differ by more than 1"
+        )
+    if n_hover_mismatch:
+        problems.append(f"{n_hover_mismatch} rows where the hover specificity does not equal score")
+    if problems:
+        raise ValueError(
+            f"track invariants violated in {bed_path} ({n} guides):\n\t"
+            + "\n\t".join(problems)
+        )
+    return {
+        "guides": n,
+        "distinct_percentiles": sum(len(v) for v in pct_of.values()),
+    }
 
 
 def _regrade_bed_percentiles(
@@ -1284,6 +1432,12 @@ def merge_ucscgb_tracks(
         f"LC_ALL=C sort -S{sort_mem} --parallel={sort_threads} -T {out} -k1,1 -k2,2n {merged_bed} > {sorted_bed}",
         shell=True,
         check=True,
+    )
+    stats = validate_track_bed(sorted_bed, as_fields, enzyme)
+    print(
+        f"  invariants OK: {stats['guides']} guides, "
+        f"{stats['distinct_percentiles']} distinct raw->percentile pairs",
+        flush=True,
     )
     bb = os.path.join(out, bb_name)
     subprocess.run([bedtobigbed, "-tab", "-type=bed9+", f"-as={as_file}", sorted_bed, chrom_sizes, bb], check=True)
