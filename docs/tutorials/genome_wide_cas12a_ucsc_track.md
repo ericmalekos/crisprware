@@ -32,7 +32,7 @@ Three files that together form one UCSC "bigDataUrl" track (default `--ucscgb_en
 
 | File | What it is |
 |------|------------|
-| `ascas12a.bb` | bigBed (`bed9+8`, 17 fields) of every guide: position, strand, on-target color, and the per-guide score/specificity/efficiency columns shown on hover and on the details page. |
+| `ascas12a.bb` | bigBed (`bed9+12`, 21 fields) of every guide: position, strand, three colour columns (`itemRgb`, `_crisprDeepCpf1Color`, `_specColor`, selectable in the browser via the trackDb `colorFields` setting), and the per-guide specificity and on-target columns shown on hover and on the details page. Each on-target model contributes a raw column plus a `...Perc` percentile sibling, matching the Cas9 track's `fusi`/`fusiPerc` layout. |
 | `ascas12a_crisprDetails.tab.gz` (+ `.gzi`) | bgzip-compressed, byte-offset-indexed per-guide off-target lists (the long tables shown when you click a guide). |
 | `ascas12aTargets.as` | the autoSql schema describing the bigBed's columns. |
 
@@ -209,23 +209,32 @@ crisprware score_guides ... --ucscgb_chunk_max 3000000 --ucscgb_gpus 0,1,2,3,4,5
   merge (for inspection or resume); by default it is removed on success.
 
 ```{important}
-**Percentiles are per-chunk.** The item *color* efficiency ramp (green/yellow/red) and the
-percentile prefixes on the on-target columns (e.g. `63% (0.6275)`) are ranked **within each
-chunk**, not across the whole genome (the merge does not re-rank). Everything else is exact and
-identical no matter how you chunk: the raw values in parentheses (the actual CFD and on-target
-model outputs), the raw specificity columns, and the specificity-derived `score`. If you need
-globally-ranked percentiles, score in a single pass (`--ucscgb_chunk_max 0`).
+**Percentiles are genome-wide, however you chunk.** Each chunk is scored in isolation, but the
+merge accumulates a histogram over every chunk and re-ranks the `deepcpf1Perc` and
+`ascas12aDeepcpf1Perc` columns, together with the two efficiency colour fields those percentiles
+drive (`itemRgb` and `_crisprDeepCpf1Color`), against the whole genome before the final bigBed is
+written. `--ucscgb_chunk_max` therefore has no effect on any published value, and no post-pass
+re-ranking is required.
+
+Ranking is on the value **as the track displays it** (rounded to 4 decimals), not the
+full-precision float behind it, which is what makes the chunked and unchunked paths agree
+exactly. `score`, the raw `AsCas12a_specificity` and `_specColor` are not ranks at all: they are
+absolute functions of the raw CFD specificity, so they are identical under any chunking.
 ```
 
 ### Equivalence and correctness
 
-The chunked path is byte-for-byte equivalent to the manual
-"`chunk_guides.py` + per-chunk `score_guides` + `merge_tracks.py`" workflow (it reuses the
-same single-pass scorer and the same merge). On a chr22 control (50,000 guides, 2 chunks
-vs. one pass) every population-invariant value matches exactly - coordinates, sequence,
-unique flags, raw CFD specificity, raw on-target scores, and the entire off-target detail
-content - while only the per-chunk percentile columns rebase, as expected. Every merged
-`_offset` resolves to the correct off-target line.
+The chunked path reuses the same single-pass scorer and the same merge as the manual
+"`chunk_guides.py` + per-chunk `score_guides` + `merge_tracks.py`" workflow. Since the merge
+re-ranks genome-wide, a chunked build now matches an unchunked one on the percentile and colour
+columns as well, not just the population-invariant ones.
+
+Verified on a full sacCer3 control (590,425 guides, 6 chunks vs. one pass): `itemRgb`,
+`_crisprDeepCpf1Color`, `_specColor`, `score`, `AsCas12a_specificity`, `deepcpf1Perc`,
+`ascas12aDeepcpf1Perc` and `_mouseOver` are identical in both builds. The only differences are 25
+guides whose raw on-target floats move in the 4th decimal place, which is CNN batch-size
+nondeterminism in the on-target models and not a chunking artefact. Every merged `_offset`
+resolves to the correct off-target line.
 
 ## Running on a SLURM cluster
 
@@ -332,8 +341,10 @@ What is different from the AsCas12a build:
   `seq_deepcpf1variants --cas12a_variant enAsCas12a-HF1` -> the higher-fidelity
   **enAsCas12a-HF1** seq-DeepCpf1 variant (Chen 2025).
 
-Everything else (the chunked/multi-GPU engine, the per-chunk percentile caveat, and hosting
-in UCSC) is identical to the AsCas12a build. The legacy single-track **dual** build
+The chunked/multi-GPU engine and the UCSC hosting steps are identical to the AsCas12a build, with
+one difference that matters: **the genome-wide percentile re-grade is AsCas12a-only.** A chunked
+enCas12a build leaves its percentiles and efficiency-ramp colours ranked within each chunk and
+prints `WARNING: no percentile re-grading rule for enzyme='encas12a'` when it merges. The legacy single-track **dual** build
 (`--ucscgb_enzyme dual`, which carries both enzymes' TTTV/TTTN specificities in one 23-field
 `cas12a.bb`) is retained for back-compat only.
 

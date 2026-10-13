@@ -14,7 +14,7 @@ A UCSC CRISPR track is **three files**. For the default AsCas12a track:
 
 | File | What it is |
 |------|------------|
-| `ascas12a.bb` | bigBed (`bed9+8`, **17 fields**) of on-target guides, one row per protospacer |
+| `ascas12a.bb` | bigBed (`bed9+12`, **21 fields**) of on-target guides, one row per protospacer |
 | `ascas12a_crisprDetails.tab.gz` | bgzip-compressed per-guide off-target lists |
 | `ascas12a_crisprDetails.tab.gz.gzi` | the bgzip `.gzi` index (produced by `bgzip -i`) |
 

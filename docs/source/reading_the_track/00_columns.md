@@ -98,9 +98,12 @@ for back-compat; new tracks should use `ascas12a` or `encas12a`.
   shown: the vast majority of guides tie at `1.0`, so a percentile rank there is degenerate. AsCas12a has
   one such column (`AsCas12a_specificity`); enCas12a has four (`enCas12a_spec_fa06`, `_fa06_wt`, `_fa03`,
   `_fa03_wt`).
-- **On-target efficiency columns read `percentile (raw)`**, e.g. `96% (0.8212)`. The **percentile** is
-  ranked within the guide's chunk; the **raw** value in parentheses is exact and global (DeepCpf1's native
-  output is ~0-100, the others are 0-1).
+- **On-target efficiency columns.** On the **AsCas12a** track each model emits two columns, a raw value
+  and a `...Perc` percentile sibling (`deepcpf1` / `deepcpf1Perc`), following the Cas9 track's
+  `fusi`/`fusiPerc` layout; the percentile is ranked over **all guides in the genome**. On the
+  **enCas12a** and legacy **dual** tracks the two are still packed into one `percentile (raw)` string,
+  e.g. `96% (0.8212)`, and that percentile is ranked **within the guide's chunk**. In every case the raw
+  value is exact and global (DeepCpf1's native output is ~0-100, the others are 0-1).
 
 ## score and color
 
@@ -130,8 +133,13 @@ for back-compat; new tracks should use `ascas12a` or `encas12a`.
   specificity columns are blanked, `unique = False`, and it is greyed `150,150,150`.
 
 ```{warning}
-The itemRgb efficiency **ramp** (green/yellow/red) and the `NN%` percentile prefixes on the on-target
-columns are ranked **within each chunk** (see the [scoring step](../ucsc_cas12a/03_score_track.md)), not
-genome-wide. The **raw** specificity columns, the parenthesized raw on-target values, and the
-specificity-derived `score` are exact and comparable across the whole genome.
+**The percentile basis differs between the two tracks.** On the **AsCas12a** track the `...Perc` columns
+and the efficiency ramps built from them are re-ranked **genome-wide** when the chunks merge, so they are
+comparable anywhere in the genome. On the **enCas12a** and legacy **dual** tracks they are still ranked
+**within each chunk**: no re-grading rule is defined for those enzymes, and a chunked build prints
+`WARNING: no percentile re-grading rule for enzyme=...` to say so. See the
+[scoring step](../ucsc_cas12a/03_score_track.md).
+
+On both tracks the **raw** specificity columns, the raw on-target values, and the specificity-derived
+`score` and `_specColor` are absolute, never ranked, and comparable across the whole genome.
 ```

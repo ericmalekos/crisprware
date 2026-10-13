@@ -129,11 +129,17 @@ flowchart LR
   chunks in flight, not the whole genome.
 - `--ucscgb_keep_chunks` keeps the per-chunk dirs for debugging.
 
-```{warning}
-The bigBed **percentile** columns (score, color, the "NN%" display) are ranked **within each chunk**, the
-merge does not recompute global percentiles. Raw specificity, raw on-target scores (the parenthesized
-values), and the off-target **counts** are exact and population-independent. For genome-global
-percentiles, re-rank the stored raw values in a post-pass; no rescoring is needed.
+```{note}
+**Percentiles are genome-wide, including on the chunked path.** Each chunk is scored in isolation, but
+the merge accumulates a histogram of every chunk's on-target values and re-ranks the `deepcpf1Perc` and
+`ascas12aDeepcpf1Perc` columns, plus the two efficiency colour fields they drive, against the whole
+genome before writing the final bigBed. No post-pass is needed, and `--ucscgb_chunk_max` does not change
+a published percentile.
+
+Ranking is on the value **as the track displays it** (4 decimal places), not on the full-precision float
+behind it, so the chunked and unchunked paths agree exactly. `score`, `AsCas12a_specificity` and
+`_specColor` are never ranked at all: they are absolute functions of the raw CFD specificity, and the
+off-target **counts** are exact and population-independent.
 ```
 
 ## Worked example (hg38, 7x A5500)

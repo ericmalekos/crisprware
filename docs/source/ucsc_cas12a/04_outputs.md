@@ -2,12 +2,12 @@
 
 ## What you get
 
-Each track is three files, named for the enzyme. For the default **AsCas12a** build (`bed9+8`, 17
+Each track is three files, named for the enzyme. For the default **AsCas12a** build (`bed9+12`, 21
 fields); sizes are from a reference hg38 build and are approximate (they scale with the field count):
 
 ```text
 track_hg38_ascas12a/
-  ascas12a.bb                        bigBed, 135,867,611 rows x 17 fields
+  ascas12a.bb                        bigBed, 135,867,611 rows x 21 fields
   ascas12a_crisprDetails.tab.gz      bgzip off-target lists
   ascas12a_crisprDetails.tab.gz.gzi  bgzip index
   ascas12aTargets.as                 autoSql column schema
