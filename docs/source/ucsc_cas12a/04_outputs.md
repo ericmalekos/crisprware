@@ -14,9 +14,11 @@ track_hg38_ascas12a/
 ```
 
 The **enCas12a** build (`--ucscgb_enzyme encas12a`) writes the same layout under `encas12a.*` names, with
-`encas12a.bb` at `bed9+11` (**20 fields**) and `encas12a_crisprDetails.tab.gz` (+ `.gzi`) /
-`encas12aTargets.as`. The extra columns are the four guidescan specificities (raw + PAM-weighted, at the
-`fa>0.6` and `fa>0.3` cutoffs) instead of AsCas12a's single `AsCas12a_specificity`.
+`encas12a.bb` at `bed9+15` (**24 fields**) and `encas12a_crisprDetails.tab.gz` (+ `.gzi`) /
+`encas12aTargets.as`. It differs from AsCas12a only in its score columns: four guidescan specificities
+(raw + PAM-weighted, at the `fa>0.6` and `fa>0.3` cutoffs) instead of the single
+`AsCas12a_specificity`, and its own two cleavage models. The three colourings, the split raw/`...Perc`
+layout, the hover format and the genome-wide percentile basis are identical.
 
 For the hg38 reference build, **106,017,484 of 135,867,611 guides (78%)** carry a stored off-target list
 (`_offset > 0`); the other 22% store none (`_offset = 0`): non-unique guides, or unique guides already

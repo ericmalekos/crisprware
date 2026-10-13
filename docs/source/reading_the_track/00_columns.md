@@ -6,7 +6,7 @@ row per guide, defined by its own autoSql. The default is `ascas12a`:
 | `--ucscgb_enzyme` | files | layout | fields |
 |-------------------|-------|--------|--------|
 | `ascas12a` (default) | `ascas12a.bb` / `ascas12aTargets.as` / `ascas12a_crisprDetails.tab.gz` | `bed9+12` | **21** |
-| `encas12a` | `encas12a.bb` / `encas12aTargets.as` / `encas12a_crisprDetails.tab.gz` | `bed9+11` | **20** |
+| `encas12a` | `encas12a.bb` / `encas12aTargets.as` / `encas12a_crisprDetails.tab.gz` | `bed9+15` | **24** |
 | `dual` (legacy) | `cas12a.bb` / `cas12aTargets.as` / `crisprDetails.tab.gz` | `bed9+14` | 23 |
 
 The leading bed9 columns and the `_mouseOver`/`_offset` trailer are identical across all three. The
@@ -55,9 +55,9 @@ reads `score 100` but `Spec: 53`, because a raw specificity of 1.0 is a large ti
 
 ## enCas12a track (`--ucscgb_enzyme encas12a`)
 
-`bed9+11` = **20 fields**. Off-targets are searched against the broad **fa>0.3 (30-PAM)** index, and the
-specificity is reported four ways (raw and PAM-activity-weighted, at the fa>0.6 and fa>0.3 PAM-activity
-cutoffs). A real row:
+`bed9+15` = **24 fields**, the same shape as the AsCas12a track. Off-targets are searched against the
+broad **fa>0.3 (30-PAM)** index, and the specificity is reported four ways (raw and PAM-activity-weighted,
+at the fa>0.6 and fa>0.3 PAM-activity cutoffs). A real row:
 
 ```text
 chrom                   chr1
@@ -68,7 +68,9 @@ score                   98                       round(enCas12a fa>0.3 PAM-weigh
 strand                  +
 thickStart              1000170
 thickEnd                1000193
-itemRgb                 0,200,0
+itemRgb                 0,200,0                  specificity grey, else the EnPAM-GB efficiency ramp
+_crisprDeepCpf1Color    0,200,0                  same scheme on the second model (enAsCas12a-HF1)
+_specColor              0,255,0                  specificity alone, no uniqueness greys
 guideSeq                CCACACTCGCCCCAGCCAATCGA
 pam                     TTTC
 unique                  True                     no identical protospacer elsewhere at a fa>0.3 PAM
@@ -76,9 +78,11 @@ enCas12a_spec_fa06      0.9958                   RAW CFD specificity; off-target
 enCas12a_spec_fa06_wt   0.9971                   RAW PAM-activity-weighted specificity; fa>0.6 PAMs
 enCas12a_spec_fa03      0.9762                   RAW CFD specificity; off-targets at moderate-activity fa>0.3 PAMs
 enCas12a_spec_fa03_wt   0.9810                   RAW PAM-weighted specificity; fa>0.3 PAMs (drives score/color)
-enpam_gb_score          19% (0.7867)             EnPAM-GB (Kim 2020)
-encas12a_hf1_score      61% (0.6454)             seq-DeepCpf1 enAsCas12a-HF1 variant (Chen 2025)
-_mouseOver              enCas12a Spec (fa>0.3 wt): 0.981, EnPAM-GB: 19, enAsCas12a-HF1: 61
+enpamGb                 0.7867                   EnPAM-GB (Kim 2020), raw
+enpamGbPerc             19                       EnPAM-GB, genome-wide percentile
+encas12aHf1             0.6454                   seq-DeepCpf1 enAsCas12a-HF1 variant (Chen 2025), raw
+encas12aHf1Perc         61                       enAsCas12a-HF1, genome-wide percentile
+_mouseOver              enCas12a Spec (fa>0.3 wt): 98, EnPAM-GB: 19, enAsCas12a-HF1: 61
 _offset                 27614949                 byte offset into encas12a_crisprDetails.tab (0 = no list)
 ```
 
@@ -98,12 +102,11 @@ for back-compat; new tracks should use `ascas12a` or `encas12a`.
   shown: the vast majority of guides tie at `1.0`, so a percentile rank there is degenerate. AsCas12a has
   one such column (`AsCas12a_specificity`); enCas12a has four (`enCas12a_spec_fa06`, `_fa06_wt`, `_fa03`,
   `_fa03_wt`).
-- **On-target efficiency columns.** On the **AsCas12a** track each model emits two columns, a raw value
-  and a `...Perc` percentile sibling (`deepcpf1` / `deepcpf1Perc`), following the Cas9 track's
-  `fusi`/`fusiPerc` layout; the percentile is ranked over **all guides in the genome**. On the
-  **enCas12a** and legacy **dual** tracks the two are still packed into one `percentile (raw)` string,
-  e.g. `96% (0.8212)`, and that percentile is ranked **within the guide's chunk**. In every case the raw
-  value is exact and global (DeepCpf1's native output is ~0-100, the others are 0-1).
+- **On-target efficiency columns** emit two columns per model, a raw value and a `...Perc` percentile
+  sibling (`deepcpf1` / `deepcpf1Perc`, `enpamGb` / `enpamGbPerc`), following the Cas9 track's
+  `fusi`/`fusiPerc` layout. This is the same on every enzyme; only the legacy `dual` track still packs
+  the two into one `percentile (raw)` string. The percentile is ranked over **all guides in the genome**,
+  and the raw value is exact (DeepCpf1's native output is ~0-100, the others are 0-1).
 
 ## score and color
 
@@ -132,14 +135,16 @@ for back-compat; new tracks should use `ascas12a` or `encas12a`.
   are unrestricted. A guide with a perfect (0-mismatch) off-target elsewhere is **non-unique**: its four
   specificity columns are blanked, `unique = False`, and it is greyed `150,150,150`.
 
-```{warning}
-**The percentile basis differs between the two tracks.** On the **AsCas12a** track the `...Perc` columns
-and the efficiency ramps built from them are re-ranked **genome-wide** when the chunks merge, so they are
-comparable anywhere in the genome. On the **enCas12a** and legacy **dual** tracks they are still ranked
-**within each chunk**: no re-grading rule is defined for those enzymes, and a chunked build prints
-`WARNING: no percentile re-grading rule for enzyme=...` to say so. See the
+```{note}
+**Percentiles are genome-wide on every track.** The `...Perc` columns and the efficiency ramps built from
+them are re-ranked over all guides in the genome when the chunks merge, so they are comparable anywhere in
+the genome regardless of how the build was chunked. See the
 [scoring step](../ucsc_cas12a/03_score_track.md).
 
-On both tracks the **raw** specificity columns, the raw on-target values, and the specificity-derived
-`score` and `_specColor` are absolute, never ranked, and comparable across the whole genome.
+The **raw** specificity columns, the raw on-target values, and the specificity-derived `score` and
+`_specColor` are absolute, never ranked, and comparable across the whole genome.
+
+The one exception is the legacy `dual` track, which has no entry in `ENZYME_TRACK_SPECS`; a chunked
+`dual` build prints `WARNING: no percentile re-grading rule for enzyme='dual'` and leaves its packed
+percentiles ranked within each chunk.
 ```

@@ -1,0 +1,27 @@
+# trackDb stanza for the genome-wide enCas12a (enAsCas12a) CRISPR target track.
+# Same shape as ascas12a.ra; the enzyme-specific lines are flagged inline.
+# Paths assume the track files are installed at /gbdb/$db/encas12a/.
+track encas12aTargets
+visibility hide
+shortLabel enCas12a Targets
+longLabel CRISPR/enCas12a (enAsCas12a) Targets, whole genome
+group genes
+type bigBed 9 +
+html encas12a
+itemRgb on
+mouseOverField _mouseOver
+# Column 5 is the enCas12a fa>0.3 PAM-weighted specificity x100, so the filter runs
+# 0 to 100 as on the AsCas12a and Cas9 tracks.
+scoreLabel enCas12a Guide Specificity Score
+scoreFilterMax 100
+bigDataUrl /gbdb/$D/encas12a/encas12a.bb
+# details page is not using a mysql table but a tab-sep file
+detailsTabUrls _offset=/gbdb/$db/encas12a/encas12a_crisprDetails.tab
+# The same three pre-computed colour schemes every track ships, selectable from the
+# "Color by:" dropdown. "default" is column 9 (itemRgb). The two alternatives are
+# plain extra bigBed string fields holding "R,G,B", so this needs no browser-side
+# code. Only the cleavage models named here differ from the AsCas12a stanza.
+colorFields default="Efficiency (EnPAM-GB)" _crisprDeepCpf1Color="Efficiency (seq-DeepCpf1 enAsCas12a-HF1)" _specColor="Off-target specificity (enCas12a fa>0.3 wt)"
+tableBrowser tbNoGenome
+noGenomeReason This track is too big for whole-genome Table Browser access, it would lead to a timeout in your internet browser. Small regional queries can work, but large regions, such as entire chromosomes, will fail. Please see the CRISPR Track documentation, the section "Data Access", for bulk-download options and remote access via the bedToBigBed tool. API access should always work. Contact us if you encounter difficulties with accessing the data.
+denseCoverage 0

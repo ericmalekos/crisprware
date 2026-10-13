@@ -18,6 +18,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from crisprware import ucsc_track  # noqa: E402
 
 
+
+def _as_index(as_path):
+    """Field name -> BED column index, read from the track's own autoSql.
+
+    Indexing by name rather than position keeps these tests from breaking every
+    time a column is added, which is what happened when the two alternative
+    colour fields became universal."""
+    return {f: i for i, f in enumerate(ucsc_track.autosql_field_names(as_path))}
+
 def _write_enum(prefix):
     """Two guides: g_uniq (unique, off-targets at + and -), g_dup (perfect-match
     duplicate -> dropped)."""
@@ -468,7 +477,8 @@ def test_build_track_encas12a_four_specificities(tmp_path):
         assert banned not in aso
 
     bed = [line.rstrip("\n").split("\t") for line in open(art["bed"])]
-    assert all(len(r) == 20 for r in bed)  # bed9 + guideSeq,pam,unique,4 spec,2 ot,_mouseOver,_offset
+    # bed9 + 2 alt colours + guideSeq,pam,unique + 4 spec + 2 ot x (raw,Perc) + _mouseOver,_offset
+    assert all(len(r) == 24 for r in bed)
     assert all(r[3] == "" for r in bed)  # empty name (not a click-fragile " ")
     uniq = next(r for r in bed if r[5] == "+")
     dup = next(r for r in bed if r[5] == "-")
@@ -476,25 +486,34 @@ def test_build_track_encas12a_four_specificities(tmp_path):
     # four specificities (1 / (on_count + weighted CFD sums)); fa>0.6 counts only the fa>0.6
     # off-target, fa>0.3 counts both.
     oc = 1
+    f = _as_index(art["autosql"])
     exp = {
-        12: 1 / (oc + cfd06),                       # spec_fa0.6 (raw)
-        13: 1 / (oc + cfd06 * w06),                 # spec_fa0.6_w
-        14: 1 / (oc + cfd06 + cfd03),               # spec_fa0.3 (raw)
-        15: 1 / (oc + cfd06 * w06 + cfd03 * w03),   # spec_fa0.3_w
+        "enCas12a_spec_fa06": 1 / (oc + cfd06),
+        "enCas12a_spec_fa06_wt": 1 / (oc + cfd06 * w06),
+        "enCas12a_spec_fa03": 1 / (oc + cfd06 + cfd03),
+        "enCas12a_spec_fa03_wt": 1 / (oc + cfd06 * w06 + cfd03 * w03),
     }
     for col, e in exp.items():
-        assert float(uniq[col]) == pytest.approx(e, abs=1e-3), f"col {col}: {uniq[col]} != {e:.4f}"
-    assert int(uniq[4]) == round(exp[15] * 100)  # col5 = spec_fa0.3_w x100
+        got = uniq[f[col]]
+        assert float(got) == pytest.approx(e, abs=1e-3), f"{col}: {got} != {e:.4f}"
+    # col5 = spec_fa0.3_w x100
+    assert int(uniq[4]) == round(exp["enCas12a_spec_fa03_wt"] * 100)
 
     # color: no close off-target (3-mm) + spec well above the grey threshold -> EnPAM-GB
     # efficiency ramp; g_uniq has the top EnPAM-GB percentile -> green.
-    assert uniq[8] == "0,200,0"
+    assert uniq[f["itemRgb"]] == "0,200,0"
     assert int(uniq[-1]) > 0  # _offset set (has off-targets)
     assert "enCas12a Spec (fa>0.3 wt)" in uniq[-2] and "EnPAM-GB" in uniq[-2]
 
+    # raw and percentile are SEPARATE columns, as on the AsCas12a track: no packed
+    # "NN% (raw)" string anywhere in the row.
+    assert all("%" not in c for c in uniq)
+    assert uniq[f["enpamGbPerc"]].isdigit()
+    assert float(uniq[f["enpamGb"]]) == pytest.approx(0.9, abs=1e-4)
+
     # dropped guide: greyed, blank specificity columns, no details line
-    assert dup[8] == "150,150,150" and dup[-1] == "0"
-    assert all(dup[c] == "" for c in (12, 13, 14, 15))
+    assert dup[f["itemRgb"]] == "150,150,150" and dup[-1] == "0"
+    assert all(dup[f[c]] == "" for c in exp)
     assert "Not unique" in dup[-2]
 
 
@@ -526,10 +545,12 @@ def test_build_track_encas12a_blanks_perfect_repeat(tmp_path):
         gdf, prefix, str(tmp_path), run_tools=False, enzyme="encas12a", genome_fa=fa, encas12a_list_floor=0.0
     )
     r = open(art["bed"]).readline().rstrip("\n").split("\t")
-    assert r[11] == "False"  # unique flag
-    assert all(r[c] == "" for c in (12, 13, 14, 15))  # all four specs blank
+    f = _as_index(art["autosql"])
+    assert r[f["unique"]] == "False"
+    assert all(r[f[c]] == "" for c in ("enCas12a_spec_fa06", "enCas12a_spec_fa06_wt",
+                                       "enCas12a_spec_fa03", "enCas12a_spec_fa03_wt"))
     assert r[4] == "0"  # col5 score 0
-    assert r[8] == "150,150,150"  # non-unique grey
+    assert r[f["itemRgb"]] == "150,150,150"  # non-unique grey
     assert "Not unique" in r[-2]
 
 
@@ -581,10 +602,11 @@ def test_encas12a_spec_exact_vs_pilot_formula(tmp_path):
     w06 = sum(cfd * weights[pam][0] for _c, _p, _s, cfd, pam in ots if weights[pam][1])
     c03 = sum(cfd for _c, _p, _s, cfd, pam in ots if weights[pam][2])
     w03 = sum(cfd * weights[pam][0] for _c, _p, _s, cfd, pam in ots if weights[pam][2])
-    assert float(row[12]) == pytest.approx(1 / (oc + c06), abs=1e-4)
-    assert float(row[13]) == pytest.approx(1 / (oc + w06), abs=1e-4)
-    assert float(row[14]) == pytest.approx(1 / (oc + c03), abs=1e-4)
-    assert float(row[15]) == pytest.approx(1 / (oc + w03), abs=1e-4)
+    f = _as_index(art["autosql"])
+    assert float(row[f["enCas12a_spec_fa06"]]) == pytest.approx(1 / (oc + c06), abs=1e-4)
+    assert float(row[f["enCas12a_spec_fa06_wt"]]) == pytest.approx(1 / (oc + w06), abs=1e-4)
+    assert float(row[f["enCas12a_spec_fa03"]]) == pytest.approx(1 / (oc + c03), abs=1e-4)
+    assert float(row[f["enCas12a_spec_fa03_wt"]]) == pytest.approx(1 / (oc + w03), abs=1e-4)
 
 
 if __name__ == "__main__":
@@ -685,13 +707,13 @@ def test_regrade_bed_percentiles_is_genome_wide(tmp_path):
     top of chunk A and the top of chunk B both look like the 75th percentile.
     After re-grading, every percentile is a rank over both chunks together, the
     ramp colours follow, greys survive and the hover is rewritten."""
-    spec = ucsc_track.REGRADE_SPECS["ascas12a"]
     fields = [
         "chrom", "chromStart", "chromEnd", "name", "score", "strand", "thickStart", "thickEnd",
         "itemRgb", "_crisprDeepCpf1Color", "_specColor", "guideSeq", "pam", "unique",
         "AsCas12a_specificity", "deepcpf1", "deepcpf1Perc", "ascas12aDeepcpf1",
         "ascas12aDeepcpf1Perc", "_mouseOver", "_offset",
     ]
+    spec = ucsc_track.track_regrade_spec("ascas12a", fields)
 
     def row(chrom, pos, spec_raw, dp, dp_pct, asc, asc_pct, rgb, alt, uniq="True"):
         return "\t".join([
@@ -805,3 +827,59 @@ def test_hover_specificity_is_raw_not_a_percentile(tmp_path):
         assert hover.startswith(f"AsCas12a Spec: {score},") or hover == f"AsCas12a Spec: {score}", (
             f"hover {hover!r} disagrees with score {score!r}"
         )
+
+
+def test_track_shape_is_universal_across_enzymes():
+    """Every enzyme ships the same track shape. The only legitimate difference is
+    which specificity columns and which cleavage models it carries, so the colour
+    block, the split raw/...Perc layout and the trailer must be identical."""
+    import re
+
+    def names(text):
+        return [m.group(1) for m in re.finditer(
+            r"^\s+(?:string|uint|char|bigint)\S*\s+(\w+);", text, re.M)]
+
+    a = names(ucsc_track.build_autosql_ascas12a(
+        ["deepcpf1_score", "ascas12a_deepcpf1_score"]))
+    e = names(ucsc_track.build_autosql_encas12a(
+        ["enpam_gb_score", "encas12a_hf1_score"]))
+
+    # bed9 + the three colourings, in the same order, before any enzyme-specific column
+    bed9 = ["chrom", "chromStart", "chromEnd", "name", "score", "strand",
+            "thickStart", "thickEnd"]
+    head = bed9 + list(ucsc_track.COLOR_FIELDS) + ["guideSeq", "pam", "unique"]
+    assert a[:len(head)] == head
+    assert e[:len(head)] == head
+
+    # same trailer
+    assert a[-2:] == ["_mouseOver", "_offset"]
+    assert e[-2:] == ["_mouseOver", "_offset"]
+
+    # each cleavage model is a raw column plus a ...Perc sibling, never a packed string
+    for fields, enzyme in ((a, "ascas12a"), (e, "encas12a")):
+        spec = ucsc_track.track_regrade_spec(enzyme, fields)
+        assert spec is not None, enzyme
+        assert len(spec["models"]) == 2
+        for raw, _label, colour in spec["models"]:
+            assert raw in fields
+            assert raw + "Perc" in fields
+            assert colour in ucsc_track.EFF_COLOR_FIELDS
+        # first model drives itemRgb, second the alternative colour
+        assert [c for _, _, c in spec["models"]] == list(ucsc_track.EFF_COLOR_FIELDS)
+        assert spec["spec_score"] == "score"
+
+
+def test_regrade_spec_follows_the_models_actually_scored():
+    """An extra or missing cleavage score changes only how many models are graded,
+    never how any of them is graded."""
+    one = ucsc_track.build_autosql_encas12a(["enpam_gb_score"])
+    import re
+    f = [m.group(1) for m in re.finditer(
+        r"^\s+(?:string|uint|char|bigint)\S*\s+(\w+);", one, re.M)]
+    spec = ucsc_track.track_regrade_spec("encas12a", f)
+    assert [raw for raw, _, _ in spec["models"]] == ["enpamGb"]
+    assert [c for _, _, c in spec["models"]] == ["itemRgb"]
+    assert "encas12aHf1" not in f
+
+    # the legacy dual track has no entry and is merged without re-grading
+    assert ucsc_track.track_regrade_spec("dual", f) is None

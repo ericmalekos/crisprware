@@ -309,6 +309,38 @@ EFF_RAMP_HIGH = 55  # 30 < percentile <= 55      -> yellow; > 55 -> green
 SPEC_COLOR_BAD = 50  # <= 50      -> red
 SPEC_COLOR_MID = 70  # 50 to 70   -> olive; > 70 -> green
 
+# Every track ships the same three colourings, in this order, directly after bed9.
+# ``itemRgb`` is the blended default; the two alternatives are selectable from the
+# browser's "Color by:" dropdown via the trackDb ``colorFields`` setting.
+COLOR_FIELDS = ("itemRgb", "_crisprDeepCpf1Color", "_specColor")
+
+# The ramp-driven colour fields, in on-target model order: the first scored model
+# drives ``itemRgb``, the second drives ``_crisprDeepCpf1Color``. ``_specColor`` is
+# not here because it is a function of specificity alone and is never ranked.
+EFF_COLOR_FIELDS = ("itemRgb", "_crisprDeepCpf1Color")
+
+# Per-enzyme on-target ("cleavage") models, in display order: the only thing that
+# legitimately differs between enzymes. Everything else about a track -- the three
+# colourings, the split raw/``...Perc`` columns, the hover layout, and the
+# genome-wide percentile basis -- is universal and derived from this table, so a new
+# enzyme or an extra cleavage score needs an entry here and nothing else.
+ENZYME_TRACK_SPECS: Dict[str, dict] = {
+    "ascas12a": {
+        "spec_label": "AsCas12a Spec",
+        "ontarget": [
+            ("deepcpf1_score", "DeepCpf1"),
+            ("ascas12a_deepcpf1_score", "AsCas12a-DeepCpf1"),
+        ],
+    },
+    "encas12a": {
+        "spec_label": "enCas12a Spec (fa>0.3 wt)",
+        "ontarget": [
+            ("enpam_gb_score", "EnPAM-GB"),
+            ("encas12a_hf1_score", "enAsCas12a-HF1"),
+        ],
+    },
+}
+
 
 def _cas9_style_name(col: str) -> str:
     """``deepcpf1_score`` -> ``deepcpf1``; ``ascas12a_deepcpf1_score`` ->
@@ -371,6 +403,85 @@ def _spec_color(dropped, mm0, mm1, mm2, spec_raw) -> np.ndarray:
     return np.where(
         pct <= SPEC_COLOR_BAD, "255,0,0", np.where(pct <= SPEC_COLOR_MID, "128,128,0", "0,255,0")
     )
+
+
+def ordered_ontarget_cols(enzyme: str, columns: Sequence[str]) -> list[str]:
+    """The enzyme's on-target columns present in ``columns``, in display order.
+
+    Display order is what binds a model to a colour field, so it is taken from
+    :data:`ENZYME_TRACK_SPECS` rather than from whatever order the scorer emitted."""
+    espec = ENZYME_TRACK_SPECS.get(enzyme)
+    if espec is None:
+        return [c for c in columns if c.endswith("_score")]
+    return [c for c, _ in espec["ontarget"] if c in columns]
+
+
+def _ontarget_block(
+    g: pd.DataFrame,
+    enzyme: str,
+    ot_cols: Sequence[str],
+    dropped,
+    mm0,
+    mm1,
+    mm2,
+    spec_raw: np.ndarray,
+    score: np.ndarray,
+) -> tuple:
+    """The part of a track that is identical for every enzyme.
+
+    Given the enzyme's scored on-target ("cleavage") models and the specificity that
+    already drives column 5, this produces the three colourings, the split
+    raw/``...Perc`` display columns and the hover label. Returns
+    ``(colours, display, hover)``.
+
+    Universal by construction, so adding a cleavage score or a new enzyme changes
+    only :data:`ENZYME_TRACK_SPECS`:
+
+    * percentiles rank the **displayed** 4-decimal value (:func:`_pct_of_displayed`),
+      which is what lets :func:`_regrade_bed_percentiles` re-rank them genome-wide
+      from the written file after a chunked build;
+    * each model emits a raw column plus a ``...Perc`` sibling, as the Cas9 track
+      does with ``fusi``/``fusiPerc``, so both halves stay filterable in the Table
+      Browser instead of being packed into one ``"88% (70.25)"`` string;
+    * the first model drives ``itemRgb``, the second ``_crisprDeepCpf1Color``, and
+      ``_specColor`` is specificity alone;
+    * the hover reports specificity as the RAW value x100, equal to ``score`` and
+      consistent with ``_specColor``, never as a percentile (ranking specificity is
+      degenerate: the distribution is dominated by the tie at a perfectly specific
+      1.0, so a guide at 0.9997 would read as terrible while ``score`` says 100).
+    """
+    n = len(g)
+    label = ENZYME_TRACK_SPECS.get(enzyme, {}).get("spec_label", "Spec")
+    labels = dict(ENZYME_TRACK_SPECS.get(enzyme, {}).get("ontarget", []))
+
+    ot_pct = {c: _pct_of_displayed(g[c]).to_numpy() for c in ot_cols}
+    ramp = [ot_pct[c] for c in ot_cols] + [np.full(n, np.nan)] * len(EFF_COLOR_FIELDS)
+
+    colours = {
+        f: _item_rgb(dropped, mm0, mm1, mm2, spec_raw, ramp[i])
+        for i, f in enumerate(EFF_COLOR_FIELDS)
+    }
+    colours["_specColor"] = _spec_color(dropped, mm0, mm1, mm2, spec_raw)
+
+    display: Dict[str, np.ndarray] = {}
+    for c in ot_cols:
+        base = _cas9_style_name(c)
+        display[base] = _fmt_raw(pd.to_numeric(g[c], errors="coerce")).to_numpy()
+        display[base + "Perc"] = np.array(
+            ["" if np.isnan(v) else str(int(round(v))) for v in ot_pct[c]], dtype=object
+        )
+
+    nonuniq = np.asarray(dropped, dtype=bool)
+    hover = []
+    for i in range(n):
+        parts = ["Not unique"] if nonuniq[i] else [f"{label}: {score[i]}"]
+        for c in ot_cols:
+            pc = ot_pct[c][i]
+            if not np.isnan(pc):
+                parts.append(f"{labels.get(c, c)}: {int(round(pc))}")
+        hover.append(", ".join(parts))
+
+    return colours, display, hover
 
 
 def _have_tool(name: str) -> Optional[str]:
@@ -675,12 +786,17 @@ def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
 
 
 def build_autosql_encas12a(ontarget_cols: Sequence[str] = ()) -> str:
-    """autoSql for the single-enzyme **enCas12a** track: bed9 + guideSeq/pam + a unique
-    flag + the four guidescan specificities (raw + PAM-activity-weighted, at the fa>0.6 and
-    fa>0.3 activity cutoffs) + one column per on-target model in ``ontarget_cols`` + the
-    ``_mouseOver``/``_offset`` trailer. enCas12a is scored against the broad fa>0.3 (30-PAM)
-    off-target index; the fa>0.3 PAM-weighted specificity drives the score/color. Column
-    order MUST match the BED written by :func:`build_track` with ``enzyme="encas12a"``."""
+    """autoSql for the single-enzyme **enCas12a** track: bed9 + the two alternative colour
+    fields + guideSeq/pam + a unique flag + the four guidescan specificities (raw +
+    PAM-activity-weighted, at the fa>0.6 and fa>0.3 activity cutoffs) + a raw and a
+    ``...Perc`` column per on-target model in ``ontarget_cols`` + the ``_mouseOver``/
+    ``_offset`` trailer. enCas12a is scored against the broad fa>0.3 (30-PAM) off-target
+    index; the fa>0.3 PAM-weighted specificity drives the score and the greys.
+
+    Structurally identical to :func:`build_autosql_ascas12a`: same three colourings, same
+    split raw/percentile layout, same trailer. The enzymes differ only in which specificity
+    columns and which cleavage models they carry. Column order MUST match the BED written by
+    :func:`build_track` with ``enzyme="encas12a"``."""
     head = [
         "table EnCas12aTargets",
         '"CRISPR enCas12a (enAsCas12a) guides, genome wide (bed9 + extra; fa>0.3 off-target search; off-targets in external bgzip tab file)"',
@@ -693,7 +809,9 @@ def build_autosql_encas12a(ontarget_cols: Sequence[str] = ()) -> str:
         '    char[1] strand;       "+ or -"',
         '    uint    thickStart;   "Start of protospacer (thick);"',
         '    uint    thickEnd;     "End of protospacer (thick)"',
-        '    uint    itemRgb;      "Display color R,G,B"',
+        '    uint    itemRgb;      "Display color R,G,B (specificity grey, else EnPAM-GB efficiency ramp)"',
+        '    string  _crisprDeepCpf1Color; "Alternative color R,G,B by the second on-target model (seq-DeepCpf1 enAsCas12a-HF1)"',
+        '    string  _specColor;   "Alternative color R,G,B by enCas12a fa>0.3 PAM-weighted specificity alone"',
         '    string  guideSeq;     "Guide sequence"',
         '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
     ]
@@ -709,7 +827,10 @@ def build_autosql_encas12a(ontarget_cols: Sequence[str] = ()) -> str:
         "encas12a_hf1_score": "seq-DeepCpf1 enAsCas12a-HF1 variant (Chen 2025) higher-fidelity on-target efficiency",
     }
     for c in ontarget_cols:
-        extra.append((c, ot_descs.get(c, "enCas12a on-target efficiency")))
+        d = ot_descs.get(c, "enCas12a on-target efficiency")
+        base = _cas9_style_name(c)
+        extra.append((base, f"Efficiency: {d} (raw)"))
+        extra.append((base + "Perc", f"Efficiency: {d} (percentile)"))
     width = max(len(f) for f, _ in extra) + 2
     body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
     tail = [
@@ -917,50 +1038,14 @@ def build_track(
     if enzyme == "ascas12a":
         spec = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
         score = np.clip(np.rint(spec.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
-        # percentile per on-target model (score_cols is already the AsCas12a-only set)
-        ot_pct = {c: _pct_of_displayed(g[c]).to_numpy() for c in score_cols}
-        OT_LABELS = {"deepcpf1_score": "DeepCpf1", "ascas12a_deepcpf1_score": "AsCas12a-DeepCpf1"}
-        # The color ramp is driven by ONE on-target model: DeepCpf1 (Kim 2018), else the
-        # AsCas12a-variant model. Both are still emitted as display columns + hover.
-        ramp_col = next((c for c in ("deepcpf1_score", "ascas12a_deepcpf1_score") if c in ot_pct), None)
-        ramp_pct = ot_pct[ramp_col] if ramp_col else np.full(len(g), np.nan)
         # Mode-1 mismatch_counts are already TTTV (TTTV-only index), so the close-off-target
         # grey uses them directly -- no genome re-derivation.
         buckets = _mismatch_buckets(g["mismatch_counts"])
         mm0, mm1, mm2 = buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy()
-        # Three colorings, as Cas9 ships: itemRgb is the blended default (grey by
-        # specificity, else the efficiency ramp on the PRIMARY model);
-        # _crisprDeepCpf1Color is the same scheme on the SECOND on-target model (Cas9
-        # fills this slot with Moreno-Mateos and calls it _crisprScanColor, which would
-        # mislabel a Cas12a model, so the field is named for what it actually holds);
-        # _specColor is specificity alone.
-        item_rgb = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), ramp_pct)
-        alt_col = next((c for c in score_cols if c != ramp_col), None)
-        alt_pct = ot_pct[alt_col] if alt_col else np.full(len(g), np.nan)
-        deepcpf1_alt_color = _item_rgb(dropped, mm0, mm1, mm2, spec.to_numpy(), alt_pct)
-        spec_color = _spec_color(dropped, mm0, mm1, mm2, spec.to_numpy())
-
-        # Hover: specificity as the RAW value x100, efficiencies as percentiles. This
-        # follows the Cas9 track, whose hover reads "MIT Spec. Score: 80, Doench 2016:
-        # 91%" with the specificity equal to its `score` column and the efficiency equal
-        # to its `fusiPerc` column (checked: all 165,992 scored hg38 guides agree).
-        #
-        # Specificity must NOT be a percentile here. It is already an absolute 0-to-1
-        # quantity, and ranking it is actively misleading because the distribution is
-        # dominated by one tie: 524,814 of 557,588 ranked sacCer3 guides sit at exactly
-        # 1.0, so that tie's mid-rank is the 53rd percentile and a guide at 0.9997 falls
-        # to the 5th, reading as a terrible guide while `score` says 100. Raw x100 makes
-        # the hover agree with `score` and with `_specColor`, both of which are raw.
-        def _hover_as(i):
-            if dropped[i]:
-                parts = ["Not unique"]
-            else:
-                parts = [f"AsCas12a Spec: {score[i]}"]
-            for c in score_cols:
-                pc = ot_pct[c][i]
-                if not np.isnan(pc):
-                    parts.append(f"{OT_LABELS.get(c, c)}: {int(round(pc))}")
-            return ", ".join(parts)
+        ot_cols = ordered_ontarget_cols("ascas12a", g.columns)
+        colours, display, hover = _ontarget_block(
+            g, "ascas12a", ot_cols, dropped, mm0, mm1, mm2, spec.to_numpy(), score
+        )
 
         out = {
             "#chr": g["chrom"].to_numpy(),
@@ -971,26 +1056,16 @@ def build_track(
             "strand": g["strand"].to_numpy(),
             "thickStart": thick_start,
             "thickEnd": thick_end,
-            "itemRgb": item_rgb,
-            "_crisprDeepCpf1Color": deepcpf1_alt_color,
-            "_specColor": spec_color,
+            **{f: colours[f] for f in COLOR_FIELDS},
             "guideSeq": g["guideSeq"].to_numpy(),
             "pam": g["pam"].to_numpy(),
             "unique": unique,
             "AsCas12a_specificity": _fmt_raw(spec).to_numpy(),
+            **display,
         }
-        # Raw and percentile as SEPARATE numeric fields, as Cas9 does (fusi/fusiPerc).
-        # Packing them into one "88% (70.25)" string reads fine on the details page but
-        # leaves neither value filterable in the Table Browser or the API.
-        for c in score_cols:
-            base = _cas9_style_name(c)
-            out[base] = _fmt_raw(pd.to_numeric(g[c], errors="coerce")).to_numpy()
-            out[base + "Perc"] = [
-                "" if np.isnan(v) else str(int(round(v))) for v in ot_pct[c]
-            ]
-        out["_mouseOver"] = [_hover_as(i) for i in range(len(g))]
+        out["_mouseOver"] = hover
         out["_offset"] = [offsets.get(gid, 0) for gid in g["id"].to_numpy()]
-        as_content = build_autosql_ascas12a(score_cols)
+        as_content = build_autosql_ascas12a(ot_cols)
         return _write_track(out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes, run_tools)
 
     # --- enCas12a single-enzyme track (broad fa>0.3 off-target search) ---
@@ -1026,24 +1101,14 @@ def build_track(
         score = np.clip(np.rint(np.nan_to_num(score_spec, nan=0.0) * 100), 0, 1000).astype(int)
         unique_en = np.where(nonuniq, "False", "True")
 
-        enpam_pct = _pct(g["enpam_gb_score"]).to_numpy() if "enpam_gb_score" in g.columns else np.full(n, np.nan)
-        item_rgb = _item_rgb(dropped, mm0, mm1, mm2, score_spec, enpam_pct)
-
-        ot_cols = [c for c in ("enpam_gb_score", "encas12a_hf1_score") if c in g.columns]
-        OT_LABELS = {"enpam_gb_score": "EnPAM-GB", "encas12a_hf1_score": "enAsCas12a-HF1"}
-        ot_pct = {c: _pct(g[c]).to_numpy() for c in ot_cols}
-
-        def _hover_en(i):
-            if nonuniq[i]:
-                parts = ["Not unique"]
-            else:
-                sv = score_spec[i]
-                parts = ["enCas12a Spec (fa>0.3 wt): " + (f"{sv:.3f}" if not np.isnan(sv) else "1.000")]
-            for c in ot_cols:
-                pc = ot_pct[c][i]
-                if not np.isnan(pc):
-                    parts.append(f"{OT_LABELS.get(c, c)}: {int(round(pc))}")
-            return ", ".join(parts)
+        # Same universal block as AsCas12a: three colourings, split raw/...Perc columns,
+        # raw-x100 specificity in the hover, percentiles on the displayed value so the
+        # merge can re-rank them genome-wide. The only enzyme-specific inputs are which
+        # cleavage models were scored and which of the four specificities drives score.
+        ot_cols = ordered_ontarget_cols("encas12a", g.columns)
+        colours, display, hover = _ontarget_block(
+            g, "encas12a", ot_cols, nonuniq, mm0, mm1, mm2, score_spec, score
+        )
 
         out = {
             "#chr": g["chrom"].to_numpy(),
@@ -1054,7 +1119,7 @@ def build_track(
             "strand": g["strand"].to_numpy(),
             "thickStart": thick_start,
             "thickEnd": thick_end,
-            "itemRgb": item_rgb,
+            **{f: colours[f] for f in COLOR_FIELDS},
             "guideSeq": g["guideSeq"].to_numpy(),
             "pam": g["pam"].to_numpy(),
             "unique": unique_en,
@@ -1062,10 +1127,9 @@ def build_track(
             "enCas12a_spec_fa06_wt": _fmt_raw(pd.Series(s06w)).to_numpy(),
             "enCas12a_spec_fa03": _fmt_raw(pd.Series(s03)).to_numpy(),
             "enCas12a_spec_fa03_wt": _fmt_raw(pd.Series(s03w)).to_numpy(),
+            **display,
         }
-        for c in ot_cols:
-            out[c] = _fmt_pct_raw(g[c], ot_pct[c]).to_numpy()
-        out["_mouseOver"] = [_hover_en(i) for i in range(n)]
+        out["_mouseOver"] = hover
         out["_offset"] = [offsets.get(gid, 0) for gid in g["id"].to_numpy()]
         as_content = build_autosql_encas12a(ot_cols)
         return _write_track(out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes, run_tools)
@@ -1188,24 +1252,46 @@ def build_track(
 # never match, silently replacing every grey with a ramp colour.
 _RAMP_GREYS = frozenset({b"150,150,150", b"120,120,120", b"90,90,90", b"50,50,50"})
 
-# Per-enzyme map of what to re-grade. ``models`` is one (raw field, hover label,
-# colour field) triple per on-target model, in the order build_track writes the
-# hover; the first model's colour is the default ``itemRgb``.
-REGRADE_SPECS: Dict[str, dict] = {
-    "ascas12a": {
+
+def track_regrade_spec(enzyme: str, as_fields: Sequence[str]) -> Optional[dict]:
+    """Resolve the genome-wide percentile re-grade rule for ``enzyme`` against the
+    fields a built track actually declares.
+
+    The rule is derived, not tabulated, so it cannot drift from what
+    :func:`build_track` wrote. :data:`ENZYME_TRACK_SPECS` lists each enzyme's
+    on-target models in display order; this keeps the ones whose column is present
+    in ``as_fields`` and pairs them positionally with :data:`EFF_COLOR_FIELDS`. A run
+    that scored one model, or three, therefore re-grades exactly what it has: extra
+    cleavage scores are a per-enzyme difference in *which* models exist, never a
+    difference in how they are graded or displayed.
+
+    Returns ``None`` for an enzyme with no entry (the legacy ``dual`` track), whose
+    packed ``"NN% (raw)"`` columns have no ``...Perc`` sibling to re-rank.
+    """
+    espec = ENZYME_TRACK_SPECS.get(enzyme)
+    if espec is None:
+        return None
+    models = []
+    for col, label in espec["ontarget"]:
+        base = _cas9_style_name(col)
+        if base not in as_fields:
+            continue
+        colour = EFF_COLOR_FIELDS[len(models)] if len(models) < len(EFF_COLOR_FIELDS) else None
+        if colour is None or colour not in as_fields:
+            continue
+        models.append((base, label, colour))
+    if not models:
+        return None
+    return {
         "unique": "unique",
         # The hover's specificity is the bed9 ``score`` column read straight back
         # (raw specificity x100), NOT a rank, so it cannot drift from column 5. Only
         # the efficiency models below are ranked and therefore need re-grading.
         "spec_score": "score",
-        "spec_label": "AsCas12a Spec",
+        "spec_label": espec["spec_label"],
         "hover": "_mouseOver",
-        "models": [
-            ("deepcpf1", "DeepCpf1", "itemRgb"),
-            ("ascas12aDeepcpf1", "AsCas12a-DeepCpf1", "_crisprDeepCpf1Color"),
-        ],
-    },
-}
+        "models": models,
+    }
 
 
 def autosql_field_names(as_path: str) -> list[str]:
@@ -1332,7 +1418,7 @@ def merge_ucscgb_tracks(
     Every percentile is then re-ranked across all chunks (see
     :func:`_regrade_bed_percentiles`), since each chunk could only rank within
     itself. ``enzyme`` selects which columns that applies to; an enzyme with no
-    entry in :data:`REGRADE_SPECS` is merged without re-grading and warns, because
+    entry in :data:`ENZYME_TRACK_SPECS` is merged without re-grading and warns, because
     its percentiles would stay chunk-local.
 
     Returns the artifact paths.
@@ -1341,8 +1427,8 @@ def merge_ucscgb_tracks(
 
     # Columns whose percentiles the merge must re-rank genome-wide, and the raw
     # columns to histogram while streaming the per-chunk BEDs.
-    spec = REGRADE_SPECS.get(enzyme)
     as_fields = autosql_field_names(as_file)
+    spec = track_regrade_spec(enzyme, as_fields)
     if spec is not None:
         needed = [spec["spec_score"], spec["unique"], spec["hover"]]
         needed += [raw for raw, _, _ in spec["models"]] + [col for _, _, col in spec["models"]]

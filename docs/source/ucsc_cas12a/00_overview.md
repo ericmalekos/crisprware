@@ -18,9 +18,16 @@ A UCSC CRISPR track is **three files**. For the default AsCas12a track:
 | `ascas12a_crisprDetails.tab.gz` | bgzip-compressed per-guide off-target lists |
 | `ascas12a_crisprDetails.tab.gz.gzi` | the bgzip `.gzi` index (produced by `bgzip -i`) |
 
-The enCas12a track writes the same three files under `encas12a.*` names (`encas12a.bb` is `bed9+11`,
-**20 fields**). The column schema -- `ascas12aTargets.as` or `encas12aTargets.as` -- is an autoSql file
-written next to the bigBed and passed to `bedToBigBed` at build time.
+The enCas12a track writes the same three files under `encas12a.*` names, in the same shape
+(`encas12a.bb` is `bed9+15`, **24 fields**: the extra columns are enCas12a's four specificities rather
+than AsCas12a's one, and its own two cleavage models). The column schema -- `ascas12aTargets.as` or
+`encas12aTargets.as` -- is an autoSql file written next to the bigBed and passed to `bedToBigBed` at
+build time.
+
+Track shape is universal across enzymes: bed9, then the same three colourings (`itemRgb`,
+`_crisprDeepCpf1Color`, `_specColor`), then `guideSeq`/`pam`/`unique`, then that enzyme's specificity
+columns, then a raw plus a `...Perc` column for each cleavage model it scored, then
+`_mouseOver`/`_offset`. Which cleavage scores exist is the only thing that differs.
 
 Each bigBed row stores a guide's coordinates, color, on-target scores, off-target specificity, and an
 `_offset`: a byte offset into the uncompressed `*_crisprDetails.tab`. Clicking a guide makes the browser

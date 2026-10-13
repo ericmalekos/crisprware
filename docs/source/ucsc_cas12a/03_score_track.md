@@ -130,16 +130,21 @@ flowchart LR
 - `--ucscgb_keep_chunks` keeps the per-chunk dirs for debugging.
 
 ```{note}
-**Percentiles are genome-wide, including on the chunked path.** Each chunk is scored in isolation, but
-the merge accumulates a histogram of every chunk's on-target values and re-ranks the `deepcpf1Perc` and
-`ascas12aDeepcpf1Perc` columns, plus the two efficiency colour fields they drive, against the whole
-genome before writing the final bigBed. No post-pass is needed, and `--ucscgb_chunk_max` does not change
-a published percentile.
+**Percentiles are genome-wide, including on the chunked path, on every enzyme.** Each chunk is scored in
+isolation, but the merge accumulates a histogram of every chunk's cleavage-score values and re-ranks each
+model's `...Perc` column, plus the efficiency colour field it drives, against the whole genome before
+writing the final bigBed. No post-pass is needed, and `--ucscgb_chunk_max` does not change a published
+percentile.
 
-Ranking is on the value **as the track displays it** (4 decimal places), not on the full-precision float
-behind it, so the chunked and unchunked paths agree exactly. `score`, `AsCas12a_specificity` and
-`_specColor` are never ranked at all: they are absolute functions of the raw CFD specificity, and the
-off-target **counts** are exact and population-independent.
+The rule is derived from the track's own autoSql rather than tabulated per enzyme
+(`track_regrade_spec`), so a run that scored one cleavage model, or three, re-grades exactly the models
+it has. Ranking is on the value **as the track displays it** (4 decimal places), not on the
+full-precision float behind it, so the chunked and unchunked paths agree exactly. `score`, the raw
+specificity columns and `_specColor` are never ranked at all: they are absolute functions of the raw CFD
+specificity, and the off-target **counts** are exact and population-independent.
+
+The legacy `dual` track is the exception; it packs percentile and raw into one string, has no re-grading
+rule, and warns when a chunked build merges.
 ```
 
 ## Worked example (hg38, 7x A5500)

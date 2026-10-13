@@ -209,12 +209,12 @@ crisprware score_guides ... --ucscgb_chunk_max 3000000 --ucscgb_gpus 0,1,2,3,4,5
   merge (for inspection or resume); by default it is removed on success.
 
 ```{important}
-**Percentiles are genome-wide, however you chunk.** Each chunk is scored in isolation, but the
-merge accumulates a histogram over every chunk and re-ranks the `deepcpf1Perc` and
-`ascas12aDeepcpf1Perc` columns, together with the two efficiency colour fields those percentiles
-drive (`itemRgb` and `_crisprDeepCpf1Color`), against the whole genome before the final bigBed is
-written. `--ucscgb_chunk_max` therefore has no effect on any published value, and no post-pass
-re-ranking is required.
+**Percentiles are genome-wide, however you chunk, on every enzyme.** Each chunk is scored in
+isolation, but the merge accumulates a histogram over every chunk and re-ranks each cleavage
+model's `...Perc` column, together with the efficiency colour field that percentile drives
+(`itemRgb` for the first model, `_crisprDeepCpf1Color` for the second), against the whole genome
+before the final bigBed is written. `--ucscgb_chunk_max` therefore has no effect on any published
+value, and no post-pass re-ranking is required.
 
 Ranking is on the value **as the track displays it** (rounded to 4 decimals), not the
 full-precision float behind it, which is what makes the chunked and unchunked paths agree
@@ -325,7 +325,7 @@ crisprware score_guides \
 
 What is different from the AsCas12a build:
 
-- **Files:** `encas12a.bb` (`bed9+11`, 20 fields), `encas12a_crisprDetails.tab.gz` (+`.gzi`),
+- **Files:** `encas12a.bb` (`bed9+15`, 24 fields), `encas12a_crisprDetails.tab.gz` (+`.gzi`),
   `encas12aTargets.as`.
 - **Four specificities, all raw (0-1):** `enCas12a_spec_fa06`, `enCas12a_spec_fa06_wt`,
   `enCas12a_spec_fa03`, `enCas12a_spec_fa03_wt`. Each is the guidescan specificity
@@ -341,10 +341,11 @@ What is different from the AsCas12a build:
   `seq_deepcpf1variants --cas12a_variant enAsCas12a-HF1` -> the higher-fidelity
   **enAsCas12a-HF1** seq-DeepCpf1 variant (Chen 2025).
 
-The chunked/multi-GPU engine and the UCSC hosting steps are identical to the AsCas12a build, with
-one difference that matters: **the genome-wide percentile re-grade is AsCas12a-only.** A chunked
-enCas12a build leaves its percentiles and efficiency-ramp colours ranked within each chunk and
-prints `WARNING: no percentile re-grading rule for enzyme='encas12a'` when it merges. The legacy single-track **dual** build
+Everything else is identical to the AsCas12a build: the chunked/multi-GPU engine, the three
+colourings, the split raw/`...Perc` columns, the hover layout, the genome-wide percentile re-grade,
+and the UCSC hosting steps. The two enzymes differ only in their score columns, four specificities
+instead of one and their own pair of cleavage models, so `encas12a.bb` is `bed9+15` (**24 fields**)
+where `ascas12a.bb` is `bed9+12` (21). The legacy single-track **dual** build
 (`--ucscgb_enzyme dual`, which carries both enzymes' TTTV/TTTN specificities in one 23-field
 `cas12a.bb`) is retained for back-compat only.
 
