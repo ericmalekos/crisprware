@@ -7,7 +7,6 @@ row per guide, defined by its own autoSql. The default is `ascas12a`:
 |-------------------|-------|--------|--------|
 | `ascas12a` (default) | `ascas12a.bb` / `ascas12aTargets.as` / `ascas12a_crisprDetails.tab.gz` | `bed9+12` | **21** |
 | `encas12a` | `encas12a.bb` / `encas12aTargets.as` / `encas12a_crisprDetails.tab.gz` | `bed9+15` | **24** |
-| `dual` (legacy) | `cas12a.bb` / `cas12aTargets.as` / `crisprDetails.tab.gz` | `bed9+14` | 23 |
 
 The leading bed9 columns and the `_mouseOver`/`_offset` trailer are identical across all three. The
 AsCas12a track additionally carries two extra color fields right after `itemRgb`, matching the Cas9
@@ -91,11 +90,6 @@ ways (raw, and each off-target's CFD scaled by its PAM's frac-active weight) at 
 (fa>0.6 and fa>0.3). All four are RAW, on 0-1. `enCas12a_spec_fa03_wt` is the operative value: it drives
 `score`, the browser score filter, and the low-specificity greying.
 
-The legacy `dual` track (`--ucscgb_enzyme dual`) keeps both enzymes in one row: `unique_TTTV`/`unique_TTTN`,
-four `{enCas12a, AsCas12a} x {TTTV, TTTN}` specificity columns, and four on-target columns
-(`ascas12a_deepcpf1_score`, `enseq_deepcpf1_score`, `deepcpf1_score`, `enpam_gb_score`). It is retained only
-for back-compat; new tracks should use `ascas12a` or `encas12a`.
-
 ## How the columns read
 
 - **Specificity columns are RAW**, on 0-1 (`1.0` = perfectly specific, no off-targets). No percentile is
@@ -104,9 +98,8 @@ for back-compat; new tracks should use `ascas12a` or `encas12a`.
   `_fa03_wt`).
 - **On-target efficiency columns** emit two columns per model, a raw value and a `...Perc` percentile
   sibling (`deepcpf1` / `deepcpf1Perc`, `enpamGb` / `enpamGbPerc`), following the Cas9 track's
-  `fusi`/`fusiPerc` layout. This is the same on every enzyme; only the legacy `dual` track still packs
-  the two into one `percentile (raw)` string. The percentile is ranked over **all guides in the genome**,
-  and the raw value is exact (DeepCpf1's native output is ~0-100, the others are 0-1).
+  `fusi`/`fusiPerc` layout. This is the same on every enzyme. The percentile is ranked over **all guides
+  in the genome**, and the raw value is exact (DeepCpf1's native output is ~0-100, the others are 0-1).
 
 ## score and color
 
@@ -144,7 +137,4 @@ the genome regardless of how the build was chunked. See the
 The **raw** specificity columns, the raw on-target values, and the specificity-derived `score` and
 `_specColor` are absolute, never ranked, and comparable across the whole genome.
 
-The one exception is the legacy `dual` track, which has no entry in `ENZYME_TRACK_SPECS`; a chunked
-`dual` build prints `WARNING: no percentile re-grading rule for enzyme='dual'` and leaves its packed
-percentiles ranked within each chunk.
 ```

@@ -322,7 +322,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     ucsc.add_argument(
         "--ucscgb_enzyme",
-        choices=["ascas12a", "encas12a", "dual"],
+        choices=["ascas12a", "encas12a"],
         default="ascas12a",
         help="Which Cas12a track to build. 'ascas12a' (default): a single AsCas12a "
         "(WT/2xNLS) track scored against a TTTV-only off-target index (pass a TTTV -i "
@@ -330,8 +330,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "(enAsCas12a) track scored against the broad fa>0.3 (30-PAM) off-target index, with "
         "four guidescan specificities (raw + PAM-activity-weighted, at the fa>0.6 and fa>0.3 "
         "cutoffs); requires --ucscgb_genome and --cas12a_scorer enpam_gb seq_deepcpf1variants "
-        "--cas12a_variant enAsCas12a-HF1. 'dual' (legacy): one track carrying enCas12a "
-        "(primary, TTTN) + AsCas12a (secondary) specificities. [default: ascas12a]",
+        "--cas12a_variant enAsCas12a-HF1. [default: ascas12a]",
     )
     ucsc.add_argument(
         "--ucscgb_encas12a_weights",
@@ -589,10 +588,10 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
 
     reuse = getattr(args, "ucscgb_reuse_offtargets", False)
 
-    # Which enzyme's track: "ascas12a" (default) scores ONLY the AsCas12a (2xNLS) matrix
-    # against a TTTV-only off-target index (single specificity, no TTTN / enCas12a). "dual"
-    # (legacy) scores enCas12a primary + 2xNLS secondary in one scan; both specificities
-    # land in one Mode-1 and both per-off-target CFDs (cfd + cfd2) in one Mode-2.
+    # Which enzyme's track. Every track is single-enzyme: one CFD matrix, one off-target
+    # index, one specificity axis. "ascas12a" (default) scores the AsCas12a (2xNLS) matrix
+    # against a TTTV-only index; "encas12a" scores the enCas12a matrix against the broad
+    # fa>0.3 index.
     enzyme = getattr(args, "ucscgb_enzyme", "ascas12a")
     if enzyme == "ascas12a":
         scores = ["cfd-cas12a:2xnls"]
@@ -682,8 +681,7 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
 
     # The ascas12a track uses a TTTV-only off-target index, so no TTTT off-targets exist and no
     # genome PAM lookup is needed. enCas12a REQUIRES the reference FASTA: each off-target's PAM
-    # is reconstructed to weight the four guidescan specificities. The legacy dual track scores
-    # AsCas12a PAM-blind against a TTTN index and reads the PAM to exclude TTTT (Layer 2/3).
+    # is reconstructed to weight the four guidescan specificities.
     if enzyme == "ascas12a":
         genome_fa = None
     elif enzyme == "encas12a":
@@ -877,7 +875,7 @@ def run_ucscgb_chunked(args: argparse.Namespace) -> None:
     elif _chunk_enzyme == "encas12a":
         as_name, bb_name, details_name = "encas12aTargets.as", "encas12a.bb", "encas12a_crisprDetails.tab"
     else:
-        as_name, bb_name, details_name = ucsc_track.AS_NAME, ucsc_track.BB_NAME, ucsc_track.DETAILS_NAME
+        raise ValueError(f"unknown --ucscgb_enzyme {_chunk_enzyme!r}; every track is single-enzyme")
     as_file = os.path.join(track_dirs[0], as_name)
     print(
         f"\n\t[TIMING] all {len(track_dirs)} chunks scored: {time.time() - _t_all:.1f}s; merging -> {outdir}\n",

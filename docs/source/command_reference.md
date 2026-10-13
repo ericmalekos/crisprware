@@ -244,7 +244,7 @@ usage: crisprware score_guides [-h] -b GRNA_BED [-i [GUIDESCAN2_INDICES ...]]
                                [--ucscgb_list_cap UCSCGB_LIST_CAP]
                                [--ucscgb_blank_threshold UCSCGB_BLANK_THRESHOLD]
                                [--ucscgb_reuse_offtargets] [--ucscgb_2xnls | --no-ucscgb_2xnls]
-                               [--ucscgb_enzyme {ascas12a,encas12a,dual}]
+                               [--ucscgb_enzyme {ascas12a,encas12a}]
                                [--ucscgb_encas12a_weights UCSCGB_ENCAS12A_WEIGHTS]
                                [--ucscgb_chunk_max UCSCGB_CHUNK_MAX] [--ucscgb_gpus UCSCGB_GPUS]
                                [--ucscgb_keep_chunks]
@@ -378,7 +378,7 @@ UCSC browser track (Cas12a):
                         TTTV/TTTN specificity columns (a second, aggregated off-target pass —
                         the off-target list still comes from the enCas12a pass). [default: on;
                         use --no-ucscgb_2xnls to skip]
-  --ucscgb_enzyme {ascas12a,encas12a,dual}
+  --ucscgb_enzyme {ascas12a,encas12a}
                         Which Cas12a track to build. 'ascas12a' (default): a single AsCas12a
                         (WT/2xNLS) track scored against a TTTV-only off-target index (pass a
                         TTTV -i index), one specificity, no enCas12a/TTTN columns. 'encas12a': a
@@ -386,9 +386,7 @@ UCSC browser track (Cas12a):
                         (30-PAM) off-target index, with four guidescan specificities (raw + PAM-
                         activity-weighted, at the fa>0.6 and fa>0.3 cutoffs); requires
                         --ucscgb_genome and --cas12a_scorer enpam_gb seq_deepcpf1variants
-                        --cas12a_variant enAsCas12a-HF1. 'dual' (legacy): one track carrying
-                        enCas12a (primary, TTTN) + AsCas12a (secondary) specificities. [default:
-                        ascas12a]
+                        --cas12a_variant enAsCas12a-HF1. [default: ascas12a]
   --ucscgb_encas12a_weights UCSCGB_ENCAS12A_WEIGHTS
                         enCas12a off-target PAM-activity weights TSV (pam, weight_fracactive,
                         in_fa0.6, in_fa0.3). Only used with --ucscgb_enzyme encas12a. [default:

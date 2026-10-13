@@ -137,8 +137,7 @@ band (`> 30 and < 55`, then `> 55`); this track puts 55 in yellow.
 Every percentile in the track, the `...Perc` columns, the hover numbers and the efficiency ramp that
 `itemRgb` and `_crisprDeepCpf1Color` are built from, is ranked over **all guides in the genome**. The
 numbers on this page are from the **AsCas12a** track, but the scheme is universal: every enzyme ships the
-same three colourings on the same cuts, driven by whichever cleavage models it scored. Only the legacy
-`dual` track is exempt, having no re-grading rule.
+same three colourings on the same cuts, driven by whichever cleavage models it scored.
 
 That takes an extra step on a large genome, because the build is chunked. `--ucscgb_chunk_max` splits
 the guide BED into slices of roughly 3 million guides and scores each as an isolated run, so each

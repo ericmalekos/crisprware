@@ -69,10 +69,10 @@ on-target columns are **EnPAM-GB** and the **seq-DeepCpf1 enAsCas12a-HF1** varia
   `.crot` extension. `--chrom_sizes` for `bedToBigBed`. `--crispr_ots_bin` the GPU engine.
 
 **Enzyme**
-: `--ucscgb_enzyme {ascas12a, encas12a, dual}` picks the track. `ascas12a` (default) scores AsCas12a
+: `--ucscgb_enzyme {ascas12a, encas12a}` picks the track. `ascas12a` (default) scores AsCas12a
   (2xNLS) against a `TTTV` index (one specificity, no TTTN/enCas12a columns). `encas12a` scores enCas12a
-  against the broad `fa>0.3` index (four guidescan specificities) and requires `--ucscgb_genome`. `dual`
-  is the legacy both-nucleases track.
+  against the broad `fa>0.3` index (four guidescan specificities) and requires `--ucscgb_genome`. Every
+  track is single-enzyme.
 
 **On-target scores** (two columns in the bigBed)
 : **AsCas12a** -- `--cas12a_scorer deepcpf1 seq_deepcpf1variants --cas12a_variant AsCas12a` produces
@@ -143,8 +143,6 @@ full-precision float behind it, so the chunked and unchunked paths agree exactly
 specificity columns and `_specColor` are never ranked at all: they are absolute functions of the raw CFD
 specificity, and the off-target **counts** are exact and population-independent.
 
-The legacy `dual` track is the exception; it packs percentile and raw into one string, has no re-grading
-rule, and warns when a chunked build merges.
 ```
 
 ## Worked example (hg38, 7x A5500)

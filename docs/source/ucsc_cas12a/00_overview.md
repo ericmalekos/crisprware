@@ -7,8 +7,8 @@ Pick the nuclease with `--ucscgb_enzyme`:
 
 - **`ascas12a`** (default) -- AsCas12a (WT / 2xNLS), scored against a **`TTTV`** off-target index.
 - **`encas12a`** -- enCas12a (enAsCas12a), scored against the broad **`fa>0.3`** (30-PAM) off-target index.
-- **`dual`** (legacy) -- one track carrying both nucleases' TTTV/TTTN specificities (see the note at the
-  end).
+
+Every track is single-enzyme: one CFD matrix, one off-target index, one specificity axis.
 
 A UCSC CRISPR track is **three files**. For the default AsCas12a track:
 
@@ -62,14 +62,6 @@ index**, because the two nucleases cleave different weak PAMs:
 Throughout, "specificity" is an aggregate over a guide's per-off-target CFD scores: 1.0 = perfectly
 unique, lower = more / closer off-targets. On-target scores (DeepCpf1 and friends) are a separate axis
 predicting cutting efficiency.
-```
-
-```{note}
-**Legacy `dual` track.** `--ucscgb_enzyme dual` builds the older single track that carries **both**
-nucleases' specificities at once (files `cas12a.bb` / `cas12aTargets.as` / `crisprDetails.tab`, with
-`unique_TTTV` / `unique_TTTN` flags and `TTTV`/`TTTN` specificity columns for each nuclease, scored
-against a `TTTN` index). It is retained for back-compatibility; new tracks should use `ascas12a` or
-`encas12a`.
 ```
 
 ## References

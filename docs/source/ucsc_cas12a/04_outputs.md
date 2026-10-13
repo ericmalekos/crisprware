@@ -40,8 +40,4 @@ score, x1000 (AsCas12a's `cfd-cas12a:2xnls`, or enCas12a's `cfd-cas12a:encas12a`
 points at one such line by uncompressed byte offset (`_offset`), which the browser resolves through the
 `.gzi`.
 
-```{note}
-The legacy `dual` track differs here: its `cas12a.bb` is `bed9+14` (23 fields) with `unique_TTTV` /
-`unique_TTTN` flags, and each off-target in `crisprDetails.tab` carries **two** CFDs,
-`chrom;pos±;enCas12a_cfd;asCas12a_cfd`, because that track scans both matrices in one pass.
-```
+

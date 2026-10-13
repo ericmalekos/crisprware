@@ -38,8 +38,8 @@ Three files that together form one UCSC "bigDataUrl" track (default `--ucscgb_en
 
 Each guide row carries one **AsCas12a (WT/2xNLS) CFD specificity** (raw, 0-1, over the TTTV
 off-target index) and two **on-target** efficiencies: DeepCpf1 (Kim 2018) and the AsCas12a
-seq-DeepCpf1 variant (Chen 2025). (The `encas12a` and legacy `dual` tracks carry different
-column sets; see the "Reading the track" pages.)
+seq-DeepCpf1 variant (Chen 2025). (The `encas12a` track carries a different set of score
+columns; see the "Reading the track" pages.)
 
 ## Prerequisites
 
@@ -95,9 +95,8 @@ Why these flags:
 - **`--pam TTTV`** (the strong canonical Cas12a PAM set; `V = A/C/G`). The AsCas12a track's
   off-target search is **TTTV-only**: WT/2xNLS AsCas12a does not cleave the weak `TTTT` PAM,
   so `TTTT` sites are not off-targets and must not count against a guide's specificity.
-  Indexing `TTTV` (not `TTTN`) is what makes the index match the enzyme. (Build a broader
-  `TTTN` or fa>0.3 index only for the legacy `dual` or the `encas12a` track; see the enCas12a
-  section.)
+  Indexing `TTTV` (not `TTTN`) is what makes the index match the enzyme. (Build the broader
+  fa>0.3 index only for the `encas12a` track; see the enCas12a section.)
 - **`-l 23`** - 23-nt protospacer (Cas12a).
 - **`--pam_5_prime`** - Cas12a's PAM is 5' of the protospacer (unlike Cas9's 3' NGG).
 - **`--bin_width 14`** - the database bin width; 14 is the measured speed/memory optimum
@@ -160,7 +159,8 @@ What each part does:
   `ascas12a_crisprDetails.tab.gz` (+`.gzi`), and `ascas12aTargets.as` into that directory.
 - **`--ucscgb_enzyme ascas12a`** (the default; may be omitted) builds the single-enzyme
   **AsCas12a** track: one specificity over the TTTV off-target index, no enCas12a/TTTN
-  columns. The other choices are `encas12a` (see the enCas12a section) and `dual` (legacy).
+  columns. The other choice is `encas12a` (see the enCas12a section); every track is
+  single-enzyme.
 - **`--cas12a_scorer deepcpf1 seq_deepcpf1variants --cas12a_variant AsCas12a`** computes the
   AsCas12a track's **two** on-target columns:
   - `deepcpf1` -> **DeepCpf1** (Kim 2018, wild-type AsCas12a/LbCas12a); its percentile drives
@@ -170,8 +170,8 @@ What each part does:
   **AsCas12a (2xNLS)** CFD matrix against the TTTV-only index, yielding one raw
   `AsCas12a_specificity` (0-1) per guide. **No `--ucscgb_genome` is needed**: a TTTV index has
   no `TTTT` off-targets to exclude, so the AsCas12a-TTTV correction is intrinsic.
-  (`--ucscgb_genome` is required only for `encas12a`, and is used by the legacy `dual` track to
-  read each off-target's reference PAM and drop `TTTT` sites from its broader `TTTN` scan.)
+  (`--ucscgb_genome` is required only for `encas12a`, which reads each off-target's reference
+  PAM to weight its four guidescan specificities.)
 - **`--ucscgb_cfd_threshold 0.023`** is the CFD floor for which off-targets are *listed*
   in `crisprDetails` (the per-bucket mismatch *counts* are unfloored).
 - **`--ucscgb_list_cap 1000`** caps the stored off-target list per guide (top by CFD) to
@@ -345,9 +345,7 @@ Everything else is identical to the AsCas12a build: the chunked/multi-GPU engine
 colourings, the split raw/`...Perc` columns, the hover layout, the genome-wide percentile re-grade,
 and the UCSC hosting steps. The two enzymes differ only in their score columns, four specificities
 instead of one and their own pair of cleavage models, so `encas12a.bb` is `bed9+15` (**24 fields**)
-where `ascas12a.bb` is `bed9+12` (21). The legacy single-track **dual** build
-(`--ucscgb_enzyme dual`, which carries both enzymes' TTTV/TTTN specificities in one 23-field
-`cas12a.bb`) is retained for back-compat only.
+where `ascas12a.bb` is `bed9+12` (21).
 
 ## Loading the track in UCSC
 
@@ -378,5 +376,4 @@ implementation (`crisprware.ucsc_track.merge_ucscgb_tracks`), so their output is
 - Per-chunk timing: on-target ~2 min, off-target GPU enumerate ~30-42 min, track assembly
   (the wall-time bottleneck) ~90-150 min.
 - Outputs in `track_hg38_cas12a/`: `ascas12a.bb`, `ascas12a_crisprDetails.tab.gz` + `.gzi`,
-  `ascas12aTargets.as`. (A comparable legacy dual-matrix run produced an 11.7 GB `.bb` and a
-  78.7 GB details file; the 17-field AsCas12a track is somewhat smaller.)
+  `ascas12aTargets.as`.

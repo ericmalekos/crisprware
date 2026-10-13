@@ -113,12 +113,6 @@ class Genome:
         return _revcomp(self.fetch(chrom, pos, pos + 23))
 
 
-def is_tttt(pam: str) -> bool:
-    """TTTT PAM -- AsCas12a does not cleave it (enCas12a does). Anything not a clean
-    4-nt TTTT (Ns, or a truncated read near a contig edge) is treated as keep."""
-    return pam == "TTTT"
-
-
 # ----------------------------------------------------------------------------
 # enCas12a off-target PAM-activity weights (for the enCas12a track's four
 # guidescan specificities). The enumerate scan uses the fa>0.3 (30-PAM) index,
@@ -150,95 +144,13 @@ def load_encas12a_weights(path: Optional[str] = None) -> Dict[str, tuple]:
     return weights
 
 
-# On-target display score columns, in track column order (enseq, then deepcpf1,
-# then enpam_gb). Any subset actually present in the guide table is emitted.
-DISPLAY_SCORE_COLS = ["ascas12a_deepcpf1_score", "enseq_deepcpf1_score", "deepcpf1_score", "enpam_gb_score"]
-
-# Track filenames; the deployed browser config must reference these same names.
-BB_NAME = "cas12a.bb"
-DETAILS_NAME = "crisprDetails.tab"
-AS_NAME = "cas12aTargets.as"
-
-
 # ----------------------------------------------------------------------------
 # autoSql
-# ----------------------------------------------------------------------------
-def build_autosql(
-    score_cols: Sequence[str],
-    spec_matrices: Sequence[tuple[str, str]] = (("enCas12a", "EnCas12a"),),
-) -> str:
-    """autoSql for the bigBed: bed9 + guideSeq/pam + unique flags + per-matrix
-    TTTV/TTTN specificity + on-target efficiency columns + the required
-    ``_mouseOver``/``_offset`` trailer. ``spec_matrices`` is ``(field_label,
-    display_name)`` per off-target matrix (one TTTV + one TTTN column each). The
-    column order here MUST match the BED written by :func:`build_track`."""
-    score_descs = {
-        "enseq_deepcpf1_score": "EnCas12a-DeepCpf1",
-        "deepcpf1_score": "DeepCpf1",
-        "enpam_gb_score": "EnPAM-GB",
-        "ascas12a_deepcpf1_score": "AsCas12a-DeepCpf1",
-    }
-    head = [
-        "table Cas12aTargets",
-        '"CRISPR Cas12a guides, genome wide (bed9 + extra; off-targets in external bgzip tab file)"',
-        "    (",
-        '    string  chrom;        "Reference sequence chromosome or scaffold"',
-        '    uint    chromStart;   "0-based start of the 27nt PAM+spacer site"',
-        '    uint    chromEnd;     "chromStart + 27"',
-        '    string  name;         "Guide ID (may be empty)"',
-        '    uint    score;        "Score 0-1000 (labeled on the details page by trackDb scoreLabel)"',
-        '    char[1] strand;       "+ or -"',
-        '    uint    thickStart;   "Start of protospacer (thick);"',
-        '    uint    thickEnd;     "End of protospacer (thick)"',
-        '    uint    itemRgb;      "Display color R,G,B"',
-        '    string  guideSeq;     "Guide sequence"',
-        '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
-    ]
-    # Extra string fields: unique flags, per-matrix TTTV/TTTN specificity, then
-    # the on-target efficiencies. Descriptions align to the widest field name.
-    extra = [("unique_TTTV", "TTTV PAM unique"), ("unique_TTTN", "TTTN PAM unique")]
-    for field, display in spec_matrices:
-        extra.append((f"TTTV_{field}_specificity", f"{display} TTTV specificity"))
-        extra.append((f"TTTN_{field}_specificity", f"{display} TTTN specificity"))
-    for c in score_cols:
-        extra.append((c, score_descs.get(c, "efficiency")))
-    width = max(len(f) for f, _ in extra) + 2  # "field;" + >=1 space before the description
-    body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
-    tail = [
-        '    string  _mouseOver;   "Hover label (mouseOver)"',
-        '    bigint  _offset;      "Uncompressed byte offset into crisprDetails.tab, or 0 if non-unique"',
-        "    )",
-        "",
-    ]
-    return "\n".join(head + body + tail)
-
-
-# ----------------------------------------------------------------------------
-# helpers
 # ----------------------------------------------------------------------------
 def _pct(series: pd.Series) -> pd.Series:
     """Percentile rank in [0, 100] (higher value -> higher percentile)."""
     x = pd.to_numeric(series, errors="coerce")
     return (x.rank(pct=True, method="average") * 100).round(2)
-
-
-def _fmt_pct_raw(raw: pd.Series, pct: pd.Series) -> pd.Series:
-    def _r4(v):
-        """Raw value rounded to <=4 decimals; pass non-numeric through unchanged."""
-        try:
-            return f"{round(float(v), 4)}"
-        except (TypeError, ValueError):
-            return str(v)
-
-    out = []
-    for r, p in zip(raw, pct):
-        if pd.isna(r):
-            out.append("")
-        elif pd.isna(p):
-            out.append(_r4(r))
-        else:
-            out.append(f"{int(round(float(p)))}% ({_r4(r)})")
-    return pd.Series(out, index=raw.index, dtype="object")
 
 
 def _pct_of_displayed(raw: pd.Series) -> pd.Series:
@@ -504,7 +416,7 @@ def _build_details(
     specs_out: Optional[Dict[str, tuple]] = None,
     list_floor: float = 0.0,
 ):
-    """Write crisprDetails.tab and return ``(offsets, tttv_mm)``.
+    """Write crisprDetails.tab and return ``offsets``.
 
     **enCas12a track** (``weights`` given): in the SAME Mode-2 stream, aggregate the four
     guidescan specificities per guide from each off-target's reference PAM -- raw + PAM
@@ -530,12 +442,14 @@ def _build_details(
     "too many off-targets" message instead of a silently truncated list. Bin
     width follows Mode-1's histogram width.
 
-    ``offsets`` maps ``id -> uncompressed byte offset``. When ``genome`` is given the
-    AsCas12a per-off-target CFD (``cfd2``) is zeroed for TTTT off-targets (Layer 2;
-    AsCas12a does not cleave them) and ``tttv_mm`` maps ``id -> [mm0, mm1, mm2]`` over
-    the TTTV-restricted (non-TTTT) off-targets that cleared the CFD floor, for the
-    AsCas12a close-off-target grey (Layer 3). Without a genome ``tttv_mm`` is empty and
-    callers fall back to the Mode-1 (TTTN) mismatch counts.
+    ``offsets`` maps ``id -> uncompressed byte offset``.
+
+    ``genome`` is used only to read each off-target's reference 4-nt PAM for the enCas12a
+    specificity weights; the scanner itself is PAM-blind. The AsCas12a TTTT exclusion that
+    used to live here (zeroing a second CFD column, and a TTTV-restricted mismatch count)
+    belonged to the two-matrix track and is gone with it: a single-enzyme AsCas12a track is
+    scanned against a TTTV-only index, where no TTTT off-target exists to exclude, and
+    enCas12a does cleave TTTT so its counts must stay unrestricted.
     """
     import shlex
 
@@ -549,7 +463,6 @@ def _build_details(
     cap = list_cap if list_cap and list_cap > 0 else None
     blank = blank_threshold if blank_threshold and blank_threshold > 0 else None
     offsets: Dict[str, int] = {}
-    tttv_mm: Dict[str, list] = {}
     seen: set = set()
     have_ot = os.path.exists(mode2_path) and os.path.getsize(mode2_path) > 0
 
@@ -604,14 +517,6 @@ def _build_details(
                         acc["n06"],
                         acc["n03"],
                     )
-                # Layer 3: TTTV-restricted [mm0, mm1, mm2] over ALL floored
-                # off-targets of this guide (before capping/blanking), TTTT excluded.
-                if genome is not None:
-                    b = [0, 0, 0]
-                    for _e, _si, mm, tttt in entries:
-                        if not tttt and 0 <= mm < 3:
-                            b[mm] += 1
-                    tttv_mm[gid_str] = b
                 # Bin the floored off-targets this guide actually has, so the
                 # histogram and the list agree (Cas9 convention).
                 hist = _hist(e[2] for e in entries)
@@ -652,10 +557,9 @@ def _build_details(
                     mm = int(p[4])
                     cfd = float(p[5])
                     si = int(round(cfd * 1000))
-                    # Reference 4-nt PAM of this off-target (the scanner is PAM-blind): used
-                    # for the AsCas12a TTTT check (Layer 2) and the enCas12a spec weights.
+                    # Reference 4-nt PAM of this off-target (the scanner is PAM-blind),
+                    # for the enCas12a specificity weights.
                     pam_str = genome.pam(p[1], pos, strand) if genome is not None else ""
-                    tttt = is_tttt(pam_str) if genome is not None else False
                     # enCas12a: aggregate the four guidescan specificities over EVERY
                     # off-target (unfloored), keyed on the off-target PAM's activity weight
                     # + fa>0.6/fa>0.3 cutoff membership; 1/(on_count + sum) at flush.
@@ -672,18 +576,13 @@ def _build_details(
                                 acc["c06"] += cfd
                                 acc["w06"] += wcfd
                                 acc["n06"] += 1
-                    # Single-pass dual scoring: the Mode-2 TSV has a 2nd CFD column
-                    # (cfd2). Per the spec, each off-target is
-                    # chrom;posStrand;scoreInt1[;scoreInt2] (EnCas12a, then WT/2xNLS).
-                    if len(p) > 6 and p[6] != "":
-                        si2 = 0 if tttt else int(round(float(p[6]) * 1000))
-                        entry = f"{p[1]};{pos}{strand};{si};{si2}"
-                    else:
-                        entry = f"{p[1]};{pos}{strand};{si}"
+                    # A single-enzyme track scans ONE CFD matrix, so each off-target is
+                    # chrom;posStrand;scoreInt.
+                    entry = f"{p[1]};{pos}{strand};{si}"
                     # list_floor floors ONLY the displayed popup (enCas12a scans unfloored so
                     # the spec sums above are exact); default 0 keeps AsCas12a/legacy behavior.
                     if cfd >= list_floor:
-                        entries.append((entry, si, mm, tttt))
+                        entries.append((entry, si, mm))
             if cur is not None:
                 _flush(cur, entries, acc)
             os.remove(sorted_path)
@@ -695,7 +594,7 @@ def _build_details(
             if gid_str in seen or oc is None or pd.isna(oc) or oc <= 0:
                 continue
             _emit(gid_str, "", zero_hist)
-    return offsets, tttv_mm
+    return offsets
 
 
 # ----------------------------------------------------------------------------
@@ -703,33 +602,6 @@ def _build_details(
 # ----------------------------------------------------------------------------
 # Display names for known matrix-name slugs. crispr-ots derives the column
 # suffix from the matrix's own name, so `2xNLS-Cas12a` -> `2xnls_cas12a`.
-SECONDARY_MATRIX_LABELS = {
-    "2xnls_cas12a": "AsCas12a",
-    "2xnls": "AsCas12a",  # legacy: suffix was hardcoded before the rename
-    "encas12a": "EnCas12a",
-}
-
-
-def secondary_specificity_suffixes(columns: Sequence[str]) -> list[str]:
-    """Matrix-name suffixes of any secondary specificity columns, in order.
-
-    A dual-matrix Mode-1 file carries `specificity_tttn_<matrix>` and
-    `specificity_tttv_<matrix>` alongside the unsuffixed primary pair. The
-    suffix used to be the hardcoded literal `2xnls` for whichever matrix was
-    passed second, which mislabelled the enzyme whenever the two `--score`
-    matrices were given in the other order. Matching by prefix keeps this
-    working for any matrix name, and the legacy spelling still resolves.
-    """
-    out: list[str] = []
-    for col in columns:
-        for stem in ("specificity_tttv_", "specificity_tttn_"):
-            if col.startswith(stem):
-                suffix = col[len(stem):]
-                if suffix and suffix not in out:
-                    out.append(suffix)
-    return out
-
-
 def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
     """autoSql for the single-enzyme **AsCas12a** track: bed9 + ``_specColor`` +
     guideSeq/pam + a single ``unique`` flag + one ``AsCas12a_specificity`` column +
@@ -891,7 +763,7 @@ def build_track(
     blank_threshold: int = 2000,
     run_tools: bool = True,
     genome_fa: Optional[str] = None,
-    enzyme: Optional[str] = None,
+    enzyme: str = "ascas12a",
     bb_name: Optional[str] = None,
     details_name: Optional[str] = None,
     as_name: Optional[str] = None,
@@ -903,7 +775,8 @@ def build_track(
     sidecar = ``enum_prefix.guides.tsv``).
 
     ``guide_df`` must have: ``id, chrom, start, stop, strand, guideSeq, pam`` and
-    any of ``DISPLAY_SCORE_COLS``. ``start``/``stop`` bound the 23-nt spacer
+    any of the enzyme's on-target columns (see :data:`ENZYME_TRACK_SPECS`).
+    ``start``/``stop`` bound the 23-nt spacer
     (0-based, + strand). Returns a dict of the artifacts written.
 
     ``genome_fa`` (an indexed FASTA, ``.fai`` alongside) enables the AsCas12a
@@ -913,24 +786,18 @@ def build_track(
     off-target CFDs are zeroed in the details popup (Layer 2) and the AsCas12a
     close-off-target grey is driven by TTTV-restricted mismatch counts (Layer 3).
     """
-    # Per-enzyme filenames + on-target columns. enzyme="ascas12a" emits a single-matrix
-    # AsCas12a track (TTTV-only off-target search, no TTTN/enCas12a); enzyme=None keeps
-    # the legacy dual (enCas12a-primary + AsCas12a-secondary) track.
-    if enzyme == "ascas12a":
-        bb_name = bb_name or "ascas12a.bb"
-        details_name = details_name or "ascas12a_crisprDetails.tab"
-        as_name = as_name or "ascas12aTargets.as"
-        score_cols = [c for c in ["deepcpf1_score", "ascas12a_deepcpf1_score"] if c in guide_df.columns]
-    elif enzyme == "encas12a":
-        bb_name = bb_name or "encas12a.bb"
-        details_name = details_name or "encas12a_crisprDetails.tab"
-        as_name = as_name or "encas12aTargets.as"
-        score_cols = [c for c in ["enpam_gb_score", "encas12a_hf1_score"] if c in guide_df.columns]
-    else:
-        bb_name = bb_name or BB_NAME
-        details_name = details_name or DETAILS_NAME
-        as_name = as_name or AS_NAME
-        score_cols = [c for c in DISPLAY_SCORE_COLS if c in guide_df.columns]
+    # Per-enzyme filenames + on-target columns. Every track is single-enzyme: one CFD
+    # matrix, one off-target index, one specificity axis. Which cleavage models it carries
+    # is the only per-enzyme difference (see ENZYME_TRACK_SPECS).
+    if enzyme not in ENZYME_TRACK_SPECS:
+        raise ValueError(
+            f"unknown enzyme {enzyme!r}; expected one of {sorted(ENZYME_TRACK_SPECS)}. "
+            "Every track is single-enzyme."
+        )
+    bb_name = bb_name or f"{enzyme}.bb"
+    details_name = details_name or f"{enzyme}_crisprDetails.tab"
+    as_name = as_name or f"{enzyme}Targets.as"
+    score_cols = ordered_ontarget_cols(enzyme, guide_df.columns)
 
     os.makedirs(outdir, exist_ok=True)
     mode1 = pd.read_csv(enum_prefix)
@@ -938,9 +805,9 @@ def build_track(
     mode2_path = enum_prefix + ".ot.tsv"
 
     # --- crisprDetails.tab + offsets ---
-    # A genome enables the AsCas12a-TTTV correction (Layer 2 + Layer 3) for the legacy
-    # dual track; the ascas12a path uses a TTTV-only index (no TTTT off-targets exist),
-    # so no genome is needed and Mode-1 counts are already TTTV.
+    # The ascas12a path uses a TTTV-only index (no TTTT off-targets exist), so no genome
+    # is needed and Mode-1 counts are already TTTV. enCas12a scans the broad index and
+    # needs the genome to read each off-target's reference PAM.
     genome = Genome(genome_fa) if (genome_fa and enzyme != "ascas12a") else None
 
     # enCas12a: fold the four guidescan specificities into the SAME Mode-2 stream. Needs the
@@ -964,7 +831,7 @@ def build_track(
         )
 
     details_path = os.path.join(outdir, details_name)
-    offsets, tttv_mm = _build_details(
+    offsets = _build_details(
         mode2_path,
         sidecar_path,
         mode1,
@@ -989,34 +856,6 @@ def build_track(
     for col in ["specificity_tttv", "specificity_tttn", "off_target_count", "mismatch_counts", "dropped"]:
         g[col] = g["id"].map(m1[col]) if col in m1.columns else np.nan
     dropped = g["dropped"].fillna(0).to_numpy() == 1
-
-    # Single-pass dual scoring: the secondary matrix's specificity rides in the
-    # SAME Mode-1, as `specificity_tttn_<matrix>` / `specificity_tttv_<matrix>`.
-    #
-    # The suffix is derived from the matrix name (e.g. `2xnls_cas12a`,
-    # `encas12a`). It used to be the hardcoded literal `2xnls` regardless of
-    # which matrix was actually second, so matching on that literal would both
-    # miss the current column names and, historically, mislabel the enzyme
-    # whenever the two `--score` matrices were passed in the other order.
-    # Detect by prefix instead, and keep accepting the old literal so Mode-1
-    # files generated before the rename still load.
-    extra_spec_data = []  # (field_label, display_name, spec_tttv, spec_tttn)
-    ids = g["id"]
-    for suffix in secondary_specificity_suffixes(m1.columns):
-        label = SECONDARY_MATRIX_LABELS.get(suffix, suffix)
-        tttv_col = f"specificity_tttv_{suffix}"
-        tttn_col = f"specificity_tttn_{suffix}"
-        etttv = (
-            pd.to_numeric(ids.map(m1[tttv_col]), errors="coerce")
-            if tttv_col in m1.columns
-            else pd.Series(np.nan, index=g.index)
-        )
-        etttn = (
-            pd.to_numeric(ids.map(m1[tttn_col]), errors="coerce")
-            if tttn_col in m1.columns
-            else pd.Series(np.nan, index=g.index)
-        )
-        extra_spec_data.append((label, label, etttv, etttn))
 
     # --- coordinates: spacer BED -> 27-nt site (5'-PAM, strand-aware) ---
     start = pd.to_numeric(g["start"], errors="coerce").fillna(0).astype(int).to_numpy()
@@ -1134,102 +973,6 @@ def build_track(
         as_content = build_autosql_encas12a(ot_cols)
         return _write_track(out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes, run_tools)
 
-    # --- scores / colors / display strings ---
-    # enCas12a display specificity (primary matrix). enCas12a DOES cleave TTTT, so its
-    # operative aggregate is TTTN; both TTTV and TTTN are emitted as display columns.
-    spec_tttv = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
-    spec_tttn = pd.to_numeric(g.get("specificity_tttn"), errors="coerce")
-    spec_pct = _pct(spec_tttn).to_numpy()
-    # Column 5 (score), the UCSC score filter, and the low-spec greying use AsCas12a (WT)
-    # **TTTV** specificity when the 2xNLS matrix is present, else EnCas12a TTTN. AsCas12a
-    # does not cleave TTTT, so its operative specificity excludes TTTT off-targets.
-    # extra_spec_data rows are (field, display, spec_tttv, spec_tttn) -> [0][2] = AsCas12a TTTV.
-    score_spec = extra_spec_data[0][2] if extra_spec_data else spec_tttv
-    score = np.clip(np.rint(score_spec.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
-    # Greying keys off the SAME raw AsCas12a-TTTV specificity as the score, via an ABSOLUTE
-    # two-tier threshold (not a percentile). Hover still reports EnCas12a Spec via spec_pct.
-    color_spec_raw = score_spec.to_numpy()
-
-    # Close-off-target grey (120,120,120) is driven by 1/2-mm counts. With a genome
-    # these are TTTV-restricted (Layer 3): AsCas12a does not cleave TTTT, so a close
-    # TTTT off-target must not grey the guide. Mode-1 mismatch_counts are TTTN (they
-    # include TTTT); without a genome, fall back to them.
-    if tttv_mm:
-        tv = np.array([tttv_mm.get(gid, (0, 0, 0)) for gid in g["id"].to_numpy()], dtype=int)
-        mm0, mm1, mm2 = tv[:, 0], tv[:, 1], tv[:, 2]
-    else:
-        buckets = _mismatch_buckets(g["mismatch_counts"])
-        mm0 = buckets["mm0"].to_numpy()
-        mm1 = buckets["mm1"].to_numpy()
-        mm2 = buckets["mm2"].to_numpy()
-    enpam_pct = _pct(g["enpam_gb_score"]).to_numpy() if "enpam_gb_score" in g.columns else np.full(len(g), np.nan)
-    enseq_pct = (
-        _pct(g["enseq_deepcpf1_score"]).to_numpy() if "enseq_deepcpf1_score" in g.columns else np.full(len(g), np.nan)
-    )
-    has_ascas12a = "ascas12a_deepcpf1_score" in g.columns
-    ascas12a_pct = _pct(g["ascas12a_deepcpf1_score"]).to_numpy() if has_ascas12a else np.full(len(g), np.nan)
-    # itemRgb efficiency ramp is driven by AsCas12a-DeepCpf1 (falls back to
-    # EnCas12a-DeepCpf1 when the AsCas12a score isn't present). Also shown on hover.
-    color_pct = ascas12a_pct if has_ascas12a else enseq_pct
-    item_rgb = _item_rgb(dropped, mm0, mm1, mm2, color_spec_raw, color_pct)
-
-    out = {
-        "#chr": g["chrom"].to_numpy(),
-        "start": chrom_start,
-        "stop": chrom_end,
-        "name": "",
-        "score": score,
-        "strand": g["strand"].to_numpy(),
-        "thickStart": thick_start,
-        "thickEnd": thick_end,
-        "itemRgb": item_rgb,
-        "guideSeq": g["guideSeq"].to_numpy(),
-        "pam": g["pam"].to_numpy(),
-    }
-    # Column order must match build_autosql: unique flags, then TTTV/TTTN
-    # specificity, then the on-target efficiency scores (enseq, deepcpf1, enpam_gb).
-    out["unique_TTTV"] = unique
-    out["unique_TTTN"] = unique
-    out["TTTV_enCas12a_specificity"] = _fmt_pct_raw(spec_tttv, _pct(spec_tttv)).to_numpy()
-    out["TTTN_enCas12a_specificity"] = _fmt_pct_raw(spec_tttn, _pct(spec_tttn)).to_numpy()
-    for field, _display, etttv, etttn in extra_spec_data:
-        out[f"TTTV_{field}_specificity"] = _fmt_pct_raw(etttv, _pct(etttv)).to_numpy()
-        out[f"TTTN_{field}_specificity"] = _fmt_pct_raw(etttn, _pct(etttn)).to_numpy()
-    for c in score_cols:
-        out[c] = _fmt_pct_raw(g[c], _pct(g[c])).to_numpy()
-
-    dcpf_pct = _pct(g["deepcpf1_score"]).to_numpy() if "deepcpf1_score" in g.columns else np.full(len(g), np.nan)
-
-    def _pf(v):
-        return "" if np.isnan(v) else int(round(v))
-
-    # each extra matrix's OPERATIVE specificity percentile for the hover: AsCas12a is
-    # TTTV (excludes TTTT off-targets, which it does not cleave).
-    extra_spec_pct = [(display, _pct(etttv).to_numpy()) for _field, display, etttv, _etttn in extra_spec_data]
-
-    def _hover(i):
-        # operative (primary) specificity; non-unique guides have none.
-        parts = ["Not unique at TTTN" if np.isnan(spec_pct[i]) else f"EnCas12a Spec: {int(round(spec_pct[i]))}"]
-        for display, pcts in extra_spec_pct:
-            if not np.isnan(pcts[i]):
-                parts.append(f"{display} Spec: {int(round(pcts[i]))}")
-        parts += [
-            f"EnCas12a-DeepCpf1: {_pf(enseq_pct[i])}",
-            f"DeepCpf1: {_pf(dcpf_pct[i])}",
-            f"EnPAM-GB: {_pf(enpam_pct[i])}",
-        ]
-        if has_ascas12a:
-            parts.append(f"AsCas12a-DeepCpf1: {_pf(ascas12a_pct[i])}")
-        return ", ".join(parts)
-
-    mouse = [_hover(i) for i in range(len(g))]
-    out["_mouseOver"] = mouse
-    out["_offset"] = [offsets.get(gid, 0) for gid in g["id"].to_numpy()]
-
-    # --- write BED (sorted), autoSql, tools (shared tail) ---
-    spec_matrices = [("enCas12a", "EnCas12a")] + [(field, display) for field, display, _tv, _tn in extra_spec_data]
-    as_content = build_autosql(score_cols, spec_matrices)
-    return _write_track(out, as_content, outdir, details_path, bb_name, as_name, chrom_sizes, run_tools)
 
 
 # ----------------------------------------------------------------------------
@@ -1265,8 +1008,8 @@ def track_regrade_spec(enzyme: str, as_fields: Sequence[str]) -> Optional[dict]:
     cleavage scores are a per-enzyme difference in *which* models exist, never a
     difference in how they are graded or displayed.
 
-    Returns ``None`` for an enzyme with no entry (the legacy ``dual`` track), whose
-    packed ``"NN% (raw)"`` columns have no ``...Perc`` sibling to re-rank.
+    Returns ``None`` for an enzyme with no entry, which :func:`build_track` rejects
+    outright; the merge keeps the check as a guard rather than silently not re-grading.
     """
     espec = ENZYME_TRACK_SPECS.get(enzyme)
     if espec is None:
@@ -1397,9 +1140,9 @@ def merge_ucscgb_tracks(
     sort_mem: str = "8G",
     sort_threads: str = "8",
     keep_bed: bool = False,
-    details_name: str = DETAILS_NAME,
-    bb_name: str = BB_NAME,
-    as_name: str = AS_NAME,
+    details_name: str = "ascas12a_crisprDetails.tab",
+    bb_name: str = "ascas12a.bb",
+    as_name: str = "ascas12aTargets.as",
     enzyme: str = "ascas12a",
 ) -> Dict[str, str]:
     """Merge per-chunk Cas12a UCSC tracks (each produced by a single-pass

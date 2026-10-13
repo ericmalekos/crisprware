@@ -66,10 +66,11 @@ def _guide_df():
 def test_track_geometry_and_offsets(tmp_path):
     prefix = str(tmp_path / "off.csv")
     _write_enum(prefix)
-    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), run_tools=False)
+    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), run_tools=False, enzyme="ascas12a")
 
     bed = [line.rstrip("\n").split("\t") for line in open(art["bed"])]
     assert len(bed) == 2
+    f = _as_index(art["autosql"])
     by_chromstart = {int(r[1]): r for r in bed}
 
     # g_uniq (+): spacer [104,127) -> site [100,127) (27nt), thick [104,127) (23nt)
@@ -77,7 +78,7 @@ def test_track_geometry_and_offsets(tmp_path):
     assert int(plus[2]) - int(plus[1]) == 27  # chromEnd - chromStart
     assert int(plus[7]) - int(plus[6]) == 23  # thickEnd - thickStart
     assert plus[6] == "104" and plus[7] == "127"  # thick = spacer
-    assert plus[10] == "TTTA"  # 4-nt PAM
+    assert plus[f["pam"]] == "TTTA"  # 4-nt PAM
     assert plus[5] == "+"
     assert int(plus[-1]) > 0  # _offset set (has off-targets)
 
@@ -85,20 +86,20 @@ def test_track_geometry_and_offsets(tmp_path):
     minus = next(r for r in bed if r[5] == "-")
     assert int(minus[1]) == 204 and int(minus[2]) == 231  # chromStart, chromEnd
     assert int(minus[6]) == 204 and int(minus[7]) == 227  # thick = spacer
-    assert minus[8] == "150,150,150"  # grey (non-unique/dropped)
+    assert minus[f["itemRgb"]] == "150,150,150"  # grey (non-unique/dropped)
     assert minus[-1] == "0"  # dropped -> no crisprDetails line
 
     # All geometry invariants
     for r in bed:
         assert int(r[2]) - int(r[1]) == 27
         assert int(r[7]) - int(r[6]) == 23
-        assert len(r[10]) == 4
+        assert len(r[f["pam"]]) == 4
 
 
 def test_offtarget_browser_pos_and_offset_seek(tmp_path):
     prefix = str(tmp_path / "off.csv")
     _write_enum(prefix)
-    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), run_tools=False)
+    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), run_tools=False, enzyme="ascas12a")
 
     # find g_uniq's _offset
     bed = [line.rstrip("\n").split("\t") for line in open(art["bed"])]
@@ -128,7 +129,7 @@ def test_blank_list_when_too_many(tmp_path):
     # off_target_count 3 > blank_threshold 1 -> list blanked. The histogram keeps
     # the true above-floor totals (2), which is what makes the browser print its
     # "too many off-targets" message instead of showing a truncated list.
-    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), blank_threshold=1, run_tools=False)
+    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), blank_threshold=1, run_tools=False, enzyme="ascas12a")
     raw = open(art["details_tab"], "rb").read().decode()
     body = raw.split("\n", 1)[1]
     counts, lst = body.split("\n")[0].split("\t")
@@ -144,14 +145,14 @@ def test_over_cap_emits_empty_list_with_full_histogram(tmp_path):
     """
     prefix = str(tmp_path / "off.csv")
     _write_enum(prefix)
-    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), list_cap=1, run_tools=False)
+    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), list_cap=1, run_tools=False, enzyme="ascas12a")
     body = open(art["details_tab"]).read().split("\n", 1)[1]
     counts, lst = body.split("\n")[0].split("\t")
     assert lst == ""  # 2 off-targets > cap of 1 -> not truncated to 1, emptied
     assert counts == "0,1,0,1,0"  # still the true above-floor histogram
 
     # At a cap that fits, the list is shown and the invariant holds exactly.
-    art2 = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path / "b"), list_cap=2, run_tools=False)
+    art2 = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path / "b"), list_cap=2, run_tools=False, enzyme="ascas12a")
     counts2, lst2 = open(art2["details_tab"]).read().split("\n", 1)[1].split("\n")[0].split("\t")
     assert sum(int(x) for x in counts2.split(",")) == len(lst2.split("|")) == 2
 
@@ -161,7 +162,7 @@ def test_all_offtargets_below_floor_report_zero(tmp_path):
     prefix = str(tmp_path / "off.csv")
     _write_enum(prefix)
     open(prefix + ".ot.tsv", "w").write("guide_id\tchrom\tstart\tstrand\tmm\tcfd\n")  # no Mode-2 rows
-    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), run_tools=False)
+    art = ucsc_track.build_track(_guide_df(), prefix, str(tmp_path), run_tools=False, enzyme="ascas12a")
     body = open(art["details_tab"]).read().split("\n", 1)[1]
     counts, lst = body.split("\n")[0].split("\t")
     assert lst == ""
@@ -179,142 +180,6 @@ def _write_fasta(path, contigs):
         for name, seq in contigs:
             seq_off = b.index(f">{name}\n".encode()) + len(name) + 2  # '>' + name + '\n'
             f.write(f"{name}\t{len(seq)}\t{seq_off}\t{len(seq)}\t{len(seq) + 1}\n")
-
-
-def _write_dual_enum(prefix):
-    """One unique guide with two floored off-targets: chr1:500(+) has a TTTT PAM
-    (AsCas12a can't cleave -> Layer 2/3 exclude it), chr3:800(-) a TTTV PAM (kept)."""
-    with open(prefix, "w") as f:
-        f.write(
-            "id,specificity_tttn,specificity_tttv,specificity_tttn_2xnls,specificity_tttv_2xnls,"
-            "max_cfd,off_target_count,mismatch_counts,saturated,dropped\n"
-        )
-        f.write("g_uniq,0.5,0.6,0.55,0.9,0.9,2,0;1;1;0;0,0,0\n")
-    with open(prefix + ".guides.tsv", "w") as f:
-        f.write("guide_id\tid\tchrom\tposition\tstrand\tsequence\ton_count\n")
-        f.write("0\tg_uniq\tchr22\t1000\t+\tACGTACGTACGTACGTACGTACG\t1\n")
-    with open(prefix + ".ot.tsv", "w") as f:
-        f.write("guide_id\tchrom\tstart\tstrand\tmm\tcfd\tcfd2\n")
-        f.write("0\tchr1\t500\t+\t1\t0.80\t0.80\n")  # TTTT PAM -> L2 zeroes cfd2, L3 excludes
-        f.write("0\tchr3\t800\t-\t2\t0.30\t0.30\n")  # TTTV PAM -> kept, counts into tttv_mm[2]
-
-
-def _dual_genome(tmp_path):
-    # chr1[500:504] = TTTT (a + off-target's PAM is [pos, pos+4)).
-    # chr3[823:827] = TAAA, so a - off-target at 800 reads revcomp -> TTTA (TTTV).
-    chr1 = "A" * 500 + "TTTT" + "A" * 36  # len 540 (>= 527 for the 27-nt + site)
-    chr3 = "A" * 823 + "TAAA" + "A" * 13  # len 840 (>= 827 for the 27-nt - site)
-    fa = str(tmp_path / "genome.fa")
-    _write_fasta(fa, [("chr1", chr1), ("chr3", chr3)])
-    return fa
-
-
-def test_build_details_layer2_zeroes_tttt_ascas12a(tmp_path):
-    """With a genome, the AsCas12a (cfd2) of a TTTT off-target is zeroed in the popup
-    list (Layer 2) and excluded from the TTTV close-off-target counts (Layer 3)."""
-    prefix = str(tmp_path / "off.csv")
-    _write_dual_enum(prefix)
-    mode1 = pd.read_csv(prefix)
-    fa = _dual_genome(tmp_path)
-
-    # --- with genome ---
-    dp = str(tmp_path / "d_g.tab")
-    offsets, tttv_mm = ucsc_track._build_details(
-        prefix + ".ot.tsv", prefix + ".guides.tsv", mode1, dp, 100, 0, genome=ucsc_track.Genome(fa)
-    )
-    # L3: only the TTTV (chr3, 2-mm) off-target counts; the TTTT (chr1, 1-mm) is excluded
-    assert tttv_mm["g_uniq"] == [0, 0, 1]
-    raw = open(dp, "rb").read()
-    entries = raw[offsets["g_uniq"]:].split(b"\n", 1)[0].decode().split("\t")[1].split("|")
-    # sorted by cfd desc: chr1 (0.80) then chr3 (0.30); chr1's AsCas12a score is zeroed
-    assert entries[0] == "chr1;500+;800;0"  # L2: cfd2 800 -> 0 (TTTT)
-    assert entries[1] == "chr3;800-;300;300"  # TTTV kept
-
-    # --- without genome (backward compatible) ---
-    dp0 = str(tmp_path / "d_none.tab")
-    offsets0, tttv_mm0 = ucsc_track._build_details(
-        prefix + ".ot.tsv", prefix + ".guides.tsv", mode1, dp0, 100, 0, genome=None
-    )
-    assert tttv_mm0 == {}
-    raw0 = open(dp0, "rb").read()
-    entries0 = raw0[offsets0["g_uniq"]:].split(b"\n", 1)[0].decode().split("\t")[1].split("|")
-    assert entries0[0] == "chr1;500+;800;800"  # cfd2 NOT zeroed without a genome
-
-
-def test_build_track_layer3_grey_uses_tttv(tmp_path):
-    """A guide whose only close off-target is TTTT must NOT be close-greyed once the
-    genome is supplied (AsCas12a can't cleave it); without a genome it greys."""
-    prefix = str(tmp_path / "off.csv")
-    with open(prefix, "w") as f:
-        f.write(
-            "id,specificity_tttn,specificity_tttv,specificity_tttn_2xnls,specificity_tttv_2xnls,"
-            "max_cfd,off_target_count,mismatch_counts,saturated,dropped\n"
-        )
-        f.write("g,0.5,0.6,0.55,0.9,0.9,1,0;0;1;0;0,0,0\n")  # one 2-mm off-target (TTTN basis)
-    with open(prefix + ".guides.tsv", "w") as f:
-        f.write("guide_id\tid\tchrom\tposition\tstrand\tsequence\ton_count\n")
-        f.write("0\tg\tchr22\t1000\t+\tACGTACGTACGTACGTACGTACG\t1\n")
-    with open(prefix + ".ot.tsv", "w") as f:
-        f.write("guide_id\tchrom\tstart\tstrand\tmm\tcfd\tcfd2\n")
-        f.write("0\tchr1\t500\t+\t2\t0.30\t0.30\n")  # the single 2-mm off-target, TTTT PAM
-    fa = str(tmp_path / "g.fa")
-    _write_fasta(fa, [("chr1", "A" * 500 + "TTTT" + "A" * 36)])
-    gdf = pd.DataFrame(
-        {
-            "id": ["g"],
-            "chrom": ["chr22"],
-            "start": [104],
-            "stop": [127],
-            "strand": ["+"],
-            "guideSeq": ["ACGTACGTACGTACGTACGTACG"],
-            "pam": ["TTTA"],
-            "deepcpf1_score": [42.0],
-            "enseq_deepcpf1_score": [0.6],
-            "ascas12a_deepcpf1_score": [80.0],
-        }
-    )
-
-    def _rgb(genome_fa):
-        d = str(tmp_path / ("out_g" if genome_fa else "out_n"))
-        art = ucsc_track.build_track(gdf.copy(), prefix, d, run_tools=False, genome_fa=genome_fa)
-        row = open(art["bed"]).readline().rstrip("\n").split("\t")
-        return row[8]  # itemRgb
-
-    # without a genome: the TTTN 2-mm count greys it (120,120,120)
-    assert _rgb(None) == "120,120,120"
-    # with a genome: the only close off-target is TTTT -> TTTV counts are empty -> not greyed
-    assert _rgb(fa) != "120,120,120"
-    assert _rgb(fa) not in {"150,150,150", "120,120,120", "90,90,90", "50,50,50"}
-
-
-def test_secondary_specificity_suffixes_use_matrix_name():
-    """The secondary specificity suffix comes from the matrix name.
-
-    It used to be a hardcoded `2xnls` for whichever matrix was passed second,
-    which mislabelled the enzyme when the two `--score` matrices were given in
-    the other order. New files spell it `specificity_*_2xnls_cas12a`; legacy
-    files must still resolve.
-    """
-    from crisprware.ucsc_track import (
-        SECONDARY_MATRIX_LABELS,
-        secondary_specificity_suffixes,
-    )
-
-    base = ["id", "specificity_tttn", "specificity_tttv"]
-    assert secondary_specificity_suffixes(base) == []
-    assert secondary_specificity_suffixes(
-        base + ["specificity_tttn_2xnls_cas12a", "specificity_tttv_2xnls_cas12a"]
-    ) == ["2xnls_cas12a"]
-    assert secondary_specificity_suffixes(
-        base + ["specificity_tttn_2xnls", "specificity_tttv_2xnls"]
-    ) == ["2xnls"]
-    assert secondary_specificity_suffixes(
-        base + ["specificity_tttv_encas12a"]
-    ) == ["encas12a"]
-
-    # Both spellings must map to the same displayed enzyme name.
-    assert SECONDARY_MATRIX_LABELS["2xnls_cas12a"] == "AsCas12a"
-    assert SECONDARY_MATRIX_LABELS["2xnls"] == "AsCas12a"
 
 
 def _write_ascas12a_enum(prefix):
@@ -881,5 +746,5 @@ def test_regrade_spec_follows_the_models_actually_scored():
     assert [c for _, _, c in spec["models"]] == ["itemRgb"]
     assert "encas12aHf1" not in f
 
-    # the legacy dual track has no entry and is merged without re-grading
-    assert ucsc_track.track_regrade_spec("dual", f) is None
+    # an enzyme with no entry has no rule; build_track rejects it outright
+    assert ucsc_track.track_regrade_spec("nosuchenzyme", f) is None

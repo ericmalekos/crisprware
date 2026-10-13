@@ -16,8 +16,8 @@ nuclease with `--ucscgb_enzyme`:
   specificity column.
 - **`encas12a`** -- enCas12a (enAsCas12a), scored against the broad **`fa>0.3`** (30-PAM) off-target
   index, four specificity columns; **requires** `--ucscgb_genome`.
-- **`dual`** (legacy) -- one track carrying both nucleases' TTTV/TTTN specificities. Kept for
-  back-compat only.
+
+Every track is single-enzyme: one CFD matrix, one off-target index, one specificity axis.
 
 Four steps take a genome FASTA to that track:
 
