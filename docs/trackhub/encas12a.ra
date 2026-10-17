@@ -15,8 +15,14 @@ mouseOverField _mouseOver
 scoreLabel enCas12a Guide Specificity Score
 scoreFilterMax 100
 bigDataUrl /gbdb/$D/encas12a/encas12a.bb
-# details page is not using a mysql table but a tab-sep file
-detailsTabUrls _offset=/gbdb/$db/encas12a/encas12a_crisprDetails.tab
+# details page is not using a mysql table but a tab-sep file. The shipped file is
+# bgzip-compressed with a .gzi index beside it, so this must name the .gz; pointing
+# at a bare .tab leaves the off-target table empty because no such file is installed.
+detailsTabUrls _offset=/gbdb/$db/encas12a/encas12a_crisprDetails.tab.gz
+# Cas12a reads its PAM 5' of the protospacer, the opposite of Cas9. Without this the
+# off-target table is laid out with Cas9 3'-PAM geometry and the non-unique-guide
+# message never fires.
+crisprPam5Prime on
 # The same three pre-computed colour schemes every track ships, selectable from the
 # "Color by:" dropdown. "default" is column 9 (itemRgb). The two alternatives are
 # plain extra bigBed string fields holding "R,G,B", so this needs no browser-side

@@ -138,10 +138,21 @@ percentile.
 
 The rule is derived from the track's own autoSql rather than tabulated per enzyme
 (`track_regrade_spec`), so a run that scored one cleavage model, or three, re-grades exactly the models
-it has. Ranking is on the value **as the track displays it** (4 decimal places), not on the
-full-precision float behind it, so the chunked and unchunked paths agree exactly. `score`, the raw
+it has. Ranking is on the value **as the track displays it**, at each model's declared precision, not on
+the full-precision float behind it, so the chunked and unchunked paths agree exactly. `score`, the raw
 specificity columns and `_specColor` are never ranked at all: they are absolute functions of the raw CFD
 specificity, and the off-target **counts** are exact and population-independent.
+
+Each cleavage model declares its displayed precision in `ENZYME_TRACK_SPECS`, because the right precision
+is a property of the model's output range rather than a house style. DeepCpf1 spans roughly 1 to 115 and
+is written as an **integer**; seq-DeepCpf1, EnPAM-GB and enAsCas12a-HF1 all span 0 to 1 and are written to
+**2 decimals**. Those choices put every model in the same granularity band as the Cas9 track's six score
+fields, 92 to 126 distinct values: DeepCpf1 gives 112 distinct integers, the 0-to-1 models 92 to 94 at
+2 decimals and a useless 2 as integers.
+
+Because the percentile ranks the displayed value, **changing a model's precision re-ranks it**: it is a
+track change, not a reformat. Writing an integer while ranking the 4-decimal value would leave 68 of 112
+displayed DeepCpf1 values carrying two or more different percentiles, which `validate_track_bed` rejects.
 
 ```
 
@@ -159,6 +170,7 @@ What it asserts:
 | the three colour columns hold only colours the scheme produces | the colour logic drifted from what ships |
 | a ramp colour appears only on a unique guide with no close off-target | a grey override was skipped |
 | each raw cleavage score maps to exactly **one** percentile | percentiles are chunk-local, not genome-wide |
+| each cleavage score is written to the decimals its model declares | the column was reformatted without re-ranking |
 | a percentile is blank exactly when its raw value is blank | a model scored one half of a pair and not the other |
 | `score` agrees with the specificity column to within 1 | column 5 and the specificity drifted apart |
 | the hover repeats `score` | the hover is showing a rank instead of the raw specificity |

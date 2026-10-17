@@ -236,7 +236,10 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
     # schema: single AsCas12a specificity, NO TTTN / enCas12a anywhere
     aso = open(art["autosql"]).read()
     assert "AsCas12a_specificity" in aso
-    assert "DeepCpf1 (Kim 2018)" in aso and "seq-DeepCpf1 variant" in aso  # BOTH AsCas12a on-target models
+    # BOTH AsCas12a on-target models, each as "label|description" so hgc renders a
+    # short field label with the citation as a note beneath it
+    assert "Efficiency: DeepCpf1|AsCas12a (Kim 2018)" in aso
+    assert "Efficiency: seq-DeepCpf1|AsCas12a variant (Chen 2025)" in aso
     for banned in ("TTTN", "EnCas12a", "enCas12a", "unique_TTTV", "unique_TTTN", "specificity_tttv_"):
         assert banned not in aso
 
@@ -590,20 +593,20 @@ def test_regrade_bed_percentiles_is_genome_wide(tmp_path):
     # chunk A holds the low scores, chunk B the high ones; each ranked 25/50/75
     # within itself, so "75" means two different things.
     rows = [
-        row("chr1", 100, "1.0", "10.0", "25", "0.10", "25", "255,100,100", "255,100,100"),
-        row("chr1", 200, "1.0", "20.0", "50", "0.20", "50", "255,100,100", "255,100,100"),
-        row("chr1", 300, "1.0", "30.0", "75", "0.30", "75", "255,100,100", "255,100,100"),
-        row("chr2", 100, "1.0", "70.0", "25", "0.70", "25", "255,100,100", "255,100,100"),
-        row("chr2", 200, "1.0", "80.0", "50", "0.80", "50", "255,100,100", "255,100,100"),
-        row("chr2", 300, "1.0", "90.0", "75", "0.90", "75", "255,100,100", "255,100,100"),
+        row("chr1", 100, "1.0", "10", "25", "0.10", "25", "255,100,100", "255,100,100"),
+        row("chr1", 200, "1.0", "20", "50", "0.20", "50", "255,100,100", "255,100,100"),
+        row("chr1", 300, "1.0", "30", "75", "0.30", "75", "255,100,100", "255,100,100"),
+        row("chr2", 100, "1.0", "70", "25", "0.70", "25", "255,100,100", "255,100,100"),
+        row("chr2", 200, "1.0", "80", "50", "0.80", "50", "255,100,100", "255,100,100"),
+        row("chr2", 300, "1.0", "90", "75", "0.90", "75", "255,100,100", "255,100,100"),
         # a greyed, non-unique guide: the grey must survive and the hover must say so
-        row("chr3", 100, "", "95.0", "75", "0.95", "75", "150,150,150", "150,150,150", uniq="False"),
+        row("chr3", 100, "", "95", "75", "0.95", "75", "150,150,150", "150,150,150", uniq="False"),
     ]
     bed_in = tmp_path / "in.bed"
     bed_in.write_text("\n".join(rows) + "\n")
     bed_out = tmp_path / "out.bed"
 
-    counts = {f: {} for f in [r for r, _, _ in spec["models"]]}
+    counts = {f: {} for f in [r for r, _, _, _ in spec["models"]]}
     for r in rows:
         f = r.split("\t")
         for name, i in (("deepcpf1", 15), ("ascas12aDeepcpf1", 17)):
@@ -642,19 +645,33 @@ def test_regrade_bed_percentiles_is_genome_wide(tmp_path):
     assert out[6][19] == "Not unique, DeepCpf1: 100, AsCas12a-DeepCpf1: 100"
 
 
-def test_percentiles_rank_the_displayed_value_in_both_paths():
-    """build_track and the merge re-grade must agree exactly.
+@pytest.mark.parametrize(
+    "decimals,values,expect",
+    [
+        # seq-DeepCpf1 shape, 0 to 1 at 2 decimals: 1.0 and 0.99996 both show as 1.00
+        (2, [1.0, 0.99996, 0.994, 0.5, 0.5, 0.123456, float("nan")],
+         ["1.00", "1.00", "0.99", "0.50", "0.50", "0.12", ""]),
+        # DeepCpf1 shape, about 1 to 115 as an integer: 50.9896 and 51.0023 both show as 51
+        (0, [50.9896, 51.0023, 114.672, 0.9584, 0.9584, 30.4, float("nan")],
+         ["51", "51", "115", "1", "1", "30", ""]),
+    ],
+)
+def test_percentiles_rank_the_displayed_value_in_both_paths(decimals, values, expect):
+    """build_track and the merge re-grade must agree exactly, at either precision.
 
-    build_track ranks in pandas over a float column; the merge re-grade can only
-    see the 4-decimal strings written to the BED. Ranking the full-precision float
-    in one and the written value in the other makes a chunked build disagree with
-    an unchunked one wherever rounding merges distinct floats, so both rank the
-    DISPLAYED value. 0.99996 and 1.0 both display as 1.0 and must therefore tie."""
-    raw = pd.Series([1.0, 0.99996, 0.99994, 0.5, 0.5, 0.123456, float("nan")])
-    disp = ucsc_track._fmt_raw(raw)
-    assert list(disp) == ["1.0", "1.0", "0.9999", "0.5", "0.5", "0.1235", ""]
+    build_track ranks in pandas over a float column; the merge re-grade can only see
+    the strings written to the BED. Ranking the full-precision float in one and the
+    written value in the other makes a chunked build disagree with an unchunked one
+    wherever rounding merges distinct floats, so both rank the DISPLAYED value.
 
-    from_build = ucsc_track._pct_of_displayed(raw).tolist()
+    That is also why reducing a model's declared decimals re-ranks it rather than
+    merely reformatting it: the two values that tie here are separated by a full-float
+    rank, and the last assertion pins exactly that."""
+    raw = pd.Series(values)
+    disp = ucsc_track._fmt_score(raw, decimals)
+    assert list(disp) == expect
+
+    from_build = ucsc_track._pct_of_displayed(raw, decimals).tolist()
     counts = {}
     for v in disp:
         if v:
@@ -725,12 +742,12 @@ def test_track_shape_is_universal_across_enzymes():
         spec = ucsc_track.track_regrade_spec(enzyme, fields)
         assert spec is not None, enzyme
         assert len(spec["models"]) == 2
-        for raw, _label, colour in spec["models"]:
+        for raw, _label, colour, _dec in spec["models"]:
             assert raw in fields
             assert raw + "Perc" in fields
             assert colour in ucsc_track.EFF_COLOR_FIELDS
         # first model drives itemRgb, second the alternative colour
-        assert [c for _, _, c in spec["models"]] == list(ucsc_track.EFF_COLOR_FIELDS)
+        assert [c for _, _, c, _ in spec["models"]] == list(ucsc_track.EFF_COLOR_FIELDS)
         assert spec["spec_score"] == "score"
 
 
@@ -742,8 +759,8 @@ def test_regrade_spec_follows_the_models_actually_scored():
     f = [m.group(1) for m in re.finditer(
         r"^\s+(?:string|uint|char|bigint)\S*\s+(\w+);", one, re.M)]
     spec = ucsc_track.track_regrade_spec("encas12a", f)
-    assert [raw for raw, _, _ in spec["models"]] == ["enpamGb"]
-    assert [c for _, _, c in spec["models"]] == ["itemRgb"]
+    assert [raw for raw, _, _, _ in spec["models"]] == ["enpamGb"]
+    assert [c for _, _, c, _ in spec["models"]] == ["itemRgb"]
     assert "encas12aHf1" not in f
 
     # an enzyme with no entry has no rule; build_track rejects it outright
@@ -838,8 +855,10 @@ def _valid_row(**over):
         "score": "90", "strand": "+", "thickStart": "104", "thickEnd": "127",
         "itemRgb": "0,200,0", "_crisprDeepCpf1Color": "0,200,0", "_specColor": "0,255,0",
         "guideSeq": "A" * 23, "pam": "TTTA", "unique": "True",
-        "AsCas12a_specificity": "0.9000", "deepcpf1": "70.0", "deepcpf1Perc": "80",
-        "ascas12aDeepcpf1": "0.7", "ascas12aDeepcpf1Perc": "80",
+        # each cleavage score at the precision its model declares in
+        # ENZYME_TRACK_SPECS: DeepCpf1 as an integer, the 0-to-1 model at 2 decimals
+        "AsCas12a_specificity": "0.9000", "deepcpf1": "70", "deepcpf1Perc": "80",
+        "ascas12aDeepcpf1": "0.70", "ascas12aDeepcpf1Perc": "80",
         "_mouseOver": "AsCas12a Spec: 90, DeepCpf1: 80, AsCas12a-DeepCpf1: 80",
         "_offset": "0",
     }
@@ -863,8 +882,8 @@ def test_validator_catches_chunk_local_percentiles(tmp_path):
     """The regression that shipped: one raw score mapping to two percentiles, which is
     exactly the signature of ranking within a chunk instead of genome-wide."""
     bed = _write_bed(tmp_path, [
-        _valid_row(deepcpf1="70.0", deepcpf1Perc="80"),
-        _valid_row(chromStart="200", chromEnd="227", deepcpf1="70.0", deepcpf1Perc="42"),
+        _valid_row(deepcpf1="70", deepcpf1Perc="80"),
+        _valid_row(chromStart="200", chromEnd="227", deepcpf1="70", deepcpf1Perc="42"),
     ])
     with pytest.raises(ValueError, match="not genome-wide"):
         ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
@@ -930,3 +949,57 @@ def test_validator_catches_a_wrong_field_count(tmp_path):
     bed = _write_bed(tmp_path, [_valid_row() + "\textra"])
     with pytest.raises(ValueError, match="autoSql declares"):
         ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
+
+
+def test_validator_catches_a_score_at_the_wrong_precision(tmp_path):
+    """A cleavage score written to more places than its model declares fails the build.
+
+    This is the check that stops a display-only "rounding" change from shipping: a
+    column written at one precision and ranked at another breaks the raw-to-percentile
+    invariant, and the two checks together make that unshippable rather than something
+    to notice later on the browser.
+    """
+    bed = _write_bed(tmp_path, [_valid_row(deepcpf1="70.0")])
+    with pytest.raises(ValueError, match="not written to the 0 decimals"):
+        ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
+
+    bed = _write_bed(tmp_path, [_valid_row(ascas12aDeepcpf1="0.7345")], name="b.bed")
+    with pytest.raises(ValueError, match="not written to the 2 decimals"):
+        ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
+
+
+def test_declared_decimals_are_the_model_scale_not_a_house_style():
+    """Each model's precision has to suit its own output range.
+
+    DeepCpf1 spans roughly 1 to 115, so an integer still separates guides; the three
+    0-to-1 models would collapse to 2 distinct values as integers and need 2 places.
+    Measured distinct-value counts: DeepCpf1 112 as integers, and seq-DeepCpf1 /
+    EnPAM-GB / enAsCas12a-HF1 92 to 94 at 2 decimals, all inside the 92 to 126 band
+    the Cas9 track's six score fields occupy. Pinned because a uniform precision
+    across models is the tempting wrong answer.
+    """
+    dec = {
+        col: d
+        for espec in ucsc_track.ENZYME_TRACK_SPECS.values()
+        for col, _lab, d in espec["ontarget"]
+    }
+    assert dec["deepcpf1_score"] == 0
+    assert dec["ascas12a_deepcpf1_score"] == 2
+    assert dec["enpam_gb_score"] == 2
+    assert dec["encas12a_hf1_score"] == 2
+
+
+def test_rounding_a_score_re_ranks_it_rather_than_only_reformatting_it():
+    """Coarsening the display changes the percentile, which is the whole reason this
+    is a track change and not a cosmetic one.
+
+    Three floats that differ at the fourth decimal rank apart on the full value and
+    tie once displayed as integers, so they must all carry the same percentile."""
+    raw = pd.Series([50.9896, 51.0023, 51.4, 10.0])
+    assert list(ucsc_track._fmt_score(raw, 0)) == ["51", "51", "51", "10"]
+
+    pct = ucsc_track._pct_of_displayed(raw, 0).tolist()
+    assert pct[0] == pct[1] == pct[2], "values that display alike must rank alike"
+    assert pct[3] < pct[0]
+    # at 4 decimals they would have been three different percentiles
+    assert len(set(ucsc_track._pct_of_displayed(raw, 4).tolist())) == 4

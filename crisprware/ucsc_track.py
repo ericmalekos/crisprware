@@ -153,9 +153,9 @@ def _pct(series: pd.Series) -> pd.Series:
     return (x.rank(pct=True, method="average") * 100).round(2)
 
 
-def _pct_of_displayed(raw: pd.Series) -> pd.Series:
-    """Percentile rank of a score AS THE TRACK DISPLAYS IT, i.e. of the 4-decimal
-    value :func:`_fmt_raw` writes, not of the full-precision float behind it.
+def _pct_of_displayed(raw: pd.Series, decimals: int) -> pd.Series:
+    """Percentile rank of a cleavage score AS THE TRACK DISPLAYS IT, i.e. of the
+    rounded value :func:`_fmt_score` writes, not of the full-precision float behind it.
 
     This is what makes a percentile reproducible from the published file, and it
     is what lets a chunked build re-rank percentiles genome-wide at merge time
@@ -165,17 +165,50 @@ def _pct_of_displayed(raw: pd.Series) -> pd.Series:
     rank near the 5th percentile on full floats but join the 53rd-percentile tie
     once rounded, so 4114 of 590,425 hover labels differed between an unchunked
     build and a chunked one. Ranking the displayed value removes that whole class
-    of disagreement rather than narrowing it."""
-    return _pct(pd.to_numeric(_fmt_raw(raw), errors="coerce"))
+    of disagreement rather than narrowing it.
+
+    It follows that coarsening the display RE-RANKS, so reducing a model's decimals
+    is never a cosmetic change. Ranking the 4-decimal value while showing an integer
+    would leave 68 of 112 displayed DeepCpf1 values carrying two or more different
+    percentiles (measured over 2,120,555 rn7 chr20 guides), which is precisely what
+    :func:`validate_track_bed` rejects. Re-ranking preserves the invariant; the price
+    is that the displayed percentile moves for about 37% of ramp-coloured guides, by
+    at most 3.31 points, and the ramp colour itself for 0.46% of them."""
+    return _pct(pd.to_numeric(_fmt_score(raw, decimals), errors="coerce"))
 
 
 def _fmt_raw(raw: pd.Series) -> pd.Series:
-    """Raw value to <=4 decimals as a string; blank for NaN. Used for the specificity
-    column: a percentile rank is degenerate there because the vast majority of guides
-    tie at a perfectly-specific 1.0, so the raw CFD specificity (0-1) is what's shown."""
+    """Specificity to <=4 decimals as a string; blank for NaN. Used ONLY for the
+    specificity columns: a percentile rank is degenerate there because the vast
+    majority of guides tie at a perfectly-specific 1.0, so the raw CFD specificity
+    (0-1) is what's shown, and it is never ranked.
+
+    Variable width (``round()``, so ``1.0`` not ``1.0000``), which is the published
+    form of every shipped track; the on-target columns use :func:`_fmt_score`."""
     out = []
     for r in raw:
         out.append("" if pd.isna(r) else f"{round(float(r), 4)}")
+    return pd.Series(out, index=raw.index, dtype="object")
+
+
+def _fmt_score(raw: pd.Series, decimals: int) -> pd.Series:
+    """An on-target cleavage score as the track displays it: fixed-width to
+    ``decimals`` places, blank for NaN.
+
+    The precision is per model and is declared in :data:`ENZYME_TRACK_SPECS`, because
+    it is a property of the model's output scale, not of the enzyme. ``50.9896`` is
+    more precision than any of these models supports and more than the Cas9 track
+    shows, which reports all six of its score fields as plain integers. Rounding puts
+    each model in the same granularity band as Cas9's 92 to 126 distinct values:
+    DeepCpf1, which runs 0.96 to 114.7, gives 112 distinct integers, while the three
+    0-to-1 models (seq-DeepCpf1, EnPAM-GB, enAsCas12a-HF1) give 92 to 94 distinct
+    values at 2 decimals and a useless 2 as integers.
+
+    Fixed width rather than ``round()``'s variable width, so the column reads
+    consistently: ``0.70`` beside ``0.73``, not ``0.7``."""
+    out = []
+    for r in raw:
+        out.append("" if pd.isna(r) else f"{float(r):.{decimals}f}")
     return pd.Series(out, index=raw.index, dtype="object")
 
 
@@ -239,21 +272,28 @@ EFF_COLOR_FIELDS = ("itemRgb", "_crisprDeepCpf1Color")
 # colourings, the split raw/``...Perc`` columns, the hover layout, and the
 # genome-wide percentile basis -- is universal and derived from this table, so a new
 # enzyme or an extra cleavage score needs an entry here and nothing else.
+#
+# Each model is ``(column, hover label, displayed decimals)``. The decimals are a
+# property of the model's output scale: DeepCpf1 spans roughly 1 to 115 and reads as
+# an integer, while the three 0-to-1 models need 2 places (see :func:`_fmt_score` for
+# the measured distinct-value counts). Changing a model's decimals re-ranks its
+# percentile and can move its ramp colour, so it is a track change, not a display
+# tweak.
 ENZYME_TRACK_SPECS: Dict[str, dict] = {
     "ascas12a": {
         "spec_label": "AsCas12a Spec",
         "score_spec": "AsCas12a_specificity",
         "ontarget": [
-            ("deepcpf1_score", "DeepCpf1"),
-            ("ascas12a_deepcpf1_score", "AsCas12a-DeepCpf1"),
+            ("deepcpf1_score", "DeepCpf1", 0),
+            ("ascas12a_deepcpf1_score", "AsCas12a-DeepCpf1", 2),
         ],
     },
     "encas12a": {
         "spec_label": "enCas12a Spec (fa>0.3 wt)",
         "score_spec": "enCas12a_spec_fa03_wt",
         "ontarget": [
-            ("enpam_gb_score", "EnPAM-GB"),
-            ("encas12a_hf1_score", "enAsCas12a-HF1"),
+            ("enpam_gb_score", "EnPAM-GB", 2),
+            ("encas12a_hf1_score", "enAsCas12a-HF1", 2),
         ],
     },
 }
@@ -329,7 +369,7 @@ def ordered_ontarget_cols(enzyme: str, columns: Sequence[str]) -> list[str]:
     espec = ENZYME_TRACK_SPECS.get(enzyme)
     if espec is None:
         return [c for c in columns if c.endswith("_score")]
-    return [c for c, _ in espec["ontarget"] if c in columns]
+    return [c for c, _lab, _dec in espec["ontarget"] if c in columns]
 
 
 def _ontarget_block(
@@ -353,9 +393,10 @@ def _ontarget_block(
     Universal by construction, so adding a cleavage score or a new enzyme changes
     only :data:`ENZYME_TRACK_SPECS`:
 
-    * percentiles rank the **displayed** 4-decimal value (:func:`_pct_of_displayed`),
-      which is what lets :func:`_regrade_bed_percentiles` re-rank them genome-wide
-      from the written file after a chunked build;
+    * percentiles rank the **displayed** value at each model's declared precision
+      (:func:`_pct_of_displayed`), which is what lets
+      :func:`_regrade_bed_percentiles` re-rank them genome-wide from the written file
+      after a chunked build;
     * each model emits a raw column plus a ``...Perc`` sibling, as the Cas9 track
       does with ``fusi``/``fusiPerc``, so both halves stay filterable in the Table
       Browser instead of being packed into one ``"88% (70.25)"`` string;
@@ -368,9 +409,11 @@ def _ontarget_block(
     """
     n = len(g)
     label = ENZYME_TRACK_SPECS.get(enzyme, {}).get("spec_label", "Spec")
-    labels = dict(ENZYME_TRACK_SPECS.get(enzyme, {}).get("ontarget", []))
+    ontarget = ENZYME_TRACK_SPECS.get(enzyme, {}).get("ontarget", [])
+    labels = {c: lab for c, lab, _dec in ontarget}
+    decimals = {c: dec for c, _lab, dec in ontarget}
 
-    ot_pct = {c: _pct_of_displayed(g[c]).to_numpy() for c in ot_cols}
+    ot_pct = {c: _pct_of_displayed(g[c], decimals[c]).to_numpy() for c in ot_cols}
     ramp = [ot_pct[c] for c in ot_cols] + [np.full(n, np.nan)] * len(EFF_COLOR_FIELDS)
 
     colours = {
@@ -382,7 +425,9 @@ def _ontarget_block(
     display: Dict[str, np.ndarray] = {}
     for c in ot_cols:
         base = _cas9_style_name(c)
-        display[base] = _fmt_raw(pd.to_numeric(g[c], errors="coerce")).to_numpy()
+        display[base] = _fmt_score(
+            pd.to_numeric(g[c], errors="coerce"), decimals[c]
+        ).to_numpy()
         display[base + "Perc"] = np.array(
             ["" if np.isnan(v) else str(int(round(v))) for v in ot_pct[c]], dtype=object
         )
@@ -641,15 +686,20 @@ def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
         ("unique", "Guide has a unique on-target (TTTV off-target search)"),
         ("AsCas12a_specificity", "AsCas12a (WT/2xNLS) CFD specificity, 0-1; TTTV off-target search"),
     ]
+    # ``label|description``: hgc splits an autoSql comment on the pipe and renders the
+    # text before it as the field label, the text after it as a small grey note
+    # beneath (printFieldLabelInner, kent/src/hg/hgc/hgc.c). Without the split the
+    # whole sentence becomes the label and is too long to read. A model's raw and
+    # percentile fields deliberately share one label and differ only in the note.
     ot_descs = {
-        "deepcpf1_score": "DeepCpf1 (Kim 2018) AsCas12a on-target efficiency",
-        "ascas12a_deepcpf1_score": "AsCas12a seq-DeepCpf1 variant (Chen 2025) on-target efficiency",
+        "deepcpf1_score": ("DeepCpf1", "AsCas12a (Kim 2018) on-target efficiency"),
+        "ascas12a_deepcpf1_score": ("seq-DeepCpf1", "AsCas12a variant (Chen 2025) on-target efficiency"),
     }
     for c in ontarget_cols:
-        d = ot_descs.get(c, "AsCas12a on-target efficiency")
+        lab, d = ot_descs.get(c, ("Cas12a", "AsCas12a on-target efficiency"))
         base = _cas9_style_name(c)
-        extra.append((base, f"Efficiency: {d} (raw)"))
-        extra.append((base + "Perc", f"Efficiency: {d} (percentile)"))
+        extra.append((base, f"Efficiency: {lab}|{d} (raw)"))
+        extra.append((base + "Perc", f"Efficiency: {lab}|{d} (percentile)"))
     width = max(len(f) for f, _ in extra) + 2
     body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
     tail = [
@@ -699,14 +749,17 @@ def build_autosql_encas12a(ontarget_cols: Sequence[str] = ()) -> str:
         ("enCas12a_spec_fa03_wt", "enCas12a PAM-activity-weighted specificity 0-1; fa>0.3 PAMs (drives score/color)"),
     ]
     ot_descs = {
-        "enpam_gb_score": "EnPAM-GB (Kim 2020) enCas12a on-target efficiency",
-        "encas12a_hf1_score": "seq-DeepCpf1 enAsCas12a-HF1 variant (Chen 2025) higher-fidelity on-target efficiency",
+        "enpam_gb_score": ("EnPAM-GB", "enCas12a (Kim 2020) on-target efficiency"),
+        "encas12a_hf1_score": (
+            "seq-DeepCpf1 HF1",
+            "enAsCas12a-HF1 variant (Chen 2025) higher-fidelity on-target efficiency",
+        ),
     }
     for c in ontarget_cols:
-        d = ot_descs.get(c, "enCas12a on-target efficiency")
+        lab, d = ot_descs.get(c, ("Cas12a", "enCas12a on-target efficiency"))
         base = _cas9_style_name(c)
-        extra.append((base, f"Efficiency: {d} (raw)"))
-        extra.append((base + "Perc", f"Efficiency: {d} (percentile)"))
+        extra.append((base, f"Efficiency: {lab}|{d} (raw)"))
+        extra.append((base + "Perc", f"Efficiency: {lab}|{d} (percentile)"))
     width = max(len(f) for f, _ in extra) + 2
     body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
     tail = [
@@ -1046,14 +1099,14 @@ def track_regrade_spec(enzyme: str, as_fields: Sequence[str]) -> Optional[dict]:
     if espec is None:
         return None
     models = []
-    for col, label in espec["ontarget"]:
+    for col, label, dec in espec["ontarget"]:
         base = _cas9_style_name(col)
         if base not in as_fields:
             continue
         colour = EFF_COLOR_FIELDS[len(models)] if len(models) < len(EFF_COLOR_FIELDS) else None
         if colour is None or colour not in as_fields:
             continue
-        models.append((base, label, colour))
+        models.append((base, label, colour, dec))
     if not models:
         return None
     return {
@@ -1065,6 +1118,7 @@ def track_regrade_spec(enzyme: str, as_fields: Sequence[str]) -> Optional[dict]:
         "spec_label": espec["spec_label"],
         "score_spec_col": espec["score_spec"],
         "hover": "_mouseOver",
+        # (raw field, hover label, ramp colour field, displayed decimals)
         "models": models,
     }
 
@@ -1086,8 +1140,12 @@ def _rank_pct(counts: Dict[bytes, int]) -> Dict[bytes, float]:
     """``{raw value -> percentile}`` from a value histogram, reproducing
     ``_pct`` (pandas ``rank(pct=True, method="average") * 100``, 2 dp) over the
     non-blank values. Ranking the histogram instead of the values keeps this
-    O(distinct) in memory: the raw columns are written to 4 decimals, so a
-    genome of 10^8 guides still has at most ~10^6 distinct keys."""
+    O(distinct) in memory, and since each model is written at its declared precision
+    (0 or 2 decimals) a genome of 10^8 guides has only ~10^2 distinct keys.
+
+    This reads the WRITTEN bytes, which is why re-ranking on the rounded display
+    needs no change here: the chunks already wrote the rounded value, so the
+    genome-wide rank the merge computes is the rank of what the browser shows."""
     n = sum(counts.values())
     out: Dict[bytes, float] = {}
     if not n:
@@ -1112,6 +1170,20 @@ def _ramp_colour(pct: Optional[float]) -> bytes:
 # Every colour a track is allowed to emit. Anything else in a colour column means
 # the colour logic and this list have drifted apart, which is what shipped the
 # retired "90,90,90" marginal-specificity grey into five genomes before anyone looked.
+def _is_fixed_decimals(v: bytes, decimals: int) -> bool:
+    """Is ``v`` exactly what :func:`_fmt_score` writes at ``decimals`` places?
+
+    Pure byte inspection rather than a ``float()`` plus reformat, because the
+    validator touches every guide in the genome and a per-row round trip would cost
+    more than the rest of the pass put together."""
+    if v[:1] == b"-":
+        v = v[1:]
+    if decimals == 0:
+        return v.isdigit()
+    i = v.find(b".")
+    return i > 0 and len(v) - i - 1 == decimals and v[:i].isdigit() and v[i + 1 :].isdigit()
+
+
 RAMP_COLOURS = frozenset({b"255,100,100", b"255,255,0", b"0,200,0"})
 VALID_COLOURS = RAMP_COLOURS | _RAMP_GREYS
 VALID_SPEC_COLOURS = frozenset({b"255,0,0", b"128,128,0", b"0,255,0"})
@@ -1135,6 +1207,10 @@ def validate_track_bed(bed_path: str, as_fields: Sequence[str], enzyme: str) -> 
       close off-targets, since the greys override the ramp;
     * each raw cleavage score maps to exactly ONE percentile, which is what makes the
       percentile genome-wide rather than chunk-local;
+    * each cleavage score is written to exactly the decimals its model declares in
+      :data:`ENZYME_TRACK_SPECS`. Paired with the check above this pins the whole
+      display contract: the percentile must be the rank of the number actually shown,
+      so a column written at one precision and ranked at another fails here;
     * a percentile is blank exactly when its raw value is blank;
     * ``score`` agrees with the specificity column to within 1, so column 5 and the
       specificity cannot drift apart. The tolerance is not slack: ``score`` is rounded
@@ -1158,11 +1234,15 @@ def validate_track_bed(bed_path: str, as_fields: Sequence[str], enzyme: str) -> 
         )
     i_spec_raw = idx[spec_raw_col]
     label = spec["spec_label"].encode() + b": "
-    models = [(idx[raw], idx.get(raw + "Perc"), idx[col], raw) for raw, _lab, col in spec["models"]]
+    models = [
+        (idx[raw], idx.get(raw + "Perc"), idx[col], raw, dec)
+        for raw, _lab, col, dec in spec["models"]
+    ]
 
     bad_colour: Dict[bytes, int] = {}
-    pct_of: Dict[str, Dict[bytes, bytes]] = {raw: {} for _ir, _ip, _ic, raw in models}
-    multi: Dict[str, set] = {raw: set() for _ir, _ip, _ic, raw in models}
+    pct_of: Dict[str, Dict[bytes, bytes]] = {raw: {} for _ir, _ip, _ic, raw, _d in models}
+    multi: Dict[str, set] = {raw: set() for _ir, _ip, _ic, raw, _d in models}
+    bad_fmt: Dict[str, int] = {raw: 0 for _ir, _ip, _ic, raw, _d in models}
     n = n_blank_mismatch = n_score_mismatch = n_hover_mismatch = n_ramp_on_grey = 0
 
     with open(bed_path, "rb") as fh:
@@ -1177,14 +1257,16 @@ def validate_track_bed(bed_path: str, as_fields: Sequence[str], enzyme: str) -> 
                 )
             n += 1
             greyed = f[idx[spec["unique"]]] == b"False"
-            for c in (f[i] for _ir, _ip, i, _raw in models):
+            for c in (f[i] for _ir, _ip, i, _raw, _d in models):
                 if c not in VALID_COLOURS:
                     bad_colour[c] = bad_colour.get(c, 0) + 1
                 elif greyed and c in RAMP_COLOURS:
                     n_ramp_on_grey += 1
             if f[i_spec_col] not in VALID_SPEC_COLOURS:
                 bad_colour[f[i_spec_col]] = bad_colour.get(f[i_spec_col], 0) + 1
-            for i_raw, i_pct, _i_col, raw in models:
+            for i_raw, i_pct, _i_col, raw, dec in models:
+                if f[i_raw] and not _is_fixed_decimals(f[i_raw], dec):
+                    bad_fmt[raw] += 1
                 if i_pct is None:
                     continue
                 rv, pv = f[i_raw], f[i_pct]
@@ -1216,6 +1298,13 @@ def validate_track_bed(bed_path: str, as_fields: Sequence[str], enzyme: str) -> 
             problems.append(
                 f"{raw}: {len(vals)} raw values map to more than one percentile "
                 f"(e.g. {ex}); percentiles are not genome-wide"
+            )
+    declared = {raw: dec for _ir, _ip, _ic, raw, dec in models}
+    for raw, k in bad_fmt.items():
+        if k:
+            problems.append(
+                f"{raw}: {k} values are not written to the {declared[raw]} decimals "
+                f"ENZYME_TRACK_SPECS declares for that model"
             )
     if n_blank_mismatch:
         problems.append(f"{n_blank_mismatch} rows have a raw value without a percentile, or the reverse")
@@ -1259,7 +1348,7 @@ def _regrade_bed_percentiles(
     label_spec = spec["spec_label"].encode()
     models = [
         (idx[raw], idx.get(raw + "Perc"), idx[col], label.encode(), lut.get(raw, {}))
-        for raw, label, col in spec["models"]
+        for raw, label, col, _dec in spec["models"]
     ]
 
     n = 0

@@ -216,10 +216,14 @@ model's `...Perc` column, together with the efficiency colour field that percent
 before the final bigBed is written. `--ucscgb_chunk_max` therefore has no effect on any published
 value, and no post-pass re-ranking is required.
 
-Ranking is on the value **as the track displays it** (rounded to 4 decimals), not the
+Ranking is on the value **as the track displays it**, at each model's declared precision, not the
 full-precision float behind it, which is what makes the chunked and unchunked paths agree
 exactly. `score`, the raw `AsCas12a_specificity` and `_specColor` are not ranks at all: they are
 absolute functions of the raw CFD specificity, so they are identical under any chunking.
+
+`deepcpf1` is written as an integer and `ascas12aDeepcpf1` to 2 decimals, matching each model's
+output range and the Cas9 track's integer score fields. Since the percentile ranks what is shown,
+a precision change re-ranks the column rather than merely reformatting it.
 ```
 
 ### Equivalence and correctness

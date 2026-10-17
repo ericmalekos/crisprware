@@ -79,7 +79,7 @@ Mouse-over a target site to show predicted specificity and efficiency scores:<br
 The higher the number, the fewer off-target effects are expected. It is a CFD-style
 aggregate in the GuideScan2 form, <tt>1 / sum(CFD over the on-target and all
 off-targets)</tt>, so a guide with no detected off-target scores 1.0 and a guide
-sharing the genome with many close matches approaches 0. Guides above 0.50 are
+sharing the genome with many close matches approaches 0. Guides at or above 0.20 are
 colored by efficiency rather than grayed.</li>
 <li>The DeepCpf1 efficiency score (<a href="#References">Kim et al. 2018</a>) predicts
 whether a guide leads to rather strong or weak cleavage. Scores are given as
@@ -111,27 +111,7 @@ truncated list would misrepresent where the risk lies.</p>
 
 <h2>Methods</h2>
 
-<h3>Relationship between predictions and experimental data</h3>
-
-<p>
-Both axes of this track are predictions, and neither is a precise one. For
-off-targets, the CFD-style aggregate inherits the limits of the mismatch-activity
-matrix it is built from: it is derived from measured activity at single mismatches,
-and it assumes the penalties of multiple mismatches multiply. Real off-target
-cleavage is also shaped by chromatin, by guide expression level and by the duration
-of nuclease exposure, none of which the score sees. A high specificity score
-therefore means "few sequences in this genome resemble this guide", not "this guide
-was shown to be clean".
-</p>
-
-<p>
-For on-target efficiency, the two models shown here were trained on different
-library screens, and they disagree on a substantial minority of guides. That
-disagreement is informative and is the reason both are shipped, and the reason the
-second model gets its own coloring rather than being hidden behind the first. As a
-general rule the higher the score, the less likely that a guide is very inefficient,
-but a low-scoring guide can still cut well.
-</p>
+<h3>Efficiency percentiles</h3>
 
 <p>
 Efficiency percentiles are ranked over <b>every guide in this genome</b>, so a
@@ -149,18 +129,10 @@ percentile in every genome. The percentile here is a rank within the genome bein
 displayed, because no comparable published reference distribution exists for
 Cas12a. The practical consequence is that a percentile on this track moves with
 the genome loaded, and the red / yellow / green cut points, which are taken from
-the Cas9 track so that the two read the same way, therefore do not mark the same
+the Cas9 track, therefore do not mark the same
 predicted activity that they do there. Use the <b>raw</b> scores to compare guides
 across genomes, or to ask whether a guide is predicted to cut well in absolute
 terms.
-</p>
-
-<p>
-Where the two kinds of evidence conflict, specificity is the one that is weighted:
-an inefficient guide wastes an experiment, whereas a non-specific guide can produce
-a result that looks real. This is why the default coloring lets gray override the
-efficiency ramp, and why the score column and the browser score filter are driven by
-specificity rather than by efficiency.
 </p>
 
 <h3>Track methods</h3>
@@ -179,19 +151,23 @@ denominator convention (<a href="#References">Schmidt et al. 2025</a>). Guides w
 perfect match elsewhere in the genome are reported as not unique, their specificity
 columns are left blank, and they carry no off-target list.</p>
 <p>
+Note that the off-target search is restricted to <tt>TTTV</tt> PAMs throughout,
+because AsCas12a does not cleave <tt>TTTT</tt>
+(<a href="#References">DeWeirdt et al. 2021</a>).</p>
+<p>
+The 0.20 specificity cutoff below which a guide is grayed out rather than colored by
+efficiency is taken from the Cas9 work of
+<a href="#References">Tycko et al. 2019</a>, who found that guides below roughly this
+level of specificity carry enough off-target activity to confound a screen. Guides at
+or above 0.20 are colored by predicted efficiency; those below it are grayed
+regardless of efficiency.</p>
+<p>
 On-target efficiency was scored with two convolutional models: DeepCpf1
 (<a href="#References">Kim et al. 2018</a>), the original Cas12a activity CNN, and the
 AsCas12a-specific seq-DeepCpf1 variant model of
 <a href="#References">Chen et al. 2025</a>. Raw scores and their genome-wide
 percentiles are both reported. The two models are on different scales, so only their
 percentiles are directly comparable.</p>
-<p>
-Note that the off-target search is restricted to <tt>TTTV</tt> PAMs throughout,
-because AsCas12a does not cleave <tt>TTTT</tt>. A <tt>TTTT</tt>-adjacent site that
-otherwise matches a guide is not an AsCas12a off-target and is deliberately absent
-from these counts, scores and colors. Tracks for the engineered enCas12a variant,
-which does cleave <tt>TTTT</tt>, use a correspondingly broader PAM set and are not
-interchangeable with this one.</p>
 
 <H2>Data Access</H2>
 <p>
@@ -295,4 +271,15 @@ Optimized sgRNA design to maximize activity and minimize off-target effects of C
 <em>Nat Biotechnol</em>. 2016 Feb;34(2):184-91.
 PMID: <a href="https://pubmed.ncbi.nlm.nih.gov/26780180/" target="_blank">26780180</a>; PMC: <a
 href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4744125/" target="_blank">PMC4744125</a>
+</p>
+
+<p>
+Tycko J, Wainberg M, Marinov GK, Ursu O, Hess GT, Ego BK, Aradhana, Li A, Truong A,
+Trevino AE <em>et al</em>.
+<a href="https://www.nature.com/articles/s41467-019-11955-7" target="_blank">
+Mitigation of off-target toxicity in CRISPR-Cas9 screens for essential non-coding
+elements</a>.
+<em>Nat Commun</em>. 2019 Sep 6;10(1):4063.
+PMID: <a href="https://pubmed.ncbi.nlm.nih.gov/31492858/" target="_blank">31492858</a>; PMC: <a
+href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6731277/" target="_blank">PMC6731277</a>
 </p>
