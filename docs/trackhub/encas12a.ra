@@ -14,6 +14,14 @@ mouseOverField _mouseOver
 # 0 to 100 as on the AsCas12a and Cas9 tracks.
 scoreLabel enCas12a Guide Specificity Score
 scoreFilterMax 100
+# $D here and $db in detailsTabUrls below is deliberate, not a style inconsistency,
+# and normalising either way breaks that line. They are expanded by two different
+# mechanisms: the trackDb loader expands $D (hgTrackDb.c), but only for settings that
+# pass trackSettingIsFile(), which tests endsWith(setting, "Url") -- bigDataUrl
+# matches, detailsTabUrls is plural and does not. detailsTabUrls instead has $db
+# expanded at click time in bigBedClick.c. Put $D in detailsTabUrls and it stays
+# literal, so the off-target section silently vanishes. Cas9's crisprAll.ra carries
+# exactly the same pairing; this is the house pattern.
 bigDataUrl /gbdb/$D/encas12a/encas12a.bb
 # details page is not using a mysql table but a tab-sep file. The shipped file is
 # bgzip-compressed with a .gzi index beside it, so this must name the .gz; pointing
