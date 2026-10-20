@@ -238,8 +238,13 @@ def test_build_track_ascas12a_single_enzyme(tmp_path):
     assert "AsCas12a_specificity" in aso
     # BOTH AsCas12a on-target models, each as "label|description" so hgc renders a
     # short field label with the citation as a note beneath it
-    assert "Efficiency: DeepCpf1|AsCas12a (Kim 2018)" in aso
-    assert "Efficiency: seq-DeepCpf1|AsCas12a variant (Chen 2025)" in aso
+    assert "Efficiency: Kim et al. 2018 Score (raw)" in aso
+    assert "Efficiency: Kim et al. 2018 Score (percentile)" in aso
+    assert "Efficiency: Chen et al. 2025 Score (raw)" in aso
+    assert "Efficiency: Chen et al. 2025 Score (percentile)" in aso
+    assert "AsCas12a aggregate CFD specificity" in aso
+    # the obvious name is wrong: what runs is Seq-deepCpf1, so nothing claims "DeepCpf1"
+    assert "DeepCpf1 (Kim" not in aso
     for banned in ("TTTN", "EnCas12a", "enCas12a", "unique_TTTV", "unique_TTTN", "specificity_tttv_"):
         assert banned not in aso
 
@@ -371,12 +376,15 @@ def test_build_track_encas12a_four_specificities(tmp_path):
     # efficiency ramp; g_uniq has the top EnPAM-GB percentile -> green.
     assert uniq[f["itemRgb"]] == "0,200,0"
     assert int(uniq[-1]) > 0  # _offset set (has off-targets)
-    assert "enCas12a Spec (fa>0.3 wt)" in uniq[-2] and "EnPAM-GB" in uniq[-2]
+    assert "enCas12a Spec. Score (fa>0.3 wt)" in uniq[-2] and "EnPAM-GB" in uniq[-2]
 
     # raw and percentile are SEPARATE columns, as on the AsCas12a track: no packed
-    # "NN% (raw)" string anywhere in the row.
-    assert all("%" not in c for c in uniq)
+    # "NN% (raw)" string in any DATA column. The hover is excluded because it carries
+    # the percentile with a % suffix on purpose, matching the Cas9 track's
+    # "Doench 2016: 18%"; forbidding % outright would ban that too.
+    assert all("%" not in c for c in uniq[:-2]), "a data column holds a packed percent string"
     assert uniq[f["enpamGbPerc"]].isdigit()
+    assert "EnPAM-GB: " + uniq[f["enpamGbPerc"]] + "%" in uniq[-2]
     assert float(uniq[f["enpamGb"]]) == pytest.approx(0.9, abs=1e-4)
 
     # dropped guide: greyed, blank specificity columns, no details line
@@ -471,10 +479,14 @@ def test_encas12a_spec_exact_vs_pilot_formula(tmp_path):
     c03 = sum(cfd for _c, _p, _s, cfd, pam in ots if weights[pam][2])
     w03 = sum(cfd * weights[pam][0] for _c, _p, _s, cfd, pam in ots if weights[pam][2])
     f = _as_index(art["autosql"])
-    assert float(row[f["enCas12a_spec_fa06"]]) == pytest.approx(1 / (oc + c06), abs=1e-4)
-    assert float(row[f["enCas12a_spec_fa06_wt"]]) == pytest.approx(1 / (oc + w06), abs=1e-4)
-    assert float(row[f["enCas12a_spec_fa03"]]) == pytest.approx(1 / (oc + c03), abs=1e-4)
-    assert float(row[f["enCas12a_spec_fa03_wt"]]) == pytest.approx(1 / (oc + w03), abs=1e-4)
+    # SPEC_DECIMALS is 3, so the written value can sit half a place (5e-4) off the
+    # exact formula. Tightening this below that tolerance tests the rounding, not
+    # the formula.
+    tol = 5e-4
+    assert float(row[f["enCas12a_spec_fa06"]]) == pytest.approx(1 / (oc + c06), abs=tol)
+    assert float(row[f["enCas12a_spec_fa06_wt"]]) == pytest.approx(1 / (oc + w06), abs=tol)
+    assert float(row[f["enCas12a_spec_fa03"]]) == pytest.approx(1 / (oc + c03), abs=tol)
+    assert float(row[f["enCas12a_spec_fa03_wt"]]) == pytest.approx(1 / (oc + w03), abs=tol)
 
 
 if __name__ == "__main__":
@@ -641,8 +653,8 @@ def test_regrade_bed_percentiles_is_genome_wide(tmp_path):
     # the hover specificity is the raw score column read straight back, so it agrees
     # with column 5 (100 here) instead of reporting the mid-rank of the 1.0 tie
     assert out[5][4] == "100"
-    assert out[5][19] == f"AsCas12a Spec: 100, DeepCpf1: {expect[5]}, AsCas12a-DeepCpf1: {expect[5]}"
-    assert out[6][19] == "Not unique, DeepCpf1: 100, AsCas12a-DeepCpf1: 100"
+    assert out[5][19] == f"AsCas12a Spec. Score: 100, Kim 2018: {expect[5]}%, Chen 2025: {expect[5]}%"
+    assert out[6][19] == "Not unique, Kim 2018: 100%, Chen 2025: 100%"
 
 
 @pytest.mark.parametrize(
@@ -706,7 +718,7 @@ def test_hover_specificity_is_raw_not_a_percentile(tmp_path):
         score, hover = r[4], r[-2]
         if hover.startswith("Not unique"):
             continue
-        assert hover.startswith(f"AsCas12a Spec: {score},") or hover == f"AsCas12a Spec: {score}", (
+        assert hover.startswith(f"AsCas12a Spec. Score: {score},") or hover == f"AsCas12a Spec. Score: {score}", (
             f"hover {hover!r} disagrees with score {score!r}"
         )
 
@@ -859,7 +871,7 @@ def _valid_row(**over):
         # ENZYME_TRACK_SPECS: DeepCpf1 as an integer, the 0-to-1 model at 2 decimals
         "AsCas12a_specificity": "0.9000", "deepcpf1": "70", "deepcpf1Perc": "80",
         "ascas12aDeepcpf1": "0.70", "ascas12aDeepcpf1Perc": "80",
-        "_mouseOver": "AsCas12a Spec: 90, DeepCpf1: 80, AsCas12a-DeepCpf1: 80",
+        "_mouseOver": "AsCas12a Spec. Score: 90, Kim 2018: 80%, Chen 2025: 80%",
         "_offset": "0",
     }
     f.update(over)
@@ -908,17 +920,17 @@ def test_validator_tolerates_the_four_decimal_rounding_of_specificity(tmp_path):
     sacCer3: 113 of 590,425 guides, e.g. a displayed 0.905 whose score is 91."""
     ok = _write_bed(tmp_path, [
         _valid_row(AsCas12a_specificity="0.9050", score="91",
-                   _mouseOver="AsCas12a Spec: 91, DeepCpf1: 80, AsCas12a-DeepCpf1: 80"),
+                   _mouseOver="AsCas12a Spec. Score: 91, Kim 2018: 80%, Chen 2025: 80%"),
         _valid_row(chromStart="200", chromEnd="227",
                    AsCas12a_specificity="0.9150", score="91",
-                   _mouseOver="AsCas12a Spec: 91, DeepCpf1: 80, AsCas12a-DeepCpf1: 80"),
+                   _mouseOver="AsCas12a Spec. Score: 91, Kim 2018: 80%, Chen 2025: 80%"),
     ], name="ok.bed")
     assert ucsc_track.validate_track_bed(ok, ASCAS12A_FIELDS, "ascas12a")["guides"] == 2
 
     # two off is drift, not rounding
     bad = _write_bed(tmp_path, [
         _valid_row(AsCas12a_specificity="0.9000", score="92",
-                   _mouseOver="AsCas12a Spec: 92, DeepCpf1: 80, AsCas12a-DeepCpf1: 80")
+                   _mouseOver="AsCas12a Spec. Score: 92, Kim 2018: 80%, Chen 2025: 80%")
     ], name="bad.bed")
     with pytest.raises(ValueError, match="differ by more than 1"):
         ucsc_track.validate_track_bed(bad, ASCAS12A_FIELDS, "ascas12a")
@@ -927,7 +939,7 @@ def test_validator_tolerates_the_four_decimal_rounding_of_specificity(tmp_path):
 def test_validator_catches_a_percentile_in_the_hover(tmp_path):
     """The hover must repeat `score`, never a rank of the specificity."""
     bed = _write_bed(tmp_path, [
-        _valid_row(_mouseOver="AsCas12a Spec: 53, DeepCpf1: 80, AsCas12a-DeepCpf1: 80")
+        _valid_row(_mouseOver="AsCas12a Spec. Score: 53, Kim 2018: 80%, Chen 2025: 80%")
     ])
     with pytest.raises(ValueError, match="hover specificity"):
         ucsc_track.validate_track_bed(bed, ASCAS12A_FIELDS, "ascas12a")
@@ -1003,3 +1015,57 @@ def test_rounding_a_score_re_ranks_it_rather_than_only_reformatting_it():
     assert pct[3] < pct[0]
     # at 4 decimals they would have been three different percentiles
     assert len(set(ucsc_track._pct_of_displayed(raw, 4).tolist())) == 4
+
+
+def test_specificity_is_three_decimals_keeping_one_trailing_zero():
+    """Specificity displays at 3 places, trailing zeros stripped but one kept.
+
+    A CFD aggregate does not support a fourth place and the Cas9 track shows none.
+    Rounding it is safe where rounding a cleavage score is not, because specificity is
+    never ranked, so no percentile or colour moves with it. An exact 1 must still read
+    `1.0`, not `1` and not `1.000`.
+    """
+    assert ucsc_track.SPEC_DECIMALS == 3
+    raw = pd.Series([1.0, 0.1601, 0.9050, 0.1, 0.0, 0.12345, float("nan")])
+    assert list(ucsc_track._fmt_raw(raw)) == ["1.0", "0.16", "0.905", "0.1", "0.0", "0.123", ""]
+
+    # worst case is half of the last place, i.e. 0.05 of a `score` unit, which has to
+    # stay well inside the tolerance validate_track_bed allows between the two
+    import numpy as np
+    x = np.linspace(0, 1, 10001)
+    disp = ucsc_track._fmt_raw(pd.Series(x)).astype(float).to_numpy()
+    assert np.max(np.abs(disp - x)) <= 0.0005 + 1e-12
+    assert np.max(np.abs(disp - x)) * 100.0 < 1.0
+
+
+def test_hover_follows_the_cas9_shape_and_cites_the_right_model(tmp_path):
+    """The hover must read like Cas9's "MIT Spec. Score: 48, Doench 2016: 18%,
+    Moreno-Mateos: 72%": a "Spec. Score" label, then one cited model per cleavage
+    figure, each a percentile with a % suffix.
+
+    "DeepCpf1" is specifically wrong as a label. crisprware loads
+    weights/Seq_deepCpf1_weights.h5, the sequence-only model; DeepCpf1 proper is the
+    chromatin-accessibility variant and is not what runs. Tracks shipped before
+    2026-10-19 carried the wrong name, so this pins the citation form.
+    """
+    prefix = str(tmp_path / "off.csv")
+    _write_enum(prefix)
+    art = ucsc_track.build_track(
+        _guide_df(), prefix, str(tmp_path), run_tools=False, enzyme="ascas12a"
+    )
+    rows = [l.split("\t") for l in open(art["bed"]).read().splitlines()]
+    assert rows
+    import re
+    for r in rows:
+        hover = r[-2]
+        if hover.startswith("Not unique"):
+            continue
+        assert hover.startswith("AsCas12a Spec. Score: "), hover
+        assert "DeepCpf1" not in hover, "the model that runs is Seq-deepCpf1, not DeepCpf1"
+        for label in ("Kim 2018", "Chen 2025"):
+            if label + ":" in hover:
+                assert re.search(rf"{label}: \d+%", hover), hover
+
+    labels = [lab for _c, lab, _d in ucsc_track.ENZYME_TRACK_SPECS["ascas12a"]["ontarget"]]
+    assert labels == ["Kim 2018", "Chen 2025"]
+    assert ucsc_track.ENZYME_TRACK_SPECS["ascas12a"]["spec_label"] == "AsCas12a Spec. Score"

@@ -52,5 +52,6 @@ cross_strain_tracks
 :maxdepth: 1
 
 command_reference
+track_release_notes
 references
 ```

@@ -76,7 +76,8 @@ on-target columns are **EnPAM-GB** and the **seq-DeepCpf1 enAsCas12a-HF1** varia
 
 **On-target scores** (two columns in the bigBed)
 : **AsCas12a** -- `--cas12a_scorer deepcpf1 seq_deepcpf1variants --cas12a_variant AsCas12a` produces
-  **DeepCpf1** (Kim 2018) and the **AsCas12a-DeepCpf1** seq-variant (Chen 2025). **enCas12a** --
+  **Seq-deepCpf1** (Kim 2018, cited in the track as `Kim et al. 2018 Score`) and the
+  **seq-DeepCpf1 AsCas12a variant** (Chen 2025, cited as `Chen et al. 2025 Score`). **enCas12a** --
   `--cas12a_scorer enpam_gb seq_deepcpf1variants --cas12a_variant enAsCas12a-HF1` produces **EnPAM-GB**
   and the **enAsCas12a-HF1** seq-variant.
 
@@ -176,7 +177,7 @@ What it asserts:
 | the hover repeats `score` | the hover is showing a rank instead of the raw specificity |
 
 The `score` tolerance of 1 is not slack. `score` is rounded from the full-precision float
-while the specificity column is written to 4 decimals, so a value landing exactly on a
+while the specificity column is written to 3 decimals, so a value landing exactly on a
 half legitimately rounds opposite ways in the two: 113 of sacCer3's 590,425 guides sit on
 such a half. Anything beyond 1 is real drift.
 

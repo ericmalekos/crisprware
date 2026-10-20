@@ -153,6 +153,14 @@ def _pct(series: pd.Series) -> pd.Series:
     return (x.rank(pct=True, method="average") * 100).round(2)
 
 
+# Displayed precision of the specificity columns. 3 places, not 4: a CFD aggregate
+# does not support the fourth, and the Cas9 track shows none. This is safe to change
+# where the on-target precision is not, because specificity is never ranked, so no
+# percentile moves with it. At 3 places the displayed value differs from the
+# full-precision float by at most 0.0005, i.e. 0.05 of a `score` unit.
+SPEC_DECIMALS = 3
+
+
 def _pct_of_displayed(raw: pd.Series, decimals: int) -> pd.Series:
     """Percentile rank of a cleavage score AS THE TRACK DISPLAYS IT, i.e. of the
     rounded value :func:`_fmt_score` writes, not of the full-precision float behind it.
@@ -177,17 +185,22 @@ def _pct_of_displayed(raw: pd.Series, decimals: int) -> pd.Series:
     return _pct(pd.to_numeric(_fmt_score(raw, decimals), errors="coerce"))
 
 
-def _fmt_raw(raw: pd.Series) -> pd.Series:
-    """Specificity to <=4 decimals as a string; blank for NaN. Used ONLY for the
-    specificity columns: a percentile rank is degenerate there because the vast
+def _fmt_raw(raw: pd.Series, decimals: int = SPEC_DECIMALS) -> pd.Series:
+    """Specificity to <=``decimals`` places as a string; blank for NaN. Used ONLY for
+    the specificity columns: a percentile rank is degenerate there because the vast
     majority of guides tie at a perfectly-specific 1.0, so the raw CFD specificity
     (0-1) is what's shown, and it is never ranked.
 
-    Variable width (``round()``, so ``1.0`` not ``1.0000``), which is the published
-    form of every shipped track; the on-target columns use :func:`_fmt_score`."""
+    Variable width (``round()``, so ``1.0`` not ``1.000`` and ``0.16`` not ``0.160``):
+    trailing zeros are stripped but one is always kept, so an exact 1 stays ``1.0``.
+
+    Unlike :func:`_fmt_score`, rounding here is genuinely display-only, because no
+    percentile is derived from specificity. It does narrow the agreement between
+    ``score`` and the displayed value, but only to 0.05 score units at 3 places,
+    well inside the tolerance :func:`validate_track_bed` allows."""
     out = []
     for r in raw:
-        out.append("" if pd.isna(r) else f"{round(float(r), 4)}")
+        out.append("" if pd.isna(r) else f"{round(float(r), decimals)}")
     return pd.Series(out, index=raw.index, dtype="object")
 
 
@@ -279,17 +292,27 @@ EFF_COLOR_FIELDS = ("itemRgb", "_crisprDeepCpf1Color")
 # the measured distinct-value counts). Changing a model's decimals re-ranks its
 # percentile and can move its ramp colour, so it is a track change, not a display
 # tweak.
+# Hover labels follow the Cas9 track, whose mouseOver reads
+# "MIT Spec. Score: 48, Doench 2016: 18%, Moreno-Mateos: 72%": the specificity label
+# ends in "Spec. Score" and each cleavage figure is a percentile with a % suffix.
+#
+# The first AsCas12a model is cited rather than named because the obvious name is
+# wrong: crisprware loads weights/Seq_deepCpf1_weights.h5, the SEQUENCE-ONLY model
+# from Kim et al. 2018. "DeepCpf1" proper is the chromatin-accessibility variant and
+# is not what runs, so the tracks shipped before 2026-10-19 mislabelled it.
 ENZYME_TRACK_SPECS: Dict[str, dict] = {
     "ascas12a": {
-        "spec_label": "AsCas12a Spec",
+        "spec_label": "AsCas12a Spec. Score",
         "score_spec": "AsCas12a_specificity",
         "ontarget": [
-            ("deepcpf1_score", "DeepCpf1", 0),
-            ("ascas12a_deepcpf1_score", "AsCas12a-DeepCpf1", 2),
+            ("deepcpf1_score", "Kim 2018", 0),
+            ("ascas12a_deepcpf1_score", "Chen 2025", 2),
         ],
     },
     "encas12a": {
-        "spec_label": "enCas12a Spec (fa>0.3 wt)",
+        # The qualifier stays: four specificities are reported and this names the one
+        # driving score and the greys.
+        "spec_label": "enCas12a Spec. Score (fa>0.3 wt)",
         "score_spec": "enCas12a_spec_fa03_wt",
         "ontarget": [
             ("enpam_gb_score", "EnPAM-GB", 2),
@@ -439,7 +462,8 @@ def _ontarget_block(
         for c in ot_cols:
             pc = ot_pct[c][i]
             if not np.isnan(pc):
-                parts.append(f"{labels.get(c, c)}: {int(round(pc))}")
+                # "%" because the figure IS a percentile, as on the Cas9 track
+                parts.append(f"{labels.get(c, c)}: {int(round(pc))}%")
         hover.append(", ".join(parts))
 
     return colours, display, hover
@@ -676,30 +700,32 @@ def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
         '    char[1] strand;       "+ or -"',
         '    uint    thickStart;   "Start of protospacer (thick);"',
         '    uint    thickEnd;     "End of protospacer (thick)"',
-        '    uint    itemRgb;      "Display color R,G,B (specificity grey, else DeepCpf1 efficiency ramp)"',
-        '    string  _crisprDeepCpf1Color; "Alternative color R,G,B by the second on-target model (seq-DeepCpf1)"',
+        '    uint    itemRgb;      "Display color R,G,B (specificity grey, else Kim et al. 2018 efficiency ramp)"',
+        '    string  _crisprDeepCpf1Color; "Alternative color R,G,B by the second on-target model (Chen et al. 2025)"',
         '    string  _specColor;   "Alternative color R,G,B by AsCas12a-TTTV specificity alone"',
         '    string  guideSeq;     "Guide sequence"',
         '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
     ]
     extra = [
         ("unique", "Guide has a unique on-target (TTTV off-target search)"),
-        ("AsCas12a_specificity", "AsCas12a (WT/2xNLS) CFD specificity, 0-1; TTTV off-target search"),
+        ("AsCas12a_specificity", "AsCas12a aggregate CFD specificity"),
     ]
-    # ``label|description``: hgc splits an autoSql comment on the pipe and renders the
-    # text before it as the field label, the text after it as a small grey note
-    # beneath (printFieldLabelInner, kent/src/hg/hgc/hgc.c). Without the split the
-    # whole sentence becomes the label and is too long to read. A model's raw and
-    # percentile fields deliberately share one label and differ only in the note.
+    # Cas9's crispr.as convention exactly, as used for fusi/fusiPerc and
+    # crisprScan/crisprScanPerc: "Efficiency: <citation> Score (raw|percentile)".
+    # Short enough to read as a field label on its own, so it needs no "label|note"
+    # split. The model is CITED rather than named because the obvious name is wrong:
+    # what runs is Seq-deepCpf1, the sequence-only model, not DeepCpf1 proper.
+    # No trailing whitespace in any comment: hand patches once padded them to hold a
+    # byte length, that is gone, and it stays gone.
     ot_descs = {
-        "deepcpf1_score": ("DeepCpf1", "AsCas12a (Kim 2018) on-target efficiency"),
-        "ascas12a_deepcpf1_score": ("seq-DeepCpf1", "AsCas12a variant (Chen 2025) on-target efficiency"),
+        "deepcpf1_score": "Kim et al. 2018 Score",
+        "ascas12a_deepcpf1_score": "Chen et al. 2025 Score",
     }
     for c in ontarget_cols:
-        lab, d = ot_descs.get(c, ("Cas12a", "AsCas12a on-target efficiency"))
+        d = ot_descs.get(c, "AsCas12a on-target efficiency")
         base = _cas9_style_name(c)
-        extra.append((base, f"Efficiency: {lab}|{d} (raw)"))
-        extra.append((base + "Perc", f"Efficiency: {lab}|{d} (percentile)"))
+        extra.append((base, f"Efficiency: {d} (raw)"))
+        extra.append((base + "Perc", f"Efficiency: {d} (percentile)"))
     width = max(len(f) for f, _ in extra) + 2
     body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
     tail = [
@@ -736,7 +762,7 @@ def build_autosql_encas12a(ontarget_cols: Sequence[str] = ()) -> str:
         '    uint    thickStart;   "Start of protospacer (thick);"',
         '    uint    thickEnd;     "End of protospacer (thick)"',
         '    uint    itemRgb;      "Display color R,G,B (specificity grey, else EnPAM-GB efficiency ramp)"',
-        '    string  _crisprDeepCpf1Color; "Alternative color R,G,B by the second on-target model (seq-DeepCpf1 enAsCas12a-HF1)"',
+        '    string  _crisprDeepCpf1Color; "Alternative color R,G,B by the second on-target model (enAsCas12a-HF1, Chen et al. 2025)"',
         '    string  _specColor;   "Alternative color R,G,B by enCas12a fa>0.3 PAM-weighted specificity alone"',
         '    string  guideSeq;     "Guide sequence"',
         '    string  pam;          "Protospacer Adjacent Motif (PAM)"',
@@ -748,18 +774,16 @@ def build_autosql_encas12a(ontarget_cols: Sequence[str] = ()) -> str:
         ("enCas12a_spec_fa03", "enCas12a CFD specificity 0-1; off-targets at moderate-activity fa>0.3 PAMs"),
         ("enCas12a_spec_fa03_wt", "enCas12a PAM-activity-weighted specificity 0-1; fa>0.3 PAMs (drives score/color)"),
     ]
+    # Same Cas9 crispr.as convention as the AsCas12a builder; see the note there.
     ot_descs = {
-        "enpam_gb_score": ("EnPAM-GB", "enCas12a (Kim 2020) on-target efficiency"),
-        "encas12a_hf1_score": (
-            "seq-DeepCpf1 HF1",
-            "enAsCas12a-HF1 variant (Chen 2025) higher-fidelity on-target efficiency",
-        ),
+        "enpam_gb_score": "EnPAM-GB, Kim et al. 2020 Score",
+        "encas12a_hf1_score": "enAsCas12a-HF1, Chen et al. 2025 Score",
     }
     for c in ontarget_cols:
-        lab, d = ot_descs.get(c, ("Cas12a", "enCas12a on-target efficiency"))
+        d = ot_descs.get(c, "enCas12a on-target efficiency")
         base = _cas9_style_name(c)
-        extra.append((base, f"Efficiency: {lab}|{d} (raw)"))
-        extra.append((base + "Perc", f"Efficiency: {lab}|{d} (percentile)"))
+        extra.append((base, f"Efficiency: {d} (raw)"))
+        extra.append((base + "Perc", f"Efficiency: {d} (percentile)"))
     width = max(len(f) for f, _ in extra) + 2
     body = [f'    string  {(f + ";").ljust(width)}"{d}"' for f, d in extra]
     tail = [
@@ -1372,7 +1396,8 @@ def _regrade_bed_percentiles(
                 if f[i_col] not in _RAMP_GREYS:
                     f[i_col] = _ramp_colour(pct)
                 if f[i_raw]:
-                    parts.append(label + b": " + b"%d" % round(pct))
+                    # "%" because the figure IS a percentile, as on the Cas9 track
+                    parts.append(label + b": " + b"%d%%" % round(pct))
             f[i_hover] = b", ".join(parts)
             fout.write(b"\t".join(f) + b"\n")
             n += 1

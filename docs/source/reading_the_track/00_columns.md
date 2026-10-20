@@ -35,12 +35,12 @@ _specColor              0,255,0                  specificity alone, no greys
 guideSeq                AATATGGCTTCCCTGAGAGCTTT  23-nt spacer
 pam                     TTTA                     4-nt PAM
 unique                  True                     no identical protospacer elsewhere at a TTTV PAM
-AsCas12a_specificity    1.0                      RAW AsCas12a (WT/2xNLS) CFD specificity, 0-1
-deepcpf1                62                       DeepCpf1 (Kim 2018), raw (integer)
-deepcpf1Perc            75                       DeepCpf1, genome-wide percentile
-ascas12aDeepcpf1        0.73                     AsCas12a seq-DeepCpf1 variant (Chen 2025), raw (2 dp)
-ascas12aDeepcpf1Perc    69                       seq-DeepCpf1 variant, genome-wide percentile
-_mouseOver              AsCas12a Spec: 100, DeepCpf1: 75, AsCas12a-DeepCpf1: 69
+AsCas12a_specificity    1.0                      AsCas12a aggregate CFD specificity, 0-1 (3 dp)
+deepcpf1                62                       Kim et al. 2018 Score, raw (integer)
+deepcpf1Perc            75                       Kim et al. 2018, genome-wide percentile
+ascas12aDeepcpf1        0.73                     Chen et al. 2025 Score, raw (2 dp)
+ascas12aDeepcpf1Perc    69                       Chen et al. 2025, genome-wide percentile
+_mouseOver              AsCas12a Spec. Score: 100, Kim 2018: 75%, Chen 2025: 69%
 _offset                 0                        byte offset into ascas12a_crisprDetails.tab (0 = no list)
 ```
 
@@ -55,7 +55,9 @@ pair always agree with each other.
 
 ```{note}
 The `_mouseOver` specificity is the **raw value x100**, identical to `score`, as on the Cas9 track whose
-hover reads `MIT Spec. Score: 80` with `score` 80. The two cleavage figures beside it *are* percentiles.
+hover reads `MIT Spec. Score: 80` with `score` 80. The two cleavage figures beside it *are* percentiles,
+and carry a `%` suffix to say so. The models are cited rather than named because what runs is
+Seq-deepCpf1, the sequence-only model, not DeepCpf1 proper.
 Specificity is deliberately not ranked: its distribution is dominated by the tie at a perfectly specific
 1.0, so a rank would report the row above as the 53rd percentile while `score` says 100. See
 [Color scheme mappings](02_colors.md).

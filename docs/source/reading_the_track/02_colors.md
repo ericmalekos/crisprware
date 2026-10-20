@@ -171,16 +171,25 @@ An unchunked build (`--ucscgb_chunk_max 0`, the default, and what the small geno
 every guide in one pass and skips the re-grade entirely. The two paths agree: `regrade_test` builds
 sacCer3 both ways and asserts the bigBeds match on every percentile, color and hover.
 
-## Known inconsistency: the hover specificity is a percentile
+## The hover specificity is the raw value, matching Cas9
 
-The hover label reports **percentile** specificity while column 5 reports **raw x100**. For a
-perfectly specific guide on sacCer3, raw specificity 1.0, the score column reads `100` but the hover
-reads `AsCas12a Spec: 53`, because 1.0 is a massive tie and the mid-rank of that tie is the 53rd
-percentile. 524,103 of 590,425 sacCer3 guides show `Spec: 53` in the hover this way.
+The hover reports specificity as **raw x100**, identical to column 5, as the Cas9 track does with
+`MIT Spec. Score: 48`. The two cleavage figures beside it *are* percentiles, and carry a `%` suffix
+to say so:
 
-The Cas9 track shows the raw MIT score in both places. Aligning this would mean changing
-`_hover_as` in `build_track` to use the raw value, which is a one-line change but one that alters
-every `_mouseOver` string and therefore needs a re-run to take effect.
+```text
+AsCas12a Spec. Score: 40, Kim 2018: 88%, Chen 2025: 69%
+```
+
+Specificity is deliberately never ranked. Its distribution is dominated by the tie at a perfectly
+specific 1.0, so a rank reports the 53rd percentile for a guide whose score column says 100, and on
+sacCer3 524,103 of 590,425 guides would read the same `53`. An earlier revision of this track did
+rank it, which is what that number came from.
+
+The cleavage models are **cited** rather than named because the obvious name is wrong: crisprware
+loads `weights/Seq_deepCpf1_weights.h5`, the sequence-only model of Kim et al. 2018. DeepCpf1 proper
+is the chromatin-accessibility variant and is not what runs. See
+[Track release notes](../track_release_notes.md).
 
 ## Where this lives in the code
 
@@ -189,7 +198,7 @@ no post-hoc color converter, and a change here requires rebuilding the track.
 
 | what | symbol |
 |---|---|
-| grey cutoffs | `SPEC_GREY_BAD`, `SPEC_GREY_MARGINAL` |
+| grey cutoff | `SPEC_GREY_BAD` (the 0.20 to 0.50 `SPEC_GREY_MARGINAL` tier is retired) |
 | ramp cutoffs | `EFF_RAMP_LOW`, `EFF_RAMP_HIGH` |
 | `_specColor` cutoffs | `SPEC_COLOR_BAD`, `SPEC_COLOR_MID` |
 | ramp plus specificity grey | `_spec_eff_color` |

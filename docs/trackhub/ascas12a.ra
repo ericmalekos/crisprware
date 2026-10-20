@@ -37,7 +37,24 @@ crisprPam5Prime on
 # generic trackDb setting. The Cas9 track's second scheme is _crisprScanColor
 # (Moreno-Mateos); the equivalent slot here holds a Cas12a model, so the field is
 # named for what it actually carries.
-colorFields default="Efficiency (DeepCpf1)" _crisprDeepCpf1Color="Efficiency (seq-DeepCpf1 AsCas12a)" _specColor="Off-target specificity (AsCas12a)"
+colorFields default="Efficiency: Kim et al. 2018" _crisprDeepCpf1Color="Efficiency: Chen et al. 2025" _specColor="AsCas12a aggregate CFD specificity"
+
+# The four settings below were in the stanza this track replaced and were dropped
+# here, which was a live regression on five genomes between 13 and 18 October 2026.
+# Do not drop them again:
+#   crisprOffTargetScoreLabels  names the off-target score. Without it the header
+#                               falls back to a generic "CFD Score".
+#   skipEmptyFields             without it a non-unique guide shows a blank
+#                               specificity row instead of omitting it.
+#   url / urlLabel              the Crispor link. Without them there is no link at
+#                               all, while the empty-off-target message in
+#                               bigBedClick.c explicitly tells the user to go there.
+# The url value is verbatim from the working copy; its $S/${ substitutions are kent
+# click-time expansions, so do not "correct" them.
+crisprOffTargetScoreLabels AsCas12a CFD
+skipEmptyFields on
+url http://crispor.gi.ucsc.edu/crispor.py?org=$D&pos=$S:${&pam=TTTV
+urlLabel Click here to show this guide on Crispor.org, with expression oligos, validation primers and more
 tableBrowser tbNoGenome
 noGenomeReason This track is too big for whole-genome Table Browser access, it would lead to a timeout in your internet browser. Small regional queries can work, but large regions, such as entire chromosomes, will fail. Please see the CRISPR Track documentation, the section "Data Access", for bulk-download options and remote access via the bedToBigBed tool. API access should always work. Contact us if you encounter difficulties with accessing the data.
 denseCoverage 0

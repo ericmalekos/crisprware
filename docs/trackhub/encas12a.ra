@@ -35,7 +35,18 @@ crisprPam5Prime on
 # "Color by:" dropdown. "default" is column 9 (itemRgb). The two alternatives are
 # plain extra bigBed string fields holding "R,G,B", so this needs no browser-side
 # code. Only the cleavage models named here differ from the AsCas12a stanza.
-colorFields default="Efficiency (EnPAM-GB)" _crisprDeepCpf1Color="Efficiency (seq-DeepCpf1 enAsCas12a-HF1)" _specColor="Off-target specificity (enCas12a fa>0.3 wt)"
+colorFields default="Efficiency: EnPAM-GB, Kim et al. 2020" _crisprDeepCpf1Color="Efficiency: enAsCas12a-HF1, Chen et al. 2025" _specColor="enCas12a aggregate CFD specificity (fa>0.3 wt)"
+
+# Same two settings the AsCas12a stanza was missing, and for the same reasons:
+# without crisprOffTargetScoreLabels the off-target header falls back to a generic
+# "CFD Score", and without skipEmptyFields a non-unique guide shows a blank
+# specificity row rather than omitting it.
+crisprOffTargetScoreLabels enCas12a CFD
+skipEmptyFields on
+# NOT SET: url / urlLabel. The AsCas12a stanza links to Crispor with &pam=TTTV. The
+# equivalent value for enCas12a is a PAM-activity set, not one motif, so the correct
+# Crispor pam= string has to be confirmed before a link is added here; a wrong link
+# is worse than none. This track has not been deployed, so nothing regresses today.
 tableBrowser tbNoGenome
 noGenomeReason This track is too big for whole-genome Table Browser access, it would lead to a timeout in your internet browser. Small regional queries can work, but large regions, such as entire chromosomes, will fail. Please see the CRISPR Track documentation, the section "Data Access", for bulk-download options and remote access via the bedToBigBed tool. API access should always work. Contact us if you encounter difficulties with accessing the data.
 denseCoverage 0
