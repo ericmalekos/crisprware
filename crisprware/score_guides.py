@@ -364,6 +364,24 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Keep the per-chunk working dir (<ucscgb>/chunks/) after merging, for "
         "inspection or resume. [default: delete after a successful merge].",
     )
+    ucsc.add_argument(
+        "--ucscgb_phase",
+        choices=["all", "split", "shard", "merge"],
+        default="all",
+        help="Run one phase of a --ucscgb_chunk_max build instead of all of it, so the "
+        "chunks can be spread over separate SLURM jobs. 'split' writes the per-chunk guide "
+        "BEDs and exits; 'shard' scores the single chunk named by --ucscgb_shard; 'merge' "
+        "merges every chunk and writes the final track. 'all' (the default) does the whole "
+        "thing in one process, fanning chunks across --ucscgb_gpus. Chunk-level work is "
+        "already independent, so the phases differ only in who runs them. [default: all]",
+    )
+    ucsc.add_argument(
+        "--ucscgb_shard",
+        type=int,
+        default=None,
+        help="With --ucscgb_phase shard, the 0-based index of the chunk to score "
+        "(i.e. a SLURM array task id). Requires that --ucscgb_phase split has already run.",
+    )
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -754,25 +772,31 @@ def _ucscgb_chunk_worker(chunk_args: argparse.Namespace) -> str:
     return chunk_args.ucscgb
 
 
-def run_ucscgb_chunked(args: argparse.Namespace) -> None:
-    """Split the guide BED into ``<=--ucscgb_chunk_max``-guide chunks, score each as
-    an isolated single-pass ``--ucscgb`` run (fanned across ``--ucscgb_gpus``, one GPU
-    per concurrent chunk), then merge the per-chunk tracks into one (recomputing
-    ``crisprDetails.tab`` byte offsets). Reproduces the external chunk_guides.py +
-    SLURM array + merge_tracks.py workflow as a single command, bounding peak memory
-    and disk (each chunk's large off-target intermediates are deleted once it
-    assembles, so peak disk ~= the concurrently-running chunks)."""
-    import shutil
+def _ucscgb_chunk_paths(chunk_root: str, i: int) -> tuple:
+    """The deterministic paths for chunk ``i``: (guide BED, track dir, output dir).
 
-    from crisprware import ucsc_track
+    Every phase derives chunk paths here, so a shard job and the merge job that runs
+    days later cannot disagree about where a chunk lives."""
+    return (
+        os.path.join(chunk_root, f"chunk_{i:03d}.bed"),
+        os.path.join(chunk_root, f"track_{i:03d}"),
+        os.path.join(chunk_root, f"out_{i:03d}"),
+    )
 
-    outdir = args.ucscgb
-    os.makedirs(outdir, exist_ok=True)
-    chunk_root = os.path.join(outdir, "chunks")
-    os.makedirs(chunk_root, exist_ok=True)
+
+def _ucscgb_split(args: argparse.Namespace, chunk_root: str) -> list:
+    """Split the guide BED into ``<=--ucscgb_chunk_max``-guide chunks, each keeping the
+    header line, and return the chunk BED paths.
+
+    The split is a pure function of (guide BED, chunk_max), so it is reproducible: a
+    merge job can recover the expected chunk count without trusting anything written
+    by the shard jobs.
+
+    This is the ONLY writer of ``chunk_*.bed``, and it must not run inside a shard
+    job. N array tasks splitting concurrently would open the same files at the same
+    time and interleave their contents, producing chunks that are individually
+    well-formed and collectively wrong."""
     chunk_max = args.ucscgb_chunk_max
-
-    # 1. split the guide BED into <=chunk_max chunks (each keeps the header line)
     with open(args.grna_bed) as fh:
         header = fh.readline()
         n = sum(1 for _ in fh)
@@ -787,7 +811,7 @@ def run_ucscgb_chunked(args: argparse.Namespace) -> None:
             if cur is None or written == size:
                 if cur:
                     cur.close()
-                cb = os.path.join(chunk_root, f"chunk_{idx:03d}.bed")
+                cb, _td, _od = _ucscgb_chunk_paths(chunk_root, idx)
                 cur = open(cb, "w")
                 cur.write(header)
                 chunk_beds.append(cb)
@@ -797,6 +821,183 @@ def run_ucscgb_chunked(args: argparse.Namespace) -> None:
             written += 1
         if cur:
             cur.close()
+    return chunk_beds
+
+
+def _ucscgb_expected_chunks(args: argparse.Namespace) -> int:
+    """How many chunks the split produces, recomputed from the guide BED rather than
+    counted off disk. The merge compares this against what it finds, so a shard that
+    never ran is caught instead of being silently merged away."""
+    with open(args.grna_bed) as fh:
+        fh.readline()
+        n = sum(1 for _ in fh)
+    return max(1, math.ceil(n / args.ucscgb_chunk_max))
+
+
+def _ucscgb_chunk_args(args: argparse.Namespace, chunk_root: str, i: int) -> argparse.Namespace:
+    """Per-chunk args: an isolated single-pass ``--ucscgb`` run over chunk ``i``."""
+    cb, tdir, odir = _ucscgb_chunk_paths(chunk_root, i)
+    ca = copy.deepcopy(args)
+    ca.grna_bed = cb
+    ca.ucscgb = tdir
+    ca.ucscgb_chunk_max = 0  # single pass inside the worker
+    ca.ucscgb_gpus = None
+    ca.ucscgb_keep_chunks = True
+    ca.ucscgb_phase = "all"  # the worker itself is never chunked
+    ca.ucscgb_shard = None
+    ca.output_directory = odir
+    os.makedirs(odir, exist_ok=True)
+    return ca
+
+
+def _ucscgb_drop_intermediates(tdir: str) -> None:
+    """Bound peak disk: drop one chunk's large off-target intermediates once it has
+    assembled. The merge needs only the chunk's bigBed, details and autoSql."""
+    for fn in (
+        "offtargets.csv",
+        "offtargets.csv.ot.tsv",
+        "offtargets.csv.guides.tsv",
+        "guides.kmers.csv",
+    ):
+        p = os.path.join(tdir, fn)
+        if os.path.exists(p):
+            os.remove(p)
+
+
+def _ucscgb_track_names(args: argparse.Namespace) -> tuple:
+    """(autoSql, bigBed, details) filenames for this enzyme. Must match what
+    build_track wrote inside each chunk."""
+    enzyme = getattr(args, "ucscgb_enzyme", "ascas12a")
+    if enzyme == "ascas12a":
+        return "ascas12aTargets.as", "ascas12a.bb", "ascas12a_crisprDetails.tab", enzyme
+    if enzyme == "encas12a":
+        return "encas12aTargets.as", "encas12a.bb", "encas12a_crisprDetails.tab", enzyme
+    raise ValueError(f"unknown --ucscgb_enzyme {enzyme!r}; every track is single-enzyme")
+
+
+def _ucscgb_merge(args: argparse.Namespace, chunk_root: str, outdir: str) -> None:
+    """Merge every chunk into the final track.
+
+    Refuses to merge an incomplete set. A missing chunk is the dangerous failure of a
+    sharded build: the merge would succeed, the bigBed would be well-formed, the
+    percentiles would be ranked over a subset, and nothing downstream would notice.
+    So the expected count is recomputed from the guide BED and every chunk is required
+    to be present with its three artifacts, and all chunks must declare the same
+    autoSql."""
+    import hashlib
+    import shutil
+
+    from crisprware import ucsc_track
+
+    as_name, bb_name, details_name, enzyme = _ucscgb_track_names(args)
+    expected = _ucscgb_expected_chunks(args)
+
+    track_dirs, missing = [], []
+    for i in range(expected):
+        _cb, tdir, _od = _ucscgb_chunk_paths(chunk_root, i)
+        absent = [f for f in (bb_name, details_name, as_name) if not os.path.exists(os.path.join(tdir, f))]
+        if absent:
+            missing.append((i, tdir, absent))
+        else:
+            track_dirs.append(tdir)
+    if missing:
+        detail = "; ".join(f"chunk {i:03d} ({tdir}) missing {absent}" for i, tdir, absent in missing)
+        raise RuntimeError(
+            f"refusing to merge {len(track_dirs)} of {expected} chunks: {detail}. "
+            "Merging a subset would produce a well-formed track whose percentiles are "
+            "ranked over part of the genome."
+        )
+
+    sigs = {}
+    for tdir in track_dirs:
+        with open(os.path.join(tdir, as_name), "rb") as fh:
+            sigs.setdefault(hashlib.md5(fh.read()).hexdigest(), []).append(tdir)
+    if len(sigs) != 1:
+        raise RuntimeError(
+            f"chunks disagree about the schema: {len(sigs)} distinct {as_name} among "
+            f"{len(track_dirs)} chunks ({ {k: len(v) for k, v in sigs.items()} }). "
+            "They were not all built by the same code."
+        )
+
+    as_file = os.path.join(track_dirs[0], as_name)
+    print(f"\n\tmerging {len(track_dirs)} chunks -> {outdir}\n", flush=True)
+    _t = time.time()
+    art = ucsc_track.merge_ucscgb_tracks(
+        track_dirs=track_dirs,
+        out=outdir,
+        chrom_sizes=args.chrom_sizes,
+        as_file=as_file,
+        sort_threads=str(args.threads),
+        details_name=details_name,
+        bb_name=bb_name,
+        as_name=as_name,
+        enzyme=enzyme,
+    )
+    print(f"\n\t[TIMING] merge {len(track_dirs)} chunks: {time.time() - _t:.1f}s", flush=True)
+
+    if not getattr(args, "ucscgb_keep_chunks", False):
+        shutil.rmtree(chunk_root, ignore_errors=True)
+    print("\n\tUCSC Cas12a track (chunked) written:")
+    for k, v in art.items():
+        print(f"\t  {k}: {v}")
+
+
+def run_ucscgb_chunked(args: argparse.Namespace) -> None:
+    """Split the guide BED into ``<=--ucscgb_chunk_max``-guide chunks, score each as
+    an isolated single-pass ``--ucscgb`` run, then merge the per-chunk tracks into one
+    (recomputing ``crisprDetails.tab`` byte offsets). Bounds peak memory and disk
+    (each chunk's large off-target intermediates are deleted once it assembles, so
+    peak disk ~= the concurrently-running chunks).
+
+    ``--ucscgb_phase`` selects how much of that happens here:
+
+    * ``all`` (default): every phase in this process, chunks fanned across
+      ``--ucscgb_gpus``, one GPU per concurrent chunk;
+    * ``split`` / ``shard`` / ``merge``: one phase each, so the chunks can be spread
+      over separate SLURM jobs. Chunk work is already independent (a chunk is a
+      separate process with its own output dir and no shared state), so this changes
+      only who runs it, not what is computed. It exists because the worker count is
+      ``max(1, len(gpus))``, which is 1 on the CPU scanner: a 48-chunk genome then
+      runs strictly serially, and fanning the same chunks across a CPU partition
+      turns days of wall clock into hours.
+    """
+    outdir = args.ucscgb
+    os.makedirs(outdir, exist_ok=True)
+    chunk_root = os.path.join(outdir, "chunks")
+    os.makedirs(chunk_root, exist_ok=True)
+    phase = getattr(args, "ucscgb_phase", "all") or "all"
+
+    if phase == "merge":
+        _ucscgb_merge(args, chunk_root, outdir)
+        return
+
+    if phase == "shard":
+        i = getattr(args, "ucscgb_shard", None)
+        if i is None:
+            raise ValueError("--ucscgb_phase shard requires --ucscgb_shard <index>")
+        expected = _ucscgb_expected_chunks(args)
+        if not 0 <= i < expected:
+            raise ValueError(f"--ucscgb_shard {i} out of range: this build has {expected} chunks (0 to {expected - 1})")
+        cb, tdir, _od = _ucscgb_chunk_paths(chunk_root, i)
+        if not os.path.exists(cb):
+            raise RuntimeError(
+                f"chunk BED {cb} does not exist; run --ucscgb_phase split first. "
+                "A shard must never split for itself: concurrent array tasks would "
+                "write the same chunk files at the same time."
+            )
+        print(f"\n\tshard {i:03d} of {expected}: {cb} -> {tdir}\n", flush=True)
+        _t = time.time()
+        main(_ucscgb_chunk_args(args, chunk_root, i))
+        _ucscgb_drop_intermediates(tdir)
+        print(f"\n\t[TIMING] shard {i:03d}: {time.time() - _t:.1f}s -> {tdir}", flush=True)
+        return
+
+    # 1. split
+    chunk_beds = _ucscgb_split(args, chunk_root)
+    if phase == "split":
+        print(f"\n\t--ucscgb_phase split: wrote {len(chunk_beds)} chunk BED(s) under {chunk_root}")
+        print(f"\tnext: --ucscgb_phase shard --ucscgb_shard 0..{len(chunk_beds) - 1}, then --ucscgb_phase merge\n", flush=True)
+        return
 
     # 2. GPU pool: one persistent worker per GPU (concurrent chunks never share a device).
     # Explicit --ucscgb_gpus wins; otherwise fan across exactly the devices this process was
@@ -810,98 +1011,47 @@ def run_ucscgb_chunked(args: argparse.Namespace) -> None:
         gpus = [None]
     n_workers = max(1, len(gpus))
     print(
-        f"\n\t--ucscgb_chunk_max {chunk_max}: {n} guides -> {len(chunk_beds)} chunk(s) "
-        f"(~{size} each) across {n_workers} worker(s) on GPU(s) {gpus}\n",
+        f"\n\t--ucscgb_chunk_max {args.ucscgb_chunk_max}: {len(chunk_beds)} chunk(s) "
+        f"across {n_workers} worker(s) on GPU(s) {gpus}\n",
         flush=True,
     )
 
-    # 3. build per-chunk args and fan out (spawned, GPU-pinned subprocesses)
-    def _chunk_args(i, cb):
-        ca = copy.deepcopy(args)
-        ca.grna_bed = cb
-        ca.ucscgb = os.path.join(chunk_root, f"track_{i:03d}")
-        ca.ucscgb_chunk_max = 0  # single pass inside the worker
-        ca.ucscgb_gpus = None
-        ca.ucscgb_keep_chunks = True
-        ca.output_directory = os.path.join(chunk_root, f"out_{i:03d}")
-        os.makedirs(ca.output_directory, exist_ok=True)
-        return ca
-
+    # 3. fan out (spawned, GPU-pinned subprocesses)
     ctx = multiprocessing.get_context("spawn")
     manager = ctx.Manager()
     gpu_queue = manager.Queue()
     for g in gpus:
         gpu_queue.put(g)
 
-    track_dirs = [None] * len(chunk_beds)
+    done_n = 0
     failures = []
     _t_all = time.time()
     with ProcessPoolExecutor(
         max_workers=n_workers, mp_context=ctx, initializer=_ucscgb_pool_init, initargs=(gpu_queue,)
     ) as ex:
         fut2meta = {}
-        for i, cb in enumerate(chunk_beds):
-            ca = _chunk_args(i, cb)
+        for i, _cb in enumerate(chunk_beds):
+            ca = _ucscgb_chunk_args(args, chunk_root, i)
             fut2meta[ex.submit(_ucscgb_chunk_worker, ca)] = (i, ca.ucscgb)
         for fut in as_completed(fut2meta):
             i, tdir = fut2meta[fut]
             try:
                 fut.result()
-                track_dirs[i] = tdir
-                # bound peak disk: drop this chunk's large off-target intermediates
-                for fn in (
-                    "offtargets.csv",
-                    "offtargets.csv.ot.tsv",
-                    "offtargets.csv.guides.tsv",
-                    "guides.kmers.csv",
-                ):
-                    p = os.path.join(tdir, fn)
-                    if os.path.exists(p):
-                        os.remove(p)
-                done = sum(1 for t in track_dirs if t)
-                print(f"\t[chunk {i:03d}] done ({done}/{len(chunk_beds)}) -> {tdir}", flush=True)
+                _ucscgb_drop_intermediates(tdir)
+                done_n += 1
+                print(f"\t[chunk {i:03d}] done ({done_n}/{len(chunk_beds)}) -> {tdir}", flush=True)
             except Exception as e:  # report and fail after the pool drains
                 failures.append((i, repr(e)))
                 print(f"\t[chunk {i:03d}] FAILED: {e!r}", flush=True)
     if failures:
         raise RuntimeError(f"{len(failures)} chunk(s) failed (chunk dirs kept for inspection): {failures}")
-
-    # 4. merge per-chunk tracks (order arbitrary; the merge re-sorts the bigBed)
-    track_dirs = sorted(t for t in track_dirs if t)
-    # per-enzyme track filenames (must match what build_track wrote in each chunk)
-    _chunk_enzyme = getattr(args, "ucscgb_enzyme", "ascas12a")
-    if _chunk_enzyme == "ascas12a":
-        as_name, bb_name, details_name = "ascas12aTargets.as", "ascas12a.bb", "ascas12a_crisprDetails.tab"
-    elif _chunk_enzyme == "encas12a":
-        as_name, bb_name, details_name = "encas12aTargets.as", "encas12a.bb", "encas12a_crisprDetails.tab"
-    else:
-        raise ValueError(f"unknown --ucscgb_enzyme {_chunk_enzyme!r}; every track is single-enzyme")
-    as_file = os.path.join(track_dirs[0], as_name)
     print(
-        f"\n\t[TIMING] all {len(track_dirs)} chunks scored: {time.time() - _t_all:.1f}s; merging -> {outdir}\n",
+        f"\n\t[TIMING] all {len(chunk_beds)} chunks scored: {time.time() - _t_all:.1f}s\n",
         flush=True,
     )
-    _t = time.time()
-    art = ucsc_track.merge_ucscgb_tracks(
-        track_dirs=track_dirs,
-        out=outdir,
-        chrom_sizes=args.chrom_sizes,
-        as_file=as_file,
-        sort_threads=str(args.threads),
-        details_name=details_name,
-        bb_name=bb_name,
-        as_name=as_name,
-        enzyme=_chunk_enzyme,
-    )
-    print(f"\n\t[TIMING] merge {len(track_dirs)} chunks: {time.time() - _t:.1f}s", flush=True)
 
-    # 5. cleanup
-    if not getattr(args, "ucscgb_keep_chunks", False):
-        shutil.rmtree(chunk_root, ignore_errors=True)
-    print("\n\tUCSC Cas12a track (chunked) written:")
-    for k, v in art.items():
-        print(f"\t  {k}: {v}")
-
+    # 4 + 5. merge and clean up
+    _ucscgb_merge(args, chunk_root, outdir)
 
 def main(args: Optional[argparse.Namespace] = None) -> None:
     if args is None:
