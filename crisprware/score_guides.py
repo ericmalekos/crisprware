@@ -882,7 +882,7 @@ def _ucscgb_merge(args: argparse.Namespace, chunk_root: str, outdir: str) -> Non
     sharded build: the merge would succeed, the bigBed would be well-formed, the
     percentiles would be ranked over a subset, and nothing downstream would notice.
     So the expected count is recomputed from the guide BED and every chunk is required
-    to be present with its three artifacts, and all chunks must declare the same
+    to be present with every artifact the merge reads, and all chunks must declare the same
     autoSql."""
     import hashlib
     import shutil
@@ -892,10 +892,19 @@ def _ucscgb_merge(args: argparse.Namespace, chunk_root: str, outdir: str) -> Non
     as_name, bb_name, details_name, enzyme = _ucscgb_track_names(args)
     expected = _ucscgb_expected_chunks(args)
 
+    # Exactly what merge_ucscgb_tracks opens in a chunk dir: guides.bed, whose last
+    # column is the _offset into that chunk's details, and the BGZF details themselves.
+    # `details_name` is the BASE name; what build_track leaves on disk is bgzipped, and
+    # checking the bare name is what made this guard reject four complete chunks.
+    # as_name is needed for the schema md5 below, and bb_name is required as the last
+    # file build_track writes: its presence is what separates a finished chunk from one
+    # killed mid-assembly.
+    required = ("guides.bed", details_name + ".gz", as_name, bb_name)
+
     track_dirs, missing = [], []
     for i in range(expected):
         _cb, tdir, _od = _ucscgb_chunk_paths(chunk_root, i)
-        absent = [f for f in (bb_name, details_name, as_name) if not os.path.exists(os.path.join(tdir, f))]
+        absent = [f for f in required if not os.path.exists(os.path.join(tdir, f))]
         if absent:
             missing.append((i, tdir, absent))
         else:

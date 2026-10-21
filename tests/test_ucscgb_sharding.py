@@ -100,13 +100,61 @@ def test_shard_index_must_be_in_range(tmp_path):
         sg.run_ucscgb_chunked(a)
 
 
-def _fake_chunk(root, i, as_text='table T\n"t"\n( string chrom; "c" )\n'):
+# The basenames a real shard leaves in its chunk dir, read off
+# ce11/track_ce11_cas12a_shardtest/chunks/track_000 after job 42472186_0 (2026-10-20).
+# Hard-coding them here is the point: the first version of this fixture invented
+# `ascas12a_crisprDetails.tab`, which matched the guard but not the build, so the test
+# passed while the guard rejected four complete chunks.
+REAL_CHUNK_FILES = (
+    "ascas12a.bb",
+    "ascas12a_crisprDetails.tab.gz",
+    "ascas12a_crisprDetails.tab.gz.gzi",
+    "ascas12aTargets.as",
+    "guides.bed",
+)
+
+
+def _fake_chunk(root, i, as_text='table T\n"t"\n( string chrom; "c" )\n', files=REAL_CHUNK_FILES):
     _cb, tdir, _od = sg._ucscgb_chunk_paths(root, i)
     os.makedirs(tdir, exist_ok=True)
-    for fn in ("ascas12a.bb", "ascas12a_crisprDetails.tab"):
+    for fn in files:
         open(os.path.join(tdir, fn), "w").write("x")
     open(os.path.join(tdir, "ascas12aTargets.as"), "w").write(as_text)
     return tdir
+
+
+def test_merge_accepts_the_files_a_real_shard_leaves(tmp_path):
+    """Every chunk of the ce11 shard test was complete and the merge refused all four
+    (job 42472187, 2026-10-20): the guard required `ascas12a_crisprDetails.tab` while
+    build_track writes it bgzipped. The required names have to be the ones
+    merge_ucscgb_tracks opens, so a complete set must get past this check."""
+    bed = _write_bed(tmp_path / "g.bed", 30)
+    root = tmp_path / "chunks"
+    root.mkdir()
+    for i in range(3):
+        _fake_chunk(str(root), i)
+
+    a = _args(bed, tmp_path, ucscgb_phase="merge")
+    with pytest.raises(Exception) as ei:  # fails later, on the stub file contents
+        sg.run_ucscgb_chunked(a)
+    assert "refusing to merge" not in str(ei.value), (
+        f"a complete set of real chunk files was rejected as incomplete: {ei.value}"
+    )
+
+
+def test_merge_does_not_accept_details_left_uncompressed(tmp_path):
+    """The merge seeks into BGZF and rebases byte offsets against it; a plain .tab is
+    not a substitute, so the uncompressed name must not satisfy the requirement."""
+    bed = _write_bed(tmp_path / "g.bed", 20)
+    root = tmp_path / "chunks"
+    root.mkdir()
+    plain = tuple(f for f in REAL_CHUNK_FILES if not f.startswith("ascas12a_crisprDetails"))
+    for i in range(2):
+        _fake_chunk(str(root), i, files=plain + ("ascas12a_crisprDetails.tab",))
+
+    a = _args(bed, tmp_path, ucscgb_phase="merge")
+    with pytest.raises(RuntimeError, match="ascas12a_crisprDetails.tab.gz"):
+        sg.run_ucscgb_chunked(a)
 
 
 def test_merge_refuses_an_incomplete_set(tmp_path):
@@ -135,6 +183,21 @@ def test_merge_refuses_a_chunk_missing_one_artifact(tmp_path):
 
     a = _args(bed, tmp_path, ucscgb_phase="merge")
     with pytest.raises(RuntimeError, match="missing \\['ascas12a.bb'\\]"):
+        sg.run_ucscgb_chunked(a)
+
+
+def test_merge_refuses_a_chunk_missing_its_guides_bed(tmp_path):
+    """guides.bed carries the _offset column, the only link between a guide and its
+    off-target details. A chunk without it cannot be merged at all."""
+    bed = _write_bed(tmp_path / "g.bed", 30)
+    root = tmp_path / "chunks"
+    root.mkdir()
+    for i in range(3):
+        _fake_chunk(str(root), i)
+    os.remove(os.path.join(sg._ucscgb_chunk_paths(str(root), 2)[1], "guides.bed"))
+
+    a = _args(bed, tmp_path, ucscgb_phase="merge")
+    with pytest.raises(RuntimeError, match="missing \\['guides.bed'\\]"):
         sg.run_ucscgb_chunked(a)
 
 
