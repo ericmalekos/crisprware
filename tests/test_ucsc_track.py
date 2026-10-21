@@ -1069,3 +1069,53 @@ def test_hover_follows_the_cas9_shape_and_cites_the_right_model(tmp_path):
     labels = [lab for _c, lab, _d in ucsc_track.ENZYME_TRACK_SPECS["ascas12a"]["ontarget"]]
     assert labels == ["Kim 2018", "Chen 2025"]
     assert ucsc_track.ENZYME_TRACK_SPECS["ascas12a"]["spec_label"] == "AsCas12a Spec. Score"
+
+
+def test_every_model_tuple_carries_the_four_fields_its_consumers_unpack():
+    """`track_regrade_spec` returns (raw, label, colour field, decimals) per model.
+
+    Adding the decimals element silently broke `merge_ucscgb_tracks`, which still
+    unpacked three. Nothing noticed because every build between the precision change
+    and the ce11 shard test was single-pass, and only the chunked path merges. Pin the
+    arity so the next element added to the tuple fails here instead of in a job."""
+    for enzyme, espec in ucsc_track.ENZYME_TRACK_SPECS.items():
+        cols = ucsc_track.ordered_ontarget_cols(
+            enzyme, [c for c, _l, _d in espec["ontarget"]]
+        )
+        as_text = ucsc_track.build_autosql_ascas12a(cols) if enzyme == "ascas12a" else None
+        if as_text is None:
+            continue
+        fields = [
+            m.group(1)
+            for line in as_text.splitlines()
+            for m in [re.match(r"\s+(?:string|uint|char|bigint)\S*\s+(\w+);", line)]
+            if m
+        ]
+        spec = ucsc_track.track_regrade_spec(enzyme, fields)
+        assert spec is not None, enzyme
+        for m in spec["models"]:
+            assert len(m) == 4, f"{enzyme}: model tuple {m} has {len(m)} fields, consumers unpack 4"
+            raw, label, colour, dec = m
+            assert isinstance(dec, int), f"{enzyme}: decimals {dec!r} is not an int"
+
+
+def test_merge_reaches_the_chunk_stream_rather_than_failing_on_its_own_spec(tmp_path):
+    """The ce11 merge died in the field check with "too many values to unpack" before
+    it ever opened a chunk (job 42484059). Point the merge at a chunk dir that exists
+    but is empty: the only acceptable failure is the one about missing chunk files."""
+    prefix = str(tmp_path / "off.csv")
+    _write_enum(prefix)
+    art = ucsc_track.build_track(
+        _guide_df(), prefix, str(tmp_path / "src"), run_tools=False, enzyme="ascas12a"
+    )
+    empty = tmp_path / "chunk_empty"
+    empty.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="missing track files"):
+        ucsc_track.merge_ucscgb_tracks(
+            track_dirs=[str(empty)],
+            out=str(tmp_path / "merged"),
+            chrom_sizes="/dev/null",
+            as_file=art["autosql"],
+            enzyme="ascas12a",
+        )

@@ -1447,7 +1447,8 @@ def merge_ucscgb_tracks(
     spec = track_regrade_spec(enzyme, as_fields)
     if spec is not None:
         needed = [spec["spec_score"], spec["unique"], spec["hover"]]
-        needed += [raw for raw, _, _ in spec["models"]] + [col for _, _, col in spec["models"]]
+        needed += [raw for raw, _lab, _col, _dec in spec["models"]]
+        needed += [col for _raw, _lab, col, _dec in spec["models"]]
         missing = [f for f in needed if f not in as_fields]
         if missing:
             raise ValueError(f"{as_file} is missing fields needed to re-grade percentiles: {missing}")
@@ -1458,7 +1459,10 @@ def merge_ucscgb_tracks(
             flush=True,
         )
     # only the ranked columns need a histogram; specificity is absolute
-    count_fields = [raw for raw, _, _ in spec["models"]] if spec else []
+    # The chunk BEDs already store each raw column AT its displayed precision, so
+    # histogramming the written bytes ranks the displayed value, which is what the
+    # unchunked path ranks too. That is why no decimals are needed here.
+    count_fields = [raw for raw, _lab, _col, _dec in spec["models"]] if spec else []
     count_idx = {f: as_fields.index(f) for f in count_fields}
     counts: Dict[str, Dict[bytes, int]] = {f: {} for f in count_fields}
 
