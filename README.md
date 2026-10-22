@@ -21,6 +21,13 @@ Full documentation lives at **[crisprware.readthedocs.io](https://crisprware.rea
 [Cas12a UCSC track pipeline](https://crisprware.readthedocs.io/en/latest/ucsc_cas12a/index.html), and
 the full [command reference](https://crisprware.readthedocs.io/en/latest/command_reference.html).
 
+For a genome-wide track build on a cluster, `slurm/` holds the SLURM drivers: a
+`--ucscgb` build split into `split`, `shard` and `merge` phases so chunks run as a job
+array, plus track verification and build-to-build comparison. See
+[`slurm/README.md`](slurm/README.md); the flags themselves (`--ucscgb_chunk_max`,
+`--ucscgb_phase`, `--ucscgb_shard`, `--ucscgb_keep_chunks`) are in the command
+reference.
+
 ## Implemented scoring methods
 
 On- and off-target methods built into `score_guides`; each links to its
