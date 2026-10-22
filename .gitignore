@@ -36,6 +36,8 @@
 !parasol_scripts/**
 !scripts/
 !scripts/**
+!slurm/
+!slurm/**
 !tests/
 !tests/**
 !tools/
