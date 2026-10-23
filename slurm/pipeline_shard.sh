@@ -17,7 +17,6 @@
 #                 --export=ALL,ORG=<org> pipeline_trackonly.sh
 # CPU instead:  --export=ALL,ORG=<org>,SCANNER=cpu   (fine for yeast/worm/fly)
 set -uo pipefail
-HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ORG="${ORG:?set ORG=yeast|worm|fly|zebrafish|mouse|rat}"
 SCANNER="${SCANNER:-gpu}"
 SUFFIX="${SUFFIX:-tttv}"   # track_<db>_cas12a_$SUFFIX; `rescan` was the TTTN-index build
@@ -76,7 +75,16 @@ THREADS=${THREADS:-16}
 
 # Per-genome paths come from genomes.sh so this script and the chain submitter cannot
 # disagree about where a genome lives or how large its chunks are.
-. "$HERE/genomes.sh"
+# genomes.sh comes from the SNAPSHOT, not from next to this script. Two reasons.
+# sbatch stages the batch script to /var/lib/slurm/slurmd/job<id>/slurm_script, so
+# ${BASH_SOURCE[0]} inside a job points at the spool copy and a sibling path resolves
+# to nothing: all eight index builds failed in 2 seconds on exactly that (job
+# 42607583, "/var/lib/slurm/slurmd/job42607583/genomes.sh: No such file or
+# directory"). And the per-genome mapping is campaign state, so freezing it with the
+# code that reads it is the same discipline that keeps the Python frozen.
+GENOMES=${GENOMES:-$REPO/slurm/genomes.sh}
+[ -r "$GENOMES" ] || { echo "FATAL: no genomes.sh at $GENOMES" >&2; exit 1; }
+. "$GENOMES"
 resolve_genome "$ORG" || exit 1
 
 # CHUNK override. The small genomes default to CHUNK=0 (unchunked), so forcing a chunk

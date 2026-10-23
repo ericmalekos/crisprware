@@ -41,6 +41,10 @@ THROTTLE="${THROTTLE:-}"
 # resolved next to this submitter rather than inside PROJ, so the pair stays together
 # when the data dir moves. sbatch needs an absolute path, hence the pwd.
 PROJ=${PROJ:-/private/groups/carpenterlab/emalekos/tmp/multigenome-cas12a}
+# REPO is the frozen snapshot the workers run from. The submitter reads the SAME
+# genomes.sh out of it, because a submitter that split one tree while the worker
+# sharded another would be undetectable until the merge.
+REPO=${REPO:-/private/groups/carpenterlab/emalekos/crispr-ots/snapshots/crisprware-947524d}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 WORKER=$HERE/pipeline_shard.sh
 [ -x "$WORKER" ] || { echo "FATAL: no executable worker at $WORKER" >&2; exit 1; }
@@ -53,7 +57,16 @@ SUFFIX=${SUFFIX:-tttv}
 # Per-genome paths come from genomes.sh, which pipeline_shard.sh also sources. They have
 # to derive the same paths or the chain would split one tree and shard another, and hg38
 # and hs1 predate the <db>/<db>_canon_* convention, so the mapping is not derivable.
-. "$HERE/genomes.sh"
+# genomes.sh comes from the SNAPSHOT, not from next to this script. Two reasons.
+# sbatch stages the batch script to /var/lib/slurm/slurmd/job<id>/slurm_script, so
+# ${BASH_SOURCE[0]} inside a job points at the spool copy and a sibling path resolves
+# to nothing: all eight index builds failed in 2 seconds on exactly that (job
+# 42607583, "/var/lib/slurm/slurmd/job42607583/genomes.sh: No such file or
+# directory"). And the per-genome mapping is campaign state, so freezing it with the
+# code that reads it is the same discipline that keeps the Python frozen.
+GENOMES=${GENOMES:-$REPO/slurm/genomes.sh}
+[ -r "$GENOMES" ] || { echo "FATAL: no genomes.sh at $GENOMES" >&2; exit 1; }
+. "$GENOMES"
 resolve_genome "$ORG" || exit 1
 BED=$GUIDES
 [ -s "$BED" ] || { echo "FATAL: no guide BED at $BED" >&2; exit 1; }
