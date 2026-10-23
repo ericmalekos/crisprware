@@ -26,7 +26,7 @@ ORG="${ORG:?set ORG=yeast|worm|fly|zebrafish|mouse|rat|human|t2t}"
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJ=${PROJ:-/private/groups/carpenterlab/emalekos/tmp/multigenome-cas12a}
-REPO=${REPO:-/private/groups/carpenterlab/emalekos/crispr-ots/snapshots/crisprware-d35c812}
+REPO=${REPO:-/private/groups/carpenterlab/emalekos/crispr-ots/snapshots/crisprware-947524d}
 ENV=/private/groups/carpenterlab/emalekos/conda_envs/crisprware
 MM=/private/home/emalekos/.local/bin/micromamba
 BIN=$REPO/crispr-ots/target/x86_64-unknown-linux-gnu/release/crispr-ots

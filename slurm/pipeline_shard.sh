@@ -39,7 +39,7 @@ SHARD="${SHARD:-${SLURM_ARRAY_TASK_ID:-}}"
 # running job is how five genomes were published from a binary nobody had re-verified.
 # See the snapshot's BINARIES.md for the binary it vouches for, and the md5 guard below.
 PROJ=${PROJ:-/private/groups/carpenterlab/emalekos/tmp/multigenome-cas12a}
-REPO=${REPO:-/private/groups/carpenterlab/emalekos/crispr-ots/snapshots/crisprware-d35c812}
+REPO=${REPO:-/private/groups/carpenterlab/emalekos/crispr-ots/snapshots/crisprware-947524d}
 ENV=/private/groups/carpenterlab/emalekos/conda_envs/crisprware
 MM=/private/home/emalekos/.local/bin/micromamba
 if [ "$SCANNER" = "gpu" ]; then
