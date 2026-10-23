@@ -44,24 +44,25 @@ PROJ=${PROJ:-/private/groups/carpenterlab/emalekos/tmp/multigenome-cas12a}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 WORKER=$HERE/pipeline_shard.sh
 [ -x "$WORKER" ] || { echo "FATAL: no executable worker at $WORKER" >&2; exit 1; }
-SUFFIX=rescan
+# SUFFIX names the track directory (track_<db>_cas12a_$SUFFIX), so it is how one
+# campaign's output is kept off another's. `tttv` is the TTTV-index rebuild; `rescan`
+# was the CFD-binary rescan, which was scanned against a TTTN index and must not be
+# pushed. See docs/source/track_release_notes.md, 2026-10-22.
+SUFFIX=${SUFFIX:-tttv}
 
-# W and STEM mirror pipeline_shard.sh: hg38 and hs1 predate the <db>/<db>_canon_*
-# convention and keep their own directories and stems, so both scripts have to derive
-# the same paths or the chain would split one tree and shard another.
-case "$ORG" in
-  yeast) DB=sacCer3 ;; worm) DB=ce11 ;; fly) DB=dm6 ;;
-  zebrafish) DB=danRer11 ;; mouse) DB=mm39 ;; rat) DB=rn7 ;;
-  human) DB=hg38; W=/private/groups/carpenterlab/emalekos/tmp/hg38-cas12a
-         STEM=hg38_primary_chr ;;
-  t2t)   DB=hs1;  W=/private/groups/carpenterlab/emalekos/tmp/t2t-cas12a
-         STEM=t2t_chm13v2 ;;
-  *) echo "FATAL: unknown ORG $ORG" >&2; exit 1 ;;
-esac
-W=${W:-$PROJ/$DB}
-STEM=${STEM:-${DB}_canon}
-BED=$W/${STEM}_gRNA/${STEM}_gRNA.bed
+# Per-genome paths come from genomes.sh, which pipeline_shard.sh also sources. They have
+# to derive the same paths or the chain would split one tree and shard another, and hg38
+# and hs1 predate the <db>/<db>_canon_* convention, so the mapping is not derivable.
+. "$HERE/genomes.sh"
+resolve_genome "$ORG" || exit 1
+BED=$GUIDES
 [ -s "$BED" ] || { echo "FATAL: no guide BED at $BED" >&2; exit 1; }
+# Refuse before submitting anything: the array would otherwise fail per task, 500 times,
+# on an index that was wrong before the first sbatch.
+[ -s "$IDX_TTTV.crot" ] || {
+  echo "FATAL: no TTTV off-target index at $IDX_TTTV.crot" >&2
+  echo "  build it first:  sbatch -J idx_$DB -p gpu -c 4 --mem=48G -t 01:00:00 --export=ALL,ORG=$ORG $HERE/build_index.sh" >&2
+  exit 1; }
 
 # Must agree with _ucscgb_expected_chunks: ceil((lines - header) / chunk_max).
 # One pass, not two: the hg38 and hs1 guide BEDs are 16 GB and 17 GB, so counting lines

@@ -32,8 +32,10 @@ ever visible on guides that are worth using.
 There is **no grey for a middle specificity band.** A guide between `0.20` and `0.50` keeps its
 efficiency ramp colour: its specificity is poor but usable, and greying it hid the efficiency of a
 guide somebody might still want. Read that guide's specificity from `score`, from `_specColor`, or
-from the hover. An earlier version of these tracks greyed that band `90,90,90`; the colour is a
-function of the stored percentile, so existing tracks were repainted in place without rescoring.
+from the hover, all three of which agree with the default view that such a guide is usable:
+`_specColor`'s red cut is `0.20`, not `0.50`, for exactly this reason. An earlier version of these
+tracks greyed that band `90,90,90`; the colour is a function of the stored percentile, so existing
+tracks were repainted in place without rescoring.
 
 The ramp percentiles are ranked over **every guide in the genome**. A chunked build ranks within each
 chunk first, then the merge re-ranks across all chunks before writing the bigBed, so the colors are
@@ -85,9 +87,16 @@ actually is.
 
 | condition | color | swatch |
 |---|---|---|
-| specificity x100 `<= 50` | `255,0,0` | red |
-| specificity x100 `50` to `70` | `128,128,0` | olive |
+| specificity x100 `<= 20` | `255,0,0` | red |
+| specificity x100 `20` to `70` | `128,128,0` | olive |
 | specificity x100 `> 70` | `0,255,0` | green |
+
+The red cut is `20`, the same number as the `itemRgb` grey, and **not** Cas9's `50`.
+Carrying both meant the track drew two different "bad specificity" lines on one
+quantity: a guide at `0.35` kept its efficiency ramp in the default view, which says it
+is not hard to target, and read red here, which says it is. `0.20` is the line the
+default scheme, the `score` filter and the description page already use, so this column
+moved to it rather than the other way round.
 
 Non-unique and dropped guides are forced to the worst tier (red) rather than left uncolored, since a
 guide with a perfect match elsewhere has no meaningful specificity to report.
@@ -103,11 +112,11 @@ guide with a perfect match elsewhere has no meaningful specificity to report.
 | close-off-target grey | `120,120,120`, when alignment stopped (too many off-targets) | `120,120,120`, when a 1-mm or 2-mm off-target exists | same color, different trigger |
 | low-specificity grey | one tier, `80,80,80` (`#505050`) | one tier, `50,50,50` | same idea, different shade |
 | low-spec grey basis | MIT specificity `< 50` (grey to 49, never at 50) | raw specificity `< 0.20` | no, this track greys a narrower band |
-| `_specColor` cuts | `<= 50` / `<= 70` / `> 70` | same | yes |
+| `_specColor` cuts | `<= 50` / `<= 70` / `> 70` | `<= 20` / `<= 70` / `> 70` | no, the red cut follows this track's grey |
 | column 5 / score filter | MIT specificity, 0 to 100 | AsCas12a specificity x100 | yes |
 | missing-efficiency color | `0,0,100` (`#000064`) | none | no, see below |
 
-Four divergences are real:
+Five divergences are real:
 
 1. **The percentile basis differs, and it is the one that changes how the colors read.** Cas9's
    efficiency percentile ranks a guide against a fixed reference distribution of mammalian guides, so
@@ -127,12 +136,18 @@ Four divergences are real:
    efficiency model could not score. Both Cas12a models score every guide in these runs (0 blanks
    across sacCer3), so the case does not arise and no color is assigned to it.
 4. **The second color field is renamed.** `_crisprScanColor` to `_crisprDeepCpf1Color`, as above.
+5. **`_specColor`'s red cut is `20`, not `50`.** Cas9 can keep `50` because its default
+   scheme greys everything at or below MIT 50, so its two schemes never disagree about
+   which guides are bad. This track greys only below `0.20`, so a `50` red cut here
+   contradicted the default view across the whole `0.20` to `0.50` band. The cut follows
+   `SPEC_GREY_BAD`.
 
-The `<= 50` / `<= 70` cuts for `_specColor` are **undocumented but verified**: the Cas9 track
-description page documents only the `reserved` greys and ramp, and says nothing about `_specColor` or
-`_crisprScanColor`. The cuts were derived from real Cas9 rows and then checked against 165,992 scored
+Cas9's own `_specColor` cuts are **undocumented but verified**: its track description page
+documents only the `reserved` greys and ramp, and says nothing about `_specColor` or
+`_crisprScanColor`. They were derived from real Cas9 rows and then checked against 165,992 scored
 hg38 guides, where they hold with **zero** exceptions (no green at specificity <= 70, no olive outside
-50 to 70, no red above 50). The same sample pins Cas9's other boundaries exactly: `itemRgb` is grey up
+50 to 70, no red above 50), which is what establishes that Cas9's red cut really is `50` and so what
+this track is diverging from. The same sample pins Cas9's other boundaries exactly: `itemRgb` is grey up
 to specificity 49 and never at 50 or above, red runs to percentile 30, yellow from 32 to 53 and green
 from 56 up. Note also
 that the Cas9 page's own wording leaves percentile exactly 55 in neither the yellow nor the green
@@ -200,7 +215,7 @@ no post-hoc color converter, and a change here requires rebuilding the track.
 |---|---|
 | grey cutoff | `SPEC_GREY_BAD` (the 0.20 to 0.50 `SPEC_GREY_MARGINAL` tier is retired) |
 | ramp cutoffs | `EFF_RAMP_LOW`, `EFF_RAMP_HIGH` |
-| `_specColor` cutoffs | `SPEC_COLOR_BAD`, `SPEC_COLOR_MID` |
+| `_specColor` cutoffs | `SPEC_COLOR_BAD` (= `SPEC_GREY_BAD` x100), `SPEC_COLOR_MID` |
 | ramp plus specificity grey | `_spec_eff_color` |
 | full blended hierarchy | `_item_rgb` |
 | specificity-only color | `_spec_color` |

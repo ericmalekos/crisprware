@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Push the rescanned AsCas12a (bed9+12, 21-field) tracks to hgwdev.
+# Push the TTTV-indexed AsCas12a (bed9+12, 21-field) tracks to hgwdev.
 # Run from a login node inside screen/tmux. ~80 GB; --partial makes it resumable.
 #
 # Destination is ascas12a_tracks, NOT the existing cas12a_tracks: this is a new
@@ -17,39 +17,49 @@ SRC=/private/groups/carpenterlab/emalekos/tmp/multigenome-cas12a
 DEST=emalekos@hgwdev.gi.ucsc.edu:/hive/users/emalekos/ascas12a_tracks
 DESTPATH=/hive/users/emalekos/ascas12a_tracks
 
-# db -> source track dir, ABSOLUTE. These are the *_rescan dirs, repointed from
-# *_rounded on 2026-10-22. They are the output of the eight-genome rescan on the fixed
-# Cas12a CFD binary, and they are the only tracks that should ever be pushed again.
+# db -> source track dir, ABSOLUTE. These are the *_tttv dirs: the eight-genome build
+# on the fixed Cas12a CFD binary AND a TTTV off-target index. They are the only tracks
+# that should ever be pushed.
 #
-# Why the previous *_rounded map must not come back: danRer11, rn7, mm39, hg38 and hs1
-# were scanned with a GPU binary dated 2026-06-05, predating ad3ecc6, which left about
-# a third of Cas12a mismatch types at the default penalty of 1.0 and so overstated
-# off-target activity and understated specificity. Pushing *_rounded republishes that
-# defect. See docs/source/track_release_notes.md, entry 2026-10-22.
+# Two earlier maps must not come back, both for reasons in
+# docs/source/track_release_notes.md, entry 2026-10-22:
+#   *_rounded  danRer11, rn7, mm39, hg38 and hs1 were scanned with a GPU binary dated
+#              2026-06-05, predating ad3ecc6, which left about a third of Cas12a
+#              mismatch types at the default penalty of 1.0, so it overstated
+#              off-target activity and understated specificity.
+#   *_rescan    fixed that binary but was still scanned against a TTTN index. AsCas12a
+#              cannot cleave a TTTT-prefixed protospacer, and only `specificity_tttv`
+#              excluded TTTT: the mismatch buckets behind the close-off-target grey,
+#              the off-target list, the off-target count, max CFD, the saturation cap
+#              and the 0-mm screen behind `unique` all counted TTTT sites. On hg38
+#              chr1 that greyed 12.49% of guides whose own published specificity said
+#              they were fine. Never deployed.
 #
-# Every one of the eight passed slurm/verify_track.sh: bigBed itemCount equal to the
-# source guide BED exactly, 21-field autoSql, three colour columns, zero off-target
-# invariant violations, and one autoSql md5 (71138e14cfd62e5004eb1721fccd85c4) across
-# all eight.
+# Every one of the eight must pass slurm/verify_track.sh before this runs: bigBed
+# itemCount equal to the source guide BED exactly, 21-field autoSql, three colour
+# columns, zero off-target invariant violations, and ONE autoSql md5 across all eight.
+# The md5 changes with the TTTV rebuild (the autoSql comments are unchanged, but the
+# _specColor cut moved from 0.50 to 0.20), so compare the eight against each other
+# rather than against a value written here.
 #
 # Transfer size is ~80 GB and NOTHING will be skipped, unlike the reround push. That
 # one changed only ascas12a.bb and ascas12aTargets.as, left _offset in place, and so
-# hardlinked the details .tab.gz and let rsync skip it. The rescan rescored every
-# off-target, so all four files are new for all eight genomes.
+# hardlinked the details .tab.gz and let rsync skip it. The TTTV build rescored every
+# off-target and dropped every TTTT one, so all four files are new for all eight.
 #
 # hg38 and hs1 were built in their own scan dirs, so they sit outside $SRC, and hs1's
 # track dir is named track_hs1_* while its guide files use the t2t_chm13v2 stem.
-# The older *_cas9schema / *_cas9schema2 / *_regraded / *_rounded dirs all predate the
-# rescan; do not push those.
+# The older *_cas9schema / *_cas9schema2 / *_regraded / *_rounded / *_rescan dirs all
+# predate the TTTV build; do not push those.
 DIRS="
-sacCer3  $SRC/sacCer3/track_sacCer3_cas12a_rescan
-ce11     $SRC/ce11/track_ce11_cas12a_rescan
-dm6      $SRC/dm6/track_dm6_cas12a_rescan
-danRer11 $SRC/danRer11/track_danRer11_cas12a_rescan
-rn7      $SRC/rn7/track_rn7_cas12a_rescan
-mm39     $SRC/mm39/track_mm39_cas12a_rescan
-hg38     /private/groups/carpenterlab/emalekos/tmp/hg38-cas12a/track_hg38_cas12a_rescan
-hs1      /private/groups/carpenterlab/emalekos/tmp/t2t-cas12a/track_hs1_cas12a_rescan
+sacCer3  $SRC/sacCer3/track_sacCer3_cas12a_tttv
+ce11     $SRC/ce11/track_ce11_cas12a_tttv
+dm6      $SRC/dm6/track_dm6_cas12a_tttv
+danRer11 $SRC/danRer11/track_danRer11_cas12a_tttv
+rn7      $SRC/rn7/track_rn7_cas12a_tttv
+mm39     $SRC/mm39/track_mm39_cas12a_tttv
+hg38     /private/groups/carpenterlab/emalekos/tmp/hg38-cas12a/track_hg38_cas12a_tttv
+hs1      /private/groups/carpenterlab/emalekos/tmp/t2t-cas12a/track_hs1_cas12a_tttv
 "
 FILES="ascas12a.bb ascas12a_crisprDetails.tab.gz ascas12a_crisprDetails.tab.gz.gzi ascas12aTargets.as"
 
@@ -65,8 +75,8 @@ missing=0
 while read -r db dir <&3; do
     [ -z "${db:-}" ] && continue
     case "$dir" in
-      *_rescan) ;;
-      *) echo "REFUSING: $db -> $dir is not a *_rescan dir" >&2; missing=1 ;;
+      *_tttv) ;;
+      *) echo "REFUSING: $db -> $dir is not a *_tttv dir" >&2; missing=1 ;;
     esac
     for f in $FILES; do
       [ -s "$dir/$f" ] || { echo "MISSING: $db  $dir/$f" >&2; missing=1; }

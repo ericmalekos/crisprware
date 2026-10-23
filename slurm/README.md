@@ -9,13 +9,15 @@ now does natively, the validation gate, the ISA diagnostics) is kept separately 
 
 | script | what it does |
 |---|---|
+| `genomes.sh` | The per-genome mapping (db, tree, stem, chrom.sizes, chunk size, index and guide paths) in ONE place, sourced by the three scripts below |
 | `make_snapshot.sh` | Freezes the live checkout as a snapshot a campaign can run from, and refuses to carry a binary forward unless `git diff <base>..HEAD -- crispr-ots/` is empty |
+| `build_index.sh` | Builds the **TTTV** off-target index for one genome and verifies the PAM set it actually wrote |
 | `submit_shard_chain.sh` | Submits one genome as split then a shard array then a merge |
 | `pipeline_shard.sh` | The per-phase worker the chain submits, `PHASE=split\|shard\|merge` |
 | `verify_track.sh` | Verifies a finished track, including the row count no other check makes |
 | `compare_tracks.py` | Compares two builds of one track on content, with columns graded hard and soft |
 | `join_details.py` | Resolves `_offset` by merge join so two builds' details files can be compared |
-| `push_ascas12a_tracks.sh` | rsyncs finished tracks to hgwdev. **Read the warning at the top of it before running.** |
+| `push_ascas12a_tracks.sh` | rsyncs finished tracks to hgwdev. **Read the warning at the top of it before running**: it names two earlier track generations that must never be pushed. |
 
 ## Normal use
 
@@ -23,17 +25,22 @@ now does natively, the validation gate, the ISA diagnostics) is kept separately 
 # once per code change, from the live checkout
 ./make_snapshot.sh <base-snapshot-sha>
 
-# once per genome
+# once per genome, the TTTV off-target index (CPU, seconds to minutes, no GPU)
+sbatch -J idx_<db> -p gpu -c 4 --mem=48G -t 01:00:00 --export=ALL,ORG=<org> build_index.sh
+
+# once per genome, the scan
 ./submit_shard_chain.sh <org> <chunk_max> <shard_hours> gpu
 
 # once the merge lands
 ./verify_track.sh <org> <suffix>
 ```
 
-`PROJ` sets the campaign data directory and `REPO` the frozen code snapshot; both have
-defaults and both are overridable, so a later campaign does not edit a script that a
-running array may be reading. `submit_shard_chain.sh` resolves `pipeline_shard.sh` next
-to itself rather than inside `PROJ`, so the pair travels together when the data moves.
+`PROJ` sets the campaign data directory, `REPO` the frozen code snapshot and `SUFFIX`
+the track directory name (`track_<db>_cas12a_$SUFFIX`, default `tttv`); all have
+defaults and all are overridable, so a later campaign does not edit a script that a
+running array may be reading. `submit_shard_chain.sh` resolves `pipeline_shard.sh` and
+`genomes.sh` next to itself rather than inside `PROJ`, so they travel together when the
+data moves.
 
 Useful env vars on the chain submitter: `SHARDS_ONLY=1` to skip the split for a genome
 already split, `RESUME=1` to submit only the chunks that are not already complete,
@@ -101,3 +108,19 @@ time.
 **Verify row counts, not chunk counts.** The merge checks that every expected chunk is
 present, which cannot detect rows dropped inside a chunk. `verify_track.sh` compares the
 bigBed's `itemCount` against the source guide BED, which can.
+
+**Index AsCas12a on TTTV, and make the code check it rather than assume it.** AsCas12a
+does not cleave a TTTT-prefixed protospacer, so a TTTT site in the off-target index is a
+false off-target. The scanner excludes TTTT from exactly one of its outputs,
+`specificity_tttv`; the mismatch buckets behind the close-off-target grey, the off-target
+list in the details popup, the off-target count, max CFD, the saturation cap and the 0-mm
+screen behind `unique` all count every site they are handed. Eight genomes were indexed
+on TTTN while three separate comments in `ucsc_track.py` asserted "TTTV-only index", and
+nothing could tell: on hg38 chr1 that greyed 12.49% of guides as hard to target whose own
+published specificity said otherwise, and TTTT turned out to be 37.5% of a TTTN index
+rather than the naive quarter, because poly-T runs concentrate in soft-masked repeats.
+Two things follow. Fix it at the index, not at each consumer, because eight separate
+guards are eight chances to forget one. And read the assumption off the file:
+`crisprware/utils/crot_index.py` parses the `.crot` header and
+`score_guides --ucscgb_enzyme ascas12a` refuses a TTTT-bearing index before scanning,
+which is a check `build_index.sh` repeats on what it just wrote.

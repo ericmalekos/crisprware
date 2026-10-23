@@ -66,9 +66,11 @@ efficiency ramp on the DeepCpf1 (Kim 2018) percentile.</li>
 AsCas12a-specific seq-DeepCpf1 variant model (Chen 2025). The two models disagree on
 a minority of guides, and this view makes that disagreement visible.</li>
 <li><b>Off-target specificity (AsCas12a)</b>: specificity alone, with no gray tier and
-no efficiency contribution. Red at specificity &lt;= 0.50, olive from 0.50 to 0.70,
-green above 0.70. Because this scheme never grays a guide out, it keeps reporting
-specificity for guides that the default scheme has already grayed.</li>
+no efficiency contribution. Red at specificity &lt;= 0.20, olive from 0.20 to 0.70,
+green above 0.70. The red cut is the same 0.20 the default scheme grays at, so the two
+views agree on which guides are hard to target. Because this scheme never grays a guide
+out, it keeps reporting specificity for guides that the default scheme has already
+grayed.</li>
 </ol>
 </p>
 

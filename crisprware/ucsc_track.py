@@ -264,11 +264,22 @@ SPEC_GREY_BAD = 0.20  # raw specificity < 0.20       -> grey (bad)
 EFF_RAMP_LOW = 30  # percentile <= 30            -> red
 EFF_RAMP_HIGH = 55  # 30 < percentile <= 55      -> yellow; > 55 -> green
 
-# Cuts for the specificity-only _specColor, read off the Cas9 crisprAllTargets sample
-# rows (specificity 27/37/43 -> red, 51/52/65/69 -> olive, 72/76 -> green). On a
-# 0-100 scale, so the raw 0-1 AsCas12a specificity is multiplied by 100 first.
-SPEC_COLOR_BAD = 50  # <= 50      -> red
-SPEC_COLOR_MID = 70  # 50 to 70   -> olive; > 70 -> green
+# Cuts for the specificity-only _specColor, on a 0-100 scale, so the raw 0-1 AsCas12a
+# specificity is multiplied by 100 first.
+#
+# The red cut is 20, matching SPEC_GREY_BAD, and NOT the 50 read off the Cas9
+# crisprAllTargets sample rows (specificity 27/37/43 -> red, 51/52/65/69 -> olive,
+# 72/76 -> green). Carrying both numbers meant the track drew two different
+# "bad specificity" lines on the same quantity: a guide at 0.35 kept its efficiency
+# ramp in the default view, which says it is not hard to target, and read red in the
+# specificity view, which says it is. One of the two had to move, and 0.20 is the one
+# the default scheme, the score filter and the description page already use.
+#
+# This is a deliberate divergence from the Cas9 track, which greys everything at or
+# below MIT 50 and so has no such split to resolve. The olive band is correspondingly
+# wide (0.20 to 0.70); green above 0.70 is unchanged.
+SPEC_COLOR_BAD = 20  # <= 20      -> red
+SPEC_COLOR_MID = 70  # 20 to 70   -> olive; > 70 -> green
 
 # Every track ships the same three colourings, in this order, directly after bed9.
 # ``itemRgb`` is the blended default; the two alternatives are selectable from the
@@ -350,7 +361,10 @@ def _item_rgb(dropped, mm0, mm1, mm2, spec_raw, eff_pct) -> np.ndarray:
     """Color hierarchy (highest priority applied last): efficiency ramp / two-tier
     absolute low-specificity grey (see _spec_eff_color), then grey for close (1/2-mm)
     off-targets, then light grey for non-unique (0-mm / dropped). ``spec_raw`` is the
-    raw AsCas12a-TTTV specificity; ``mm*`` are the (TTTV-restricted for AsCas12a) counts.
+    raw AsCas12a-TTTV specificity. ``mm*`` are the scanner's mismatch buckets, which are
+    TTTV-restricted for AsCas12a only because the index itself enumerates TTTV: the
+    scanner counts every site it is given. `crot_index.assert_enzyme_pams` enforces that
+    at the start of the run, because nothing downstream can tell a TTTT site apart.
 
     Used by EVERY path including AsCas12a: this mirrors the Cas9 default scheme, where
     grey by specificity wins and the efficiency ramp shows only for specific guides."""
@@ -372,9 +386,12 @@ def _spec_color(dropped, mm0, mm1, mm2, spec_raw) -> np.ndarray:
 
     Cas9 makes this a PURE function of specificity with no uniqueness greys: its
     sample rows pair specificity 27/37/43 with red, 51/52/65/69 with olive and 72/76
-    with green, and keep red even where ``reserved`` has already greyed out. So the
-    cuts are ``<= 50`` red, ``<= 70`` olive, ``> 70`` green, and a greyed guide still
-    gets a colour here. ``spec_raw`` is the raw AsCas12a-TTTV specificity (0-1).
+    with green, and keep red even where ``reserved`` has already greyed out. The
+    no-greys part is kept, so a greyed guide still gets a colour here, but the cuts
+    are ``<= 20`` red, ``<= 70`` olive, ``> 70`` green: the red cut follows
+    :data:`SPEC_GREY_BAD` rather than Cas9's 50, so the track states one
+    "bad specificity" line instead of two. ``spec_raw`` is the raw AsCas12a-TTTV
+    specificity (0-1).
     A non-unique guide has no meaningful specificity, so it takes the worst tier;
     a missing specificity keeps the usual "treat as fully specific" convention."""
     pct = np.where(np.isnan(spec_raw), 100.0, np.asarray(spec_raw, dtype=float) * 100.0)
@@ -521,8 +538,10 @@ def _build_details(
     specificity weights; the scanner itself is PAM-blind. The AsCas12a TTTT exclusion that
     used to live here (zeroing a second CFD column, and a TTTV-restricted mismatch count)
     belonged to the two-matrix track and is gone with it: a single-enzyme AsCas12a track is
-    scanned against a TTTV-only index, where no TTTT off-target exists to exclude, and
-    enCas12a does cleave TTTT so its counts must stay unrestricted.
+    scanned against a TTTV index, where no TTTT off-target exists to exclude (enforced by
+    `crot_index.assert_enzyme_pams`, since a TTTN index silently reinstates every TTTT
+    off-target in the counts, the popup list and the 0-mm screen), and enCas12a does
+    cleave TTTT so its counts must stay unrestricted.
     """
     import shlex
 
@@ -679,7 +698,7 @@ def build_autosql_ascas12a(ontarget_cols: Sequence[str] = ()) -> str:
     """autoSql for the single-enzyme **AsCas12a** track: bed9 + ``_specColor`` +
     guideSeq/pam + a single ``unique`` flag + one ``AsCas12a_specificity`` column +
     one column per on-target model in ``ontarget_cols`` + the ``_mouseOver``/``_offset``
-    trailer. AsCas12a is scored against a TTTV-only off-target index, so there is NO
+    trailer. AsCas12a is scored against a TTTV off-target index, so there is NO
     TTTN column and NO enCas12a column.
 
     Following the Cas9 track, the two axes get their own colors: ``itemRgb`` is the
@@ -898,7 +917,7 @@ def build_track(
     mode2_path = enum_prefix + ".ot.tsv"
 
     # --- crisprDetails.tab + offsets ---
-    # The ascas12a path uses a TTTV-only index (no TTTT off-targets exist), so no genome
+    # The ascas12a path uses a TTTV index (no TTTT off-targets exist), so no genome
     # is needed and Mode-1 counts are already TTTV. enCas12a scans the broad index and
     # needs the genome to read each off-target's reference PAM.
     genome = Genome(genome_fa) if (genome_fa and enzyme != "ascas12a") else None
@@ -963,15 +982,19 @@ def build_track(
     # dropped (non-unique) -> False.
     unique = np.where(dropped, "False", "True")
 
-    # --- AsCas12a single-enzyme track (TTTV-only off-target search) ---
+    # --- AsCas12a single-enzyme track (TTTV off-target search) ---
     # One matrix (cfd-cas12a:2xnls), one specificity (TTTV == TTTN under a TTTV index).
     # Two AsCas12a on-target models are shown: DeepCpf1 (Kim 2018) and the AsCas12a
     # seq-DeepCpf1 variant (Chen 2025). No enCas12a, no TTTN references, no genome.
     if enzyme == "ascas12a":
         spec = pd.to_numeric(g.get("specificity_tttv"), errors="coerce")
         score = np.clip(np.rint(spec.fillna(0).to_numpy() * 100), 0, 1000).astype(int)
-        # Mode-1 mismatch_counts are already TTTV (TTTV-only index), so the close-off-target
-        # grey uses them directly -- no genome re-derivation.
+        # Mode-1 mismatch_counts are TTTV because the INDEX is TTTV, not because the
+        # scanner restricts them: `mm_counts` is incremented for every site it is handed.
+        # `crot_index.assert_enzyme_pams` is what makes that true, and the close-off-target
+        # grey reads them directly with no genome re-derivation. Scanned against a TTTN
+        # index these counts include TTTT sites AsCas12a cannot cleave, which greys good
+        # guides: 8.2% of hg38 chr1 guides, measured 2026-10-22.
         buckets = _mismatch_buckets(g["mismatch_counts"])
         mm0, mm1, mm2 = buckets["mm0"].to_numpy(), buckets["mm1"].to_numpy(), buckets["mm2"].to_numpy()
         ot_cols = ordered_ontarget_cols("ascas12a", g.columns)

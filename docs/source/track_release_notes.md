@@ -13,6 +13,99 @@ with it.
 
 ## 2026-10-22
 
+### AsCas12a off-targets are searched on TTTV, not TTTN (DERIVATION)
+
+Every AsCas12a track is rebuilt against an off-target index that enumerates **TTTV**.
+The eight indexes used until now enumerated TTTN, which includes TTTT, and AsCas12a does
+not cleave a TTTT-prefixed protospacer. Every TTTT site in those indexes was therefore a
+false off-target.
+
+The scanner excluded TTTT from exactly **one** of its nine outputs:
+
+| scanner output | consumed as | excluded TTTT? |
+|---|---|---|
+| `tttv_sum` to `specificity_tttv` | `score` (column 5), `AsCas12a_specificity`, hover, `_specColor`, low-specificity greys | **yes** |
+| `off_sum` to `specificity_tttn` | the TTTN column, correct for enCas12a | no, by design |
+| `mm_counts` | mismatch buckets, the close-off-target grey, `_mismatchCounts` | no |
+| the off-target list floor | `_crisprOfftargets` in the details popup | no |
+| `on_count` | the 0-mm screen behind `dropped` and `unique` | no |
+| `off_count` | `off_target_count` | no |
+| `max_cfd` | max CFD | no |
+| the saturation cap | `saturated`, and the per-guide count and CFD-sum caps | no |
+| the CSV `specificity` column | `specificity_<index>` in every ordinary `score_guides` run | no |
+
+So the published specificity was already right, and everything built on the mismatch
+counts was not. The visible consequence is the `120,120,120` close-off-target grey,
+which fires on `mm1 > 0 or mm2 > 0` and is not a CFD cutoff at all, so a TTTT site with
+a high CFD greys a guide whose specificity reads near 1.0:
+
+| track | guides | close-off-target grey | of those, specificity >= 0.20 |
+|---|---|---|---|
+| sacCer3 | 590,425 | 7,266 (1.23%) | 6,907 (1.17% of all guides) |
+| ce11 | 6,617,735 | 770,060 (11.64%) | 656,095 (9.91%) |
+| dm6 | 6,611,240 | 264,913 (4.01%) | 214,220 (3.24%) |
+| danRer11 chr1 | 3,241,084 | 842,303 (25.99%) | 521,813 (16.10%) |
+| rn7 chr1 | 10,469,943 | 1,688,044 (16.12%) | 1,117,752 (10.68%) |
+| mm39 chr1 | 8,322,179 | 1,316,878 (15.82%) | 849,099 (10.20%) |
+| hg38 chr1 | 10,225,880 | 1,898,802 (18.57%) | 1,276,773 (12.49%) |
+| hs1 chr1 | 10,673,054 | 1,908,085 (17.88%) | 1,274,982 (11.95%) |
+
+0.20 is the threshold the track itself calls hard to target (`SPEC_GREY_BAD`), so every
+guide in the last column was greyed as hard to target while its own published
+specificity said it was not.
+
+One row, sacCer3 `chrXII:1061684-`, shows the whole mechanism. `specificity_tttn`
+0.237351 against `specificity_tttv` 0.971510; the published `score` is 97, correctly
+from the TTTV figure. Its details popup lists 8 off-targets at CFD 844, 703, 703, 703,
+77, 77, 77 and 29, and reading those coordinates back out of the FASTA shows **7 of the
+8 carry a TTTT PAM**, including the single 1-mismatch hit at CFD 0.844 that triggers the
+grey. Its `_mismatchCounts` of `0,1,4,3,0` counts them all. The row therefore ships
+`itemRgb` `120,120,120` (hard to target) beside `_specColor` `0,255,0` (green) and a
+specificity of 0.972.
+
+TTTT was not a quarter of the index. Rebuilding sacCer3 on TTTV takes it from 945,116
+sites to 590,426, so **37.5%** of every TTTN index was TTTT, because poly-T runs are
+common and concentrate in the soft-masked repeats. The `unique` flag was affected too,
+but barely: 118 of sacCer3's 32,837 non-unique guides are unique among TTTV sites,
+0.02% of all guides.
+
+Direction of the correction: specificity does not move, and guides are **released** from
+grey rather than newly greyed, so anyone who used the greys as a filter was discarding
+usable guides. Nothing previously shown as usable becomes unusable.
+
+The fix is at the index, not at each consumer, because eight of the nine outputs above
+would each have needed their own guard and any one of them could be forgotten again:
+`index_genome --pam TTTV` leaves no TTTT site for them to count. What makes that
+durable is `crisprware/utils/crot_index.py`, which reads the enumerated PAM set out of
+the `.crot` header, and `score_guides --ucscgb_enzyme ascas12a`, which now **refuses** a
+TTTT-bearing index before scanning anything. Three separate comments in `ucsc_track.py`
+had asserted "TTTV-only index" in prose while all eight genomes were indexed on TTTN;
+the assumption is now read off the file. `tests/test_crot_index.py` covers it, including
+a test that drives the real track entry point rather than the helper, because a
+unit-tested helper nobody calls is how this shipped.
+
+enCas12a is unaffected and deliberately keeps a TTTN index: it does cleave TTTT.
+
+### `_specColor`'s red cut moves from 0.50 to 0.20 (colour)
+
+`SPEC_COLOR_BAD` goes from 50 to 20, so the "Off-target specificity (AsCas12a)" view
+calls a guide bad at the same specificity the default view greys at.
+
+The track was drawing two different "bad specificity" lines on one quantity. A guide at
+0.35 kept its efficiency ramp in the default scheme, which says it is not hard to
+target, and read red in the specificity scheme, which says it is. 0.20 is the line
+`SPEC_GREY_BAD`, the `score` filter and the description page already use, so this column
+moved to it. The olive band is now 0.20 to 0.70; green above 0.70 is unchanged.
+
+On sacCer3 this moves 866 of 590,425 guides (0.15%) from red to olive. The 32,837
+non-unique guides are still forced to the worst tier, as on the Cas9 track.
+
+This is now a deliberate divergence from Cas9, which keeps a 50 red cut because its
+default scheme greys everything at or below MIT 50 and so has no disagreement to
+resolve. It is pure recolouring and could have been retrofitted onto a finished track
+from its stored specificity with no rescan, but it ships with the TTTV rebuild rather
+than as a second push.
+
 ### All eight genomes rescanned on the fixed Cas12a CFD binary (DERIVATION)
 
 Every off-target was rescored and every track rebuilt. For five genomes this moves
@@ -60,8 +153,11 @@ columns, zero off-target invariant violations, and one autoSql md5
 separately validated bit-exact against an unsharded reference on sacCer3 at whole-genome
 scale before the other seven genomes were run.
 
-**Not yet pushed to hgwdev.** `slurm/push_ascas12a_tracks.sh` still maps every genome to
-its pre-rescan `*_rounded` directory and must be repointed at `*_rescan` first.
+**Never pushed to hgwdev, and superseded before it was.** `slurm/push_ascas12a_tracks.sh`
+was repointed from the pre-rescan `*_rounded` directories to `*_rescan` later the same
+day, and then the TTTV index defect above was found. The `*_rescan` tracks carry the
+fixed CFD binary but were still scanned against a TTTN index, so they must NOT be
+pushed; the deployable build is the TTTV one.
 
 ## 2026-10-19
 

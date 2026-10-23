@@ -325,8 +325,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         choices=["ascas12a", "encas12a"],
         default="ascas12a",
         help="Which Cas12a track to build. 'ascas12a' (default): a single AsCas12a "
-        "(WT/2xNLS) track scored against a TTTV-only off-target index (pass a TTTV -i "
-        "index), one specificity, no enCas12a/TTTN columns. 'encas12a': a single enCas12a "
+        "(WT/2xNLS) track scored against a TTTV off-target index (a TTTN index is "
+        "REFUSED: AsCas12a cannot cleave TTTT, so TTTT sites are false off-targets), one "
+        "specificity, no enCas12a/TTTN columns. 'encas12a': a single enCas12a "
         "(enAsCas12a) track scored against the broad fa>0.3 (30-PAM) off-target index, with "
         "four guidescan specificities (raw + PAM-activity-weighted, at the fa>0.6 and fa>0.3 "
         "cutoffs); requires --ucscgb_genome and --cas12a_scorer enpam_gb seq_deepcpf1variants "
@@ -593,6 +594,7 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
     import os
 
     from crisprware import ucsc_track
+    from crisprware.utils import crot_index
 
     if not args.guidescan2_indices:
         raise ValueError("\n\t--ucscgb requires an off-target index via -i/--guidescan2_indices.\n")
@@ -608,9 +610,23 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
 
     # Which enzyme's track. Every track is single-enzyme: one CFD matrix, one off-target
     # index, one specificity axis. "ascas12a" (default) scores the AsCas12a (2xNLS) matrix
-    # against a TTTV-only index; "encas12a" scores the enCas12a matrix against the broad
-    # fa>0.3 index.
+    # against a TTTV index; "encas12a" scores the enCas12a matrix against the broad
+    # fa>0.3 (TTTN-based) index.
     enzyme = getattr(args, "ucscgb_enzyme", "ascas12a")
+    # Check the index's enumerated PAM set before scanning anything. AsCas12a does not
+    # cleave a TTTT-prefixed protospacer, so a TTTT site in the index is a false
+    # off-target, and only `specificity_tttv` ever excluded one: the mismatch buckets
+    # behind the close-off-target grey, the off-target list, the off-target count, max
+    # CFD, the saturation cap and the 0-mm screen behind `unique` all counted them.
+    # Eight genomes were published from a TTTN index while this file asserted "TTTV-only"
+    # in a comment, which is why the assumption is now read off the index instead.
+    idx_header = crot_index.assert_enzyme_pams(index, enzyme)
+    print(
+        f"\n\tUCSC track: off-target index {idx_header.enzyme_name} "
+        f"(PAMs {' '.join(idx_header.pams)}, {idx_header.total_entries:,} sites, "
+        f"{idx_header.pam_side_label} PAM, protospacer {idx_header.protospacer_len})\n",
+        flush=True,
+    )
     if enzyme == "ascas12a":
         scores = ["cfd-cas12a:2xnls"]
     elif enzyme == "encas12a":
@@ -697,8 +713,8 @@ def run_ucscgb_track(args: argparse.Namespace, gRNADF: pd.DataFrame) -> None:
         var_target = "encas12a_hf1_score" if enzyme == "encas12a" else "ascas12a_deepcpf1_score"
         guide_df[var_target] = gRNADF[var_cols[0]].to_numpy()
 
-    # The ascas12a track uses a TTTV-only off-target index, so no TTTT off-targets exist and no
-    # genome PAM lookup is needed. enCas12a REQUIRES the reference FASTA: each off-target's PAM
+    # The ascas12a track uses a TTTV off-target index (checked above), so no TTTT off-target
+    # exists and no genome PAM lookup is needed. enCas12a REQUIRES the reference FASTA: each off-target's PAM
     # is reconstructed to weight the four guidescan specificities.
     if enzyme == "ascas12a":
         genome_fa = None

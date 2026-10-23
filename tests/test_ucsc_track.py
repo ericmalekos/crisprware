@@ -530,11 +530,22 @@ def test_spec_color_helper():
     import numpy as np
     nan = float("nan")
     z = np.zeros(4, dtype=int)
-    # Cas9 cuts on specificity x100: <=50 red, <=70 olive, >70 green
+    # Cuts on specificity x100: <=20 red, <=70 olive, >70 green. The red cut is 20,
+    # not Cas9's 50, so this column agrees with SPEC_GREY_BAD on where a guide stops
+    # being usable instead of contradicting the default scheme between 0.20 and 0.50.
     spec = np.array([0.90, 0.71, 0.70, 0.51, 0.50, 0.20, nan])
     z7 = np.zeros(7, dtype=int)
     assert list(ucsc_track._spec_color(np.array([False]*7), z7, z7, z7, spec)) == [
-        "0,255,0", "0,255,0", "128,128,0", "128,128,0", "255,0,0", "255,0,0", "0,255,0"]
+        "0,255,0", "0,255,0", "128,128,0", "128,128,0", "128,128,0", "255,0,0", "0,255,0"]
+    # The boundary itself: 0.20 is red (<=), 0.21 is olive, and 0.70/0.71 still split
+    # olive from green. These four are the whole contract of this column.
+    edge = np.array([0.20, 0.21, 0.70, 0.71])
+    assert list(ucsc_track._spec_color(np.array([False]*4), z, z, z, edge)) == [
+        "255,0,0", "128,128,0", "128,128,0", "0,255,0"]
+    # The band that used to read red while the default scheme showed an efficiency ramp.
+    band = np.array([0.21, 0.35, 0.50])
+    assert list(ucsc_track._spec_color(np.array([False]*3), z[:3], z[:3], z[:3], band)) == [
+        "128,128,0"]*3
     # non-unique takes the worst tier but is still COLOURED, as Cas9 does
     assert list(ucsc_track._spec_color(np.array([True]*7), z7, z7, z7, spec)) == ["255,0,0"]*7
     # a close (1-mm) off-target does NOT grey this column (specificity alone)

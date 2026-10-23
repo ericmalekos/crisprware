@@ -17,9 +17,10 @@
 #                 --export=ALL,ORG=<org> pipeline_trackonly.sh
 # CPU instead:  --export=ALL,ORG=<org>,SCANNER=cpu   (fine for yeast/worm/fly)
 set -uo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ORG="${ORG:?set ORG=yeast|worm|fly|zebrafish|mouse|rat}"
 SCANNER="${SCANNER:-gpu}"
-SUFFIX="${SUFFIX:-rescan}"
+SUFFIX="${SUFFIX:-tttv}"   # track_<db>_cas12a_$SUFFIX; `rescan` was the TTTN-index build
 # PHASE splits a chunked build across SLURM jobs. Chunk work was always independent
 # (one process, own output dir, no shared state); the serial behaviour came from
 # n_workers = max(1, len(gpus)), which is 1 on the CPU scanner. Fanning the same
@@ -73,55 +74,39 @@ export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
 export TMPDIR=/data/tmp/emalekos; mkdir -p "$TMPDIR"
 THREADS=${THREADS:-16}
 
-case "$ORG" in
-  yeast)     DB=sacCer3;  CHUNK=0 ;;
-  worm)      DB=ce11;     CHUNK=0 ;;
-  fly)       DB=dm6;      CHUNK=0 ;;
-  zebrafish) DB=danRer11; CHUNK=2000000 ;;
-  mouse)     DB=mm39;     CHUNK=1000000 ;;
-  rat)       DB=rn7;      CHUNK=1000000 ;;
-  # hg38 and hs1 were built before this project settled on <db>/<db>_canon_*, so they
-  # keep their own directories and stems. Pointing at them in place is deliberate: the
-  # gscan2 index alone is 7.6 GB, and a copy or a symlink farm would be one more thing
-  # that can drift from the tree the earlier tracks were actually built against.
-  human)     DB=hg38; CHUNK=1000000
-             W=/private/groups/carpenterlab/emalekos/tmp/hg38-cas12a
-             STEM=hg38_primary_chr; SIZES=$W/hg38.chrom.sizes ;;
-  # DB=hs1 is the UCSC name; the directory still says t2t. TRACK therefore lands on a
-  # NEW track_hs1_cas12a_* path rather than the existing track_t2t_cas12a_*, which is
-  # what keeps this off a tree an earlier run already wrote.
-  t2t)       DB=hs1;  CHUNK=1000000
-             W=/private/groups/carpenterlab/emalekos/tmp/t2t-cas12a
-             STEM=t2t_chm13v2; SIZES=$W/t2t.chrom.sizes ;;
-  *) echo "unknown ORG=$ORG"; exit 1 ;;
-esac
-# These defaults are not preferences, they are a record of what is ON DISK. The merge
-# recomputes the expected chunk count as ceil(guides / chunk_max) and compares it against
-# what it finds, so split and every later phase must agree on chunk_max or the merge
-# refuses, and a shard index past the recomputed count is rejected as out of range. The
-# chunks currently on disk are danRer11 37 @2M and rn7 110 / mm39 113 / hg38 136 / hs1 142
-# @1M, so a stale 3000000 here would have made shards 37 and up unreachable and then
-# failed the merge. Change these only together with a re-split.
-#
+# Per-genome paths come from genomes.sh so this script and the chain submitter cannot
+# disagree about where a genome lives or how large its chunks are.
+. "$HERE/genomes.sh"
+resolve_genome "$ORG" || exit 1
+
 # CHUNK override. The small genomes default to CHUNK=0 (unchunked), so forcing a chunk
 # size is how the sharded path gets validated: a chunked+sharded ce11 must reproduce
 # the already-verified unchunked ce11 byte for byte, which is exactly the chunked ==
 # unchunked equivalence the merge-time percentile re-rank exists to guarantee.
 CHUNK="${CHUNK_OVERRIDE:-$CHUNK}"
 
-# The ORG case above may already have set W, STEM or SIZES for a genome that predates
-# the naming convention; everything else falls back to it.
-W=${W:-$PROJ/$DB}
-STEM=${STEM:-${DB}_canon}
-IDX=$W/${STEM}_gscan2/${STEM}_gscan2
-GUIDES=$W/${STEM}_gRNA/${STEM}_gRNA.bed
-SIZES=${SIZES:-$W/${DB}.chrom.sizes}
+# The TTTV off-target index, not the TTTN one the first eight tracks were built from.
+# AsCas12a cannot cleave a TTTT-prefixed protospacer, so a TTTT site in the index is a
+# false off-target. Only `specificity_tttv` ever excluded them; the mismatch buckets
+# behind the close-off-target grey, the off-target list, the off-target count, max CFD,
+# the saturation cap and the 0-mm screen behind `unique` all counted them. Indexing on
+# TTTV removes them at the source instead of relying on a guard at each consumer.
+IDX=$IDX_TTTV
 TRACK=$W/track_${DB}_cas12a_${SUFFIX}   # NEW dir; published track_${DB}_cas12a untouched
 mkdir -p "$TRACK" "$PROJ/logs"
 
 for f in "$IDX.crot" "$GUIDES" "$SIZES"; do
   [ -s "$f" ] || { echo "MISSING PREREQ: $f"; exit 1; }
 done
+# Refuse a TTTT-bearing index up front. This is the check whose absence let eight
+# genomes be scanned against TTTN while three comments asserted the index was TTTV.
+"$MM" run -p "$ENV" python -c "
+import sys
+sys.path.insert(0, '$REPO')
+from crisprware.utils.crot_index import assert_enzyme_pams
+h = assert_enzyme_pams('$IDX', 'ascas12a')
+print('index:', h.enzyme_name, '| PAMs', ' '.join(h.pams), '| sites', format(h.total_entries, ','))
+" || { echo "FATAL: off-target index is not usable for AsCas12a" >&2; exit 1; }
 echo "START $ORG ($DB) $(date) host=$(hostname) scanner=$SCANNER chunk=$CHUNK phase=$PHASE shard=${SHARD:-none} cuda=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "guides: $(($(wc -l < "$GUIDES") - 1))   ceph_used: $(getfattr --only-values -n ceph.dir.rbytes /private/groups/carpenterlab 2>/dev/null)"
 
