@@ -535,6 +535,12 @@ fn scan_on_gpu(
 /// is derived from `on_count`). 8 covers every realistic `--mismatches`.
 const MM_BUCKETS: usize = 8;
 
+// The CFD kernel writes a histogram of this width per guide. The two constants are
+// declared separately because this crate compiles without the gpu feature, so they
+// are pinned to each other here rather than hoped to agree.
+#[cfg(feature = "gpu")]
+const _: () = assert!(MM_BUCKETS == crispr_scan_gpu::MM_BUCKETS);
+
 /// Primary + optional secondary Cas12a CFD scorer for one dual-matrix scan.
 /// The PRIMARY drives `off_sum`/`tttv_sum`, `max_cfd`, the saturation cap, the
 /// Mode-2 `cfd` column, and the `--cfd-threshold` floor; the SECONDARY (when
@@ -1445,6 +1451,11 @@ fn gpu_cfd_pass(
             acc.on_count[abs] = a.on_count;
             acc.off_count[abs] = a.off_count;
             acc.saturated[abs] = a.saturated;
+            // Without this the SpCas9 GPU path left mm_counts at zero while every
+            // other column was right, so `mismatch_counts` published as 0;0;0;0 and
+            // nothing errored. Only the host accumulator (`accumulate_hit`) used to
+            // fill it, and this path exists precisely to avoid downloading hits.
+            acc.mm_counts[abs] = a.mm_counts;
         }
         base = end;
     }

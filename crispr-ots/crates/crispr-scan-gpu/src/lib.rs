@@ -44,7 +44,15 @@ use crispr_scan::{Guide, Hit, Scanner};
 /// `crispr_encoding::mismatches_masked` exactly: the differing-2-bit-pair
 /// indicator `(c & 0xAAAA…) | ((c << 1) & 0xAAAA…)` is population-counted with
 /// the hardware `__popcll`, summed over the `low` and `high` site words.
+/// Per-guide mismatch histogram width shared by the CFD kernel and the host
+/// accumulator. Index 0 is never written: a 0-mm hit is an on-target, counted in
+/// `on_count`, and the host derives the mm-0 bucket from `on_count - 1`. The CLI's
+/// own `MM_BUCKETS` must equal this; `discover.rs` asserts it at compile time.
+pub const MM_BUCKETS: usize = 8;
+
 const KERNEL_SRC: &str = r#"
+#define CFD_MM_BUCKETS 8
+
 extern "C" __global__ void scan_kernel(
     const unsigned long long* __restrict__ entries, // 3 u64/entry: low, high, pos
     const unsigned int n_entries,
@@ -376,6 +384,11 @@ struct CfdCtx {
     double off_sum_cap;      // 0 = disabled; else saturate once off_sum > this
                              //   (= 1/min_specificity - 1: spec provably below floor)
     unsigned int saturated;  // 1 once either cap was hit (partial sums; flagged)
+    // Per-mismatch off-target histogram, bucket 0 unused (see MM_BUCKETS). The
+    // struct's address is taken for the __noinline__ call below, so it already
+    // lives in local memory rather than registers: these 32 bytes cost per-thread
+    // stack in THIS frame and add nothing to the recursive cfd_visit frame.
+    unsigned int mm_counts[CFD_MM_BUCKETS];
 };
 
 // __noinline__ keeps this (heavy) leaf out of the recursive cfd_visit frame, so
@@ -402,6 +415,10 @@ __device__ __noinline__ void cfd_process_bin(CfdCtx* c, unsigned int key) {
                 c->off_sum += v;
                 if (v > c->max_cfd) c->max_cfd = v;
                 c->off_count += 1u;
+                // Same bound as the host accumulator: a mismatch level past the
+                // histogram width is counted in off_count and dropped here, never
+                // written out of range.
+                if (mm < CFD_MM_BUCKETS) c->mm_counts[mm] += 1u;
             }
             // Bound per-guide work + flag provably non-specific guides. Stop on
             // EITHER: too many hits (count cap), or the off-target CFD sum so
@@ -445,7 +462,8 @@ extern "C" __global__ void scan_cfd_prefilter_kernel(
     const unsigned int cap, const double off_sum_cap,
     double* __restrict__ out_sum, double* __restrict__ out_max,
     unsigned int* __restrict__ out_on, unsigned int* __restrict__ out_off,
-    unsigned int* __restrict__ out_sat)
+    unsigned int* __restrict__ out_sat,
+    unsigned int* __restrict__ out_mm)   // n_guides * CFD_MM_BUCKETS, row per guide
 {
     const unsigned int gi = blockIdx.x * blockDim.x + threadIdx.x;
     if (gi >= n_guides) return;
@@ -467,6 +485,7 @@ extern "C" __global__ void scan_cfd_prefilter_kernel(
     c.cap = cap;
     c.off_sum_cap = off_sum_cap;
     c.saturated = 0u;
+    for (unsigned int k = 0; k < CFD_MM_BUCKETS; ++k) c.mm_counts[k] = 0u;
 
     const unsigned int key = bin_key_of(c.g_low, c.g_high, bin_start_bit, 2u * bin_w);
     cfd_visit(&c, key, (int)bin_w, (int)max_mm, 0);
@@ -476,6 +495,11 @@ extern "C" __global__ void scan_cfd_prefilter_kernel(
     out_on[gi] = c.on_count;
     out_off[gi] = c.off_count;
     out_sat[gi] = c.saturated;
+    // A saturated guide's histogram is partial in exactly the same way its sums
+    // are, so sum(mm_counts) == off_count holds whether or not a cap tripped.
+    for (unsigned int k = 0; k < CFD_MM_BUCKETS; ++k) {
+        out_mm[gi * CFD_MM_BUCKETS + k] = c.mm_counts[k];
+    }
 }
 
 // ---- Bin-prefilter SCREEN path (early-exit specificity pre-screen) ----
@@ -703,6 +727,9 @@ pub struct CfdAgg {
     pub on_count: u32,
     pub off_count: u32,
     pub saturated: bool,
+    /// Off-targets by mismatch count, bucket 0 unused (see [`MM_BUCKETS`]). Sums to
+    /// `off_count`, partial in the same way as `off_sum` when `saturated`.
+    pub mm_counts: [u32; MM_BUCKETS],
 }
 
 /// Errors from GPU setup. `scan` itself is infallible (the `Scanner` trait
@@ -1437,6 +1464,7 @@ impl GpuScanner {
                     on_count: 0,
                     off_count: 0,
                     saturated: false,
+                    mm_counts: [0u32; MM_BUCKETS],
                 };
                 guides.len()
             ]);
@@ -1454,6 +1482,7 @@ impl GpuScanner {
         let mut d_on = stream.alloc_zeros::<u32>(guides.len())?;
         let mut d_off = stream.alloc_zeros::<u32>(guides.len())?;
         let mut d_sat = stream.alloc_zeros::<u32>(guides.len())?;
+        let mut d_mm = stream.alloc_zeros::<u32>(guides.len() * MM_BUCKETS)?;
 
         let mask_low = self.compare_mask.low;
         let mask_high = self.compare_mask.high;
@@ -1486,7 +1515,8 @@ impl GpuScanner {
             lb.arg(&mut d_on);
             lb.arg(&mut d_off);
             lb.arg(&mut d_sat);
-            // SAFETY: the 19 arguments match scan_cfd_prefilter_kernel's
+            lb.arg(&mut d_mm);
+            // SAFETY: the 20 arguments match scan_cfd_prefilter_kernel's
             // parameter list in count, type, and order.
             unsafe { lb.launch(cfg)? };
         }
@@ -1496,6 +1526,7 @@ impl GpuScanner {
         let on = stream.clone_dtoh(&d_on)?;
         let off = stream.clone_dtoh(&d_off)?;
         let sat = stream.clone_dtoh(&d_sat)?;
+        let mm = stream.clone_dtoh(&d_mm)?;
         stream.synchronize()?;
         if trace {
             eprintln!(
@@ -1510,6 +1541,11 @@ impl GpuScanner {
                 on_count: on[i],
                 off_count: off[i],
                 saturated: sat[i] != 0,
+                mm_counts: {
+                    let mut b = [0u32; MM_BUCKETS];
+                    b.copy_from_slice(&mm[i * MM_BUCKETS..(i + 1) * MM_BUCKETS]);
+                    b
+                },
             })
             .collect())
     }

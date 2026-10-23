@@ -124,3 +124,19 @@ guards are eight chances to forget one. And read the assumption off the file:
 `crisprware/utils/crot_index.py` parses the `.crot` header and
 `score_guides --ucscgb_enzyme ascas12a` refuses a TTTT-bearing index before scanning,
 which is a check `build_index.sh` repeats on what it just wrote.
+
+### Removed binary: `crispr-ots-gpu` md5 `22e7030f06b1`
+
+Deleted 2026-10-23 from `crispr-ots/target/x86_64-unknown-linux-gnu/release/`. It was a
+2026-06-06 build, predating `ad3ecc6` ("crispr-score: fix Cas12a off-target CFD matrix
+application (complement the d-base)"), so its Cas12a off-target CFDs are wrong. It stays
+on the quarantine md5 list in `pipeline_shard.sh` and `build_index.sh` so a restored copy
+is still refused; the list is the guard, not the file's absence.
+
+Full md5 `22e7030f06b1e994a6c81f0ab3d21807`, 9,744,304 bytes, mtime 2026-06-06 16:33:55.
+It was harmless for SpCas9 (`ad3ecc6` touches `cas12a.rs`, not `cfd.rs`, and is the only
+`crispr-score` commit between that build and 2026-08-09), but nothing should be able to
+reach it for Cas12a. Two references outside this repo pointed at it:
+`crispr-ots-multigenome/config/params.env` (`OTS_GPU`) and
+`crispr-ots-multigenome/bin/make_tutorial.py:145`, which emitted a tutorial command line
+invoking it.
