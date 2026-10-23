@@ -16,10 +16,20 @@ BASE_SHA="${1:?usage: make_snapshot.sh <base-snapshot-sha whose binary to carry 
 LIVE=/private/groups/carpenterlab/emalekos/crispr-ots/crisprware
 SNAPDIR=/private/groups/carpenterlab/emalekos/crispr-ots/snapshots
 BASE=$SNAPDIR/crisprware-$BASE_SHA
-BINREL=crispr-ots/target/x86_64-unknown-linux-gnu/release/crispr-ots
+# BOTH binaries, because pipeline_shard.sh defaults to SCANNER=gpu and a snapshot
+# carrying only the CPU build fails every shard with "no binary at". The first
+# snapshot made by this script carried only the CPU one while its own BINARIES.md
+# said "Both scanners are available", which is the same class of false provenance
+# claim the script exists to prevent.
+BINRELS=(
+  crispr-ots/target/x86_64-unknown-linux-gnu/release/crispr-ots
+  crispr-ots/target-gpu/release/crispr-ots
+)
 
 [ -d "$BASE" ] || { echo "FATAL: no base snapshot $BASE" >&2; exit 1; }
-[ -x "$BASE/$BINREL" ] || { echo "FATAL: base snapshot has no binary at $BINREL" >&2; exit 1; }
+for b in "${BINRELS[@]}"; do
+  [ -x "$BASE/$b" ] || { echo "FATAL: base snapshot has no binary at $b" >&2; exit 1; }
+done
 
 cd "$LIVE"
 # Freezing a dirty tree would produce a snapshot no commit describes.
@@ -42,19 +52,28 @@ fi
 
 mkdir -p "$NEW"
 git archive HEAD | tar -x -C "$NEW"
-mkdir -p "$NEW/$(dirname "$BINREL")"
-install -m 555 "$BASE/$BINREL" "$NEW/$BINREL"
-cmp "$BASE/$BINREL" "$NEW/$BINREL"
-M=$(md5sum "$NEW/$BINREL" | cut -d' ' -f1)
+MD5S=()
+for b in "${BINRELS[@]}"; do
+  mkdir -p "$NEW/$(dirname "$b")"
+  install -m 555 "$BASE/$b" "$NEW/$b"
+  # cmp, not a size check: a truncated or raced copy is routinely the right length.
+  cmp "$BASE/$b" "$NEW/$b"
+  MD5S+=("$(md5sum "$NEW/$b" | cut -d' ' -f1)")
+done
 
 {
   echo "# Binaries in this snapshot"
   echo
   echo "| path | md5 | provenance |"
   echo "|---|---|---|"
-  echo "| \`$BINREL\` | \`${M:0:12}\` | carried over from \`crisprware-$BASE_SHA\` by make_snapshot.sh on $(date +%F), after confirming \`git diff $BASE_SHA..$SHA -- crispr-ots/\` is empty, so this snapshot's Rust source is identical to the one that binary was built from |"
+  for i in "${!BINRELS[@]}"; do
+    m=${MD5S[$i]}
+    echo "| \`${BINRELS[$i]}\` | \`${m:0:12}\` | carried over from \`crisprware-$BASE_SHA\` by make_snapshot.sh on $(date +%F), after confirming \`git diff $BASE_SHA..$SHA -- crispr-ots/\` is empty, so this snapshot's Rust source is identical to the one that binary was built from |"
+  done
   echo
-  echo "Full md5: \`$M\`"
+  echo "Full md5s:"
+  echo
+  for i in "${!BINRELS[@]}"; do echo "* \`${BINRELS[$i]}\` \`${MD5S[$i]}\`"; done
   echo
   # carry over the base's scanner note and its verification claim, nothing else:
   # the closing rule is printed once, below.
@@ -71,4 +90,4 @@ M=$(md5sum "$NEW/$BINREL" | cut -d' ' -f1)
 
 chmod -R a-w "$NEW"
 echo "snapshot: $NEW"
-echo "binary md5: $M"
+for i in "${!BINRELS[@]}"; do echo "  ${BINRELS[$i]}  ${MD5S[$i]}"; done
